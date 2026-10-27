@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -75,7 +76,7 @@ def main() -> int:
 
     cfg = C.load_config()
     if args.relearn:
-        C.save_learned(cfg, {"expectedIp": "", "expectedLoc": "", "expectedNode": "", "timezone": ""})
+        C.save_learned(cfg, {"expectedIp": "", "expectedLoc": "", "expectedNode": "", "timezone": "", "expectedTzIana": ""})
 
     print("==============================================")
     print("   Claude 桌面版 启动前检查 v3（macOS 通用版）")
@@ -142,7 +143,7 @@ def main() -> int:
             except Exception:  # noqa: BLE001
                 iana = None
         if iana:
-            C.save_learned(cfg, {"timezone": iana})
+            C.save_learned(cfg, {"timezone": iana, "expectedTzIana": iana})
             say_fix(f"首次运行：按出口 IP 所在地设定目标时区 {iana}")
         else:
             say_note(f"无法按出口 IP 判断时区（{iana}），跳过时区检查；可在 preflight.json 里手动填写 timezone（IANA，如 America/New_York）")
@@ -477,6 +478,218 @@ def main() -> int:
         say_pass("Claude Code CLI 已安装")
     else:
         say_note("未找到 claude CLI（仅影响命令行版）")
+
+
+    # ---------- 12. 浏览器环境 ----------
+    say_head("12. 浏览器环境")
+    static_warn_used = 0
+    static_warn_cap = 20
+
+    def soft_warn(t: str, w: int = 5) -> None:
+        nonlocal static_warn_used
+        left = static_warn_cap - static_warn_used
+        if left <= 0:
+            say_info(t)
+            return
+        use = min(w, left)
+        static_warn_used += use
+        say_warn(t, use)
+
+    def read_pref_text(path: Path) -> Optional[str]:
+        tmp = Path(tempfile.gettempdir()) / f"csl-pref-{os.getpid()}-{path.name}"
+        try:
+            try:
+                shutil.copy2(path, tmp)
+                return tmp.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+    def json_str(txt: str, key: str) -> Optional[str]:
+        m = re.search(r'"' + re.escape(key) + r'"\s*:\s*"((?:\\.|[^"\\])*)"', txt)
+        return m.group(1) if m else None
+
+    def lang_mismatch(langs: str, loc: str) -> bool:
+        if not langs or not loc:
+            return False
+        first = langs.split(",")[0].strip().lower()
+        cc = loc.upper()
+        if first.startswith("zh"):
+            return cc not in {"CN", "TW", "HK", "MO", "SG"}
+        m = re.match(r"^([a-z]{2})-([a-z]{2})$", first)
+        if m:
+            reg = m.group(2).upper()
+            if reg != cc and not first.startswith("en"):
+                return True
+        return False
+
+    home = Path.home()
+    browser_roots = [
+        ("Chrome", home / "Library/Application Support/Google/Chrome"),
+        ("Edge", home / "Library/Application Support/Microsoft Edge"),
+        ("Brave", home / "Library/Application Support/BraveSoftware/Brave-Browser"),
+    ]
+    found_browser = False
+    for bname, broot in browser_roots:
+        if not broot.is_dir():
+            continue
+        try:
+            profiles = [
+                p
+                for p in broot.iterdir()
+                if p.is_dir()
+                and (p.name == "Default" or p.name.startswith("Profile "))
+                and "panel-edge" not in str(p)
+                and "panel-chrome" not in str(p)
+            ]
+        except OSError:
+            profiles = []
+        for prof in profiles:
+            pref = prof / "Preferences"
+            if not pref.is_file():
+                continue
+            found_browser = True
+            txt = read_pref_text(pref)
+            if not txt:
+                say_info(f"{bname}/{prof.name}: 无法读取 Preferences")
+                continue
+            pname = json_str(txt, "name") or prof.name
+            wm = re.search(r'"ip_handling_policy"\s*:\s*"([^"]+)"', txt)
+            webrtc = wm.group(1) if wm else None
+            langs = json_str(txt, "accept_languages")
+            if webrtc == "disable_non_proxied_udp":
+                say_pass(f"{bname}「{pname}」: WebRTC=disable_non_proxied_udp")
+            elif webrtc:
+                soft_warn(f"{bname}「{pname}」: WebRTC={webrtc}（建议 disable_non_proxied_udp 或用扩展禁用）", 5)
+            else:
+                soft_warn(
+                    f"{bname}「{pname}」: 未设置 webrtc.ip_handling_policy，可能暴露真实/局域网 IP（建议 disable_non_proxied_udp）",
+                    5,
+                )
+            if langs:
+                if lang_mismatch(langs, str(cfg.get("expectedLoc") or "")):
+                    soft_warn(f"{bname}「{pname}」: 语言 {langs} 与出口地区 {cfg.get('expectedLoc')} 不一致", 5)
+                else:
+                    say_info(f"{bname}「{pname}」: 语言 {langs}")
+            if re.search(
+                r"switchyomega|foxyproxy|proxy\s*switch|webrtc.?leak|canvas.?blocker|fingerprint|指纹|CanvasFingerprint|WebRTC Control",
+                txt,
+                re.I,
+            ):
+                say_info(f"{bname}「{pname}」: 检测到代理/指纹相关扩展（仅提示）")
+    if not found_browser:
+        say_info("未找到 Chrome / Edge / Brave 用户配置（跳过静态配置检查）")
+
+    ff_root = home / "Library/Application Support/Firefox/Profiles"
+    if ff_root.is_dir():
+        try:
+            fps = [p for p in ff_root.iterdir() if p.is_dir()]
+        except OSError:
+            fps = []
+        for fp in fps:
+            pj = fp / "prefs.js"
+            if not pj.is_file():
+                continue
+            try:
+                ptxt = pj.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            m = re.search(r'user_pref\("media\.peerconnection\.enabled"\s*,\s*(true|false)\)', ptxt)
+            if m:
+                if m.group(1) == "false":
+                    say_info(f"Firefox「{fp.name}」: WebRTC 已关闭")
+                else:
+                    soft_warn(f"Firefox「{fp.name}」: media.peerconnection.enabled=true，可能暴露 IP", 5)
+            else:
+                soft_warn(f"Firefox「{fp.name}」: 未关闭 media.peerconnection.enabled（默认开启）", 5)
+
+    bc_path = C.ROOT / "browser-check.json"
+    if not bc_path.is_file():
+        say_note("实时浏览器检查（WebRTC/时区/语言）请从检查面板运行；命令行模式跳过，不扣分")
+    else:
+        bc = None
+        try:
+            bc = json.loads(bc_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            say_warn("browser-check.json 解析失败", 3)
+            bc = None
+        if bc:
+            from datetime import timezone as _tz
+
+            ts = None
+            raw_ts = bc.get("ts")
+            if raw_ts:
+                try:
+                    ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+                except ValueError:
+                    ts = None
+            now = datetime.now(ts.tzinfo) if ts and ts.tzinfo else datetime.now()
+            expired = (ts is None) or ((now - ts).total_seconds() > 180)
+            if expired:
+                say_note("browser-check.json 超过 3 分钟或无时间戳，视为过期；请从面板重新检查（不扣分）")
+            else:
+                say_info(f"实时快照 {ts.strftime('%H:%M:%S')}")
+                webrtc = bc.get("webrtc") or {}
+                srflx = [str(x) for x in (webrtc.get("srflx") or []) if x]
+                host_c = [str(x) for x in (webrtc.get("host") or []) if x]
+                v6extra = [str(x) for x in (webrtc.get("ipv6") or []) if x]
+                pub_v4 = [x for x in srflx if re.match(r"^\d+\.\d+\.\d+\.\d+$", x)]
+                pub_v6 = list(dict.fromkeys([x for x in srflx if ":" in x] + v6extra))
+                expect_ip = str(cfg.get("expectedIp") or exit_ip or "")
+                if not pub_v4 and not pub_v6:
+                    say_info("WebRTC 未收集到 srflx 公网候选（可能已禁用，属好事）")
+                else:
+                    if pub_v4:
+                        uniq = list(dict.fromkeys(pub_v4))
+                        bad = [x for x in uniq if expect_ip and x != expect_ip]
+                        if expect_ip and not bad:
+                            say_pass(f"WebRTC 公网 IP 与出口一致: {uniq[0]}")
+                        elif expect_ip and bad:
+                            say_fail(
+                                "WebRTC 公网 IP 与出口不一致: WebRTC="
+                                + ",".join(uniq)
+                                + f" 期望={expect_ip}"
+                            )
+                        else:
+                            say_info("WebRTC 公网 IP: " + ",".join(uniq))
+                    if pub_v6:
+                        say_warn("WebRTC 发现公网 IPv6: " + ",".join(pub_v6) + "（可能绕过代理）", 8)
+                mdns = [x for x in host_c if x.endswith(".local")]
+                if mdns:
+                    say_info("WebRTC host 含 mDNS（正常）: " + ",".join(mdns))
+
+                btz = str(bc.get("timezone") or "")
+                expect_iana = str(cfg.get("expectedTzIana") or cfg.get("timezone") or "")
+                if btz and expect_iana:
+                    if btz == expect_iana:
+                        say_pass(f"浏览器时区 {btz} 与出口一致")
+                    else:
+                        say_warn(f"浏览器时区 {btz} 与出口时区 {expect_iana} 不一致", 8)
+                elif btz:
+                    say_info(f"浏览器时区: {btz}（尚未记住出口 IANA 时区）")
+
+                blang = str(bc.get("language") or "")
+                if not blang and bc.get("languages"):
+                    blang = str((bc.get("languages") or [""])[0])
+                if blang and cfg.get("expectedLoc"):
+                    if lang_mismatch(blang, str(cfg.get("expectedLoc"))):
+                        say_warn(f"浏览器语言 {blang} 与出口地区 {cfg.get('expectedLoc')} 不一致", 5)
+                    else:
+                        say_pass(f"浏览器语言 {blang}")
+                elif blang:
+                    say_info(f"浏览器语言: {blang}")
+
+                if bc.get("webdriver") is True:
+                    say_warn("navigator.webdriver=true（自动化/被驱动环境）", 5)
+                else:
+                    say_pass("navigator.webdriver 未开启")
+
 
     # ---------- 评分 ----------
     fails = [i for i in ITEMS.items if i["Level"] == "FAIL"]

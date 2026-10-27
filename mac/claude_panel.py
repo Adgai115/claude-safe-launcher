@@ -253,10 +253,29 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def do_POST(self) -> None:  # noqa: N802
-        # drain body
+        global LAST
+        LAST = time.time()
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
         length = int(self.headers.get("Content-Length") or 0)
-        if length:
-            self.rfile.read(length)
+        body = self.rfile.read(length) if length else b""
+        if path == "/api/browser":
+            try:
+                if body and length < 200000:
+                    data = json.loads(body.decode("utf-8"))
+                    if not isinstance(data, dict):
+                        raise ValueError("not object")
+                    if "ts" not in data:
+                        data["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+                    out = ROOT / "browser-check.json"
+                    out.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                    slog("browser-check.json written")
+                self._json({"ok": True})
+            except Exception as e:  # noqa: BLE001
+                slog(f"browser json error: {e}")
+                self._json({"ok": False}, code=400)
+            return
+        # other POSTs: ignore body, behave like GET
         self.do_GET()
 
 
@@ -270,14 +289,16 @@ def main() -> int:
         return 1
 
     if port_in_use(PORT):
-        open_browser(URL)
+        if not os.environ.get("CSL_PANEL_NO_OPEN"):
+            open_browser(URL)
         print(f"面板已在运行，已重新打开 {URL}")
         return 0
 
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     server.daemon_threads = True
     slog(f"server start pid {os.getpid()}")
-    open_browser(URL)
+    if not os.environ.get("CSL_PANEL_NO_OPEN"):
+        open_browser(URL)
     print(f"面板已启动: {URL}")
 
     try:
@@ -309,14 +330,16 @@ if __name__ == "__main__":
             print("缺少 claude-panel.html 或 claude_preflight.py", file=sys.stderr)
             return 1
         if port_in_use(PORT):
-            open_browser(URL)
+            if not os.environ.get("CSL_PANEL_NO_OPEN"):
+                open_browser(URL)
             print(f"面板已在运行，已重新打开 {URL}")
             return 0
         server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
         server.timeout = 1.0
         server.daemon_threads = True
         slog(f"server start pid {os.getpid()}")
-        open_browser(URL)
+        if not os.environ.get("CSL_PANEL_NO_OPEN"):
+            open_browser(URL)
         print(f"面板已启动: {URL}  （关闭页面约 45 秒后自动退出）")
         try:
             while not QUIT:

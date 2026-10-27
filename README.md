@@ -78,7 +78,7 @@ rules:
 
 - **出口 IP 与地区**：本机实测和 Claude 边缘看到的 IP 一致、且不在封锁地区时才会记住
 - **节点**：`Claude` 策略组当前使用的节点，之后被切走会自动切回
-- **时区**：根据出口 IP 所在地推算（Windows 为 Windows 时区 ID；macOS 为 IANA，如 `America/New_York`）
+- **时区**：根据出口 IP 所在地推算（Windows 为 Windows 时区 ID；macOS 为 IANA，如 `America/New_York`）。同时记住 IANA 名（`expectedTzIana`），供浏览器时区对比使用
 
 之后每次运行都会和记住的值对比。出口 IP 发生变化时会阻止启动 Claude。
 
@@ -115,6 +115,9 @@ sudo systemsetup -settimezone America/New_York
 9. 环境变量：第三方中转变量（ANTHROPIC_BASE_URL 等）与代理变量（macOS 还会看 `launchctl getenv`）
 10. 第三方接口残留：Claude 配置文件和模型切换脚本（只报告，不删除，不打印密钥）
 11. 其他：系统语言、Claude 桌面版与 Claude Code CLI 是否已安装
+12. 浏览器环境（固定检查组，非可选）：
+    - **静态**：扫描本机 Chrome / Edge / Brave 各配置的 Preferences（只读），检查 WebRTC IP 策略、`accept_languages` 与出口地区是否一致；Firefox 则看 `media.peerconnection.enabled`。代理/指纹类扩展仅作信息提示。静态警告单项扣 5 分，本组静态合计最多约扣 20 分。
+    - **实时**（仅检查面板）：页面先通过 STUN（Google / Cloudflare）做 WebRTC ICE 采集，再把公网候选 IP、浏览器时区、语言、`navigator.webdriver` 交给预检。公网 IP 与记住的出口不一致 → 失败（-25）；WebRTC 公网 IPv6、时区/语言不符、webdriver=true → 警告。命令行单独跑预检时会提示「请从面板运行实时检查」，不扣分。
 
 启动后，后台监控默认每 5 分钟复查一次，发现 IP 或节点变化时会提醒（macOS 用系统通知）。默认**不会**因变化而关闭 Claude；若确需关闭，在 `preflight.json` 把 `monitorKillOnChange` 设为 `true`。
 
@@ -162,8 +165,9 @@ sudo systemsetup -settimezone America/New_York
 ## 隐私
 
 - 所有检查都在本机运行。为测量出口 IP 和风险分，会访问 ipinfo.io、proxycheck.io、ip-api.com，以及 claude.ai / api.anthropic.com 的公开 trace 地址。
-- `preflight.json`、日志和面板配置只保存在本地，并已在 `.gitignore` 中排除，请不要上传。
-- 脚本不会打印或保存 Clash 外部控制密钥。
+- 检查面板在做「浏览器环境」实时检查时，会从本机向 Google（`stun.l.google.com`）和 Cloudflare（`stun.cloudflare.com`）的 **STUN** 服务器发起短暂连接，仅用于收集 WebRTC 公网候选地址；不会上传其它浏览器数据。
+- `preflight.json`、`browser-check.json`、日志和面板配置只保存在本地，并已在 `.gitignore` 中排除，请不要上传。
+- 脚本不会打印或保存 Clash 外部控制密钥；也不会修改你的浏览器配置（Preferences 只读扫描）。
 
 ## 许可证
 

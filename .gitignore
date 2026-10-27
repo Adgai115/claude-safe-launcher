@@ -1,5 +1,6 @@
 # 个人配置与运行产物（含出口 IP、节点等，不要提交）
 preflight.json
+browser-check.json
 panel.json
 panel-edge/
 panel-chrome/
@@ -9,6 +10,7 @@ panel-chrome/
 
 # macOS 运行产物
 mac/preflight.json
+mac/browser-check.json
 mac/panel.json
 mac/panel-chrome/
 mac/*.log
