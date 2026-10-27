@@ -14,7 +14,7 @@ header{display:flex;align-items:center;justify-content:space-between;gap:16px;pa
 h1{font-family:var(--title-font);font-size:26px;letter-spacing:var(--title-ls,0);white-space:nowrap}
 .sub{color:var(--muted);font-size:13px;margin-top:3px}
 .themes{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:420px}
-.themes button{font-family:"Microsoft YaHei UI",sans-serif;font-size:12px;padding:6px 12px;border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--text);cursor:pointer;transition:all .2s}
+.themes button{font-family:"Microsoft YaHei UI","PingFang SC","Hiragino Sans GB",sans-serif;font-size:12px;padding:6px 12px;border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--text);cursor:pointer;transition:all .2s}
 .themes button:hover{transform:translateY(-1px)}
 .themes button.on{background:var(--accent);color:var(--on-accent);border-color:transparent}
 .hero{display:flex;gap:26px;align-items:center;padding:16px 22px;background:var(--panel);border:var(--border);border-radius:var(--radius);box-shadow:var(--shadow);backdrop-filter:blur(8px)}
@@ -130,15 +130,15 @@ main{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;overflow:hidden auto
 .score.drop b{animation:drop .5s ease}
 @keyframes drop{30%{transform:scale(1.25);color:var(--fail)}}
 /* 字体清晰度优化：正文统一用微软雅黑，装饰字体只用于大标题 */
-body{--font:"Microsoft YaHei UI","Microsoft YaHei","Segoe UI",sans-serif!important;text-rendering:optimizeLegibility}
-.card h3{font-family:"Microsoft YaHei UI","Microsoft YaHei",sans-serif;font-weight:700;font-size:13.5px}
+body{--font:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Hiragino Sans GB","Segoe UI",sans-serif!important;text-rendering:optimizeLegibility}
+.card h3{font-family:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Hiragino Sans GB",sans-serif;font-weight:700;font-size:13.5px}
 .row{font-size:13px}
 .tag{font-size:11px;font-weight:700}
 .chip{font-size:12.5px}
 .cst{font-weight:700}
 .row.warn .tag,.cst.warn{color:#2a1a00}
 .row.info .txt,.row.note .txt{opacity:1}
-.btn{font-family:"Microsoft YaHei UI","Microsoft YaHei",sans-serif;font-weight:600}
+.btn{font-family:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Hiragino Sans GB",sans-serif;font-weight:600}
 .state{font-weight:700}
 body[data-theme=anime]{--muted:#5d6f92;--title-font:"YouYuan","Microsoft YaHei UI",sans-serif}
 body[data-theme=anime] h1,body[data-theme=anime] .state,body[data-theme=anime] .score b{font-weight:900}

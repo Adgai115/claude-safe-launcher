@@ -2,5 +2,20 @@
 preflight.json
 panel.json
 panel-edge/
+panel-chrome/
 *.log
 *.bak*
+*.pid
+
+# macOS 运行产物
+mac/preflight.json
+mac/panel.json
+mac/panel-chrome/
+mac/*.log
+mac/*.pid
+mac/monitor.spawn.log
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
