@@ -758,6 +758,12 @@ Assert-True ($lst.Count -eq 1 -and [bool]$lst[0].corrupt) '-ListFixes shows empt
 Clear-TestBackups
 
 Write-Host '== Corrupt (nameless-entry) backup is never pruned ==' -ForegroundColor Cyan
+$gfhCmd = Get-Command Get-FileHash -ErrorAction SilentlyContinue
+if (-not $gfhCmd) {
+  $utilMods = @(Get-Module Microsoft.PowerShell.Utility | ForEach-Object { '{0} {1} {2}' -f $_.Name, $_.Version, $_.ModuleType })
+  Write-Host ('  DIAG  Get-FileHash missing; Utility modules loaded=[{0}] PSModuleAutoLoadingPreference=[{1}] PSModulePath=[{2}]' -f ($utilMods -join '; '), $PSModuleAutoLoadingPreference, $env:PSModulePath) -ForegroundColor Yellow
+}
+Assert-True ($null -ne $gfhCmd) 'Get-FileHash command available at corrupt-backup section start'
 $crId = '20000101T000000021-crp1'
 $crPath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $crId)
 $crJson = '{"id":"' + $crId + '","ts":"2000-01-01T00:00:00Z","testMode":true,"entries":[{"name":"CSL_TEST_ANTHROPIC_CR_OK","existed":true,"before":"cr-orig","kind":"String"},{"name":"","existed":true,"before":"x","kind":"String"}]}'
@@ -765,8 +771,8 @@ $crJson = '{"id":"' + $crId + '","ts":"2000-01-01T00:00:00Z","testMode":true,"en
 # Get-FileHash is a script-module function on Windows PowerShell 5.1 and can fail to
 # autoload mid-suite; hash via .NET directly so the test does not depend on module loading.
 function Get-CslTestSha256([string]$Path) {
-  $sha = [System.Security.Cryptography.SHA256]::Create()
-  try { $bytes = [System.IO.File]::ReadAllBytes($Path); return ([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '') }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { return ([BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path)))).Replace('-', '') }
   finally { $sha.Dispose() }
 }
 $crHash = Get-CslTestSha256 $crPath
