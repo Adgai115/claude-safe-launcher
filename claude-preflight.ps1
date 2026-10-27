@@ -10,10 +10,12 @@
   [string]$UndoId,
   [switch]$ListFixes,
   [string[]]$FixVarPattern,
-  [int]$FailAtIndex = 0
+  [int]$FailAtIndex = 0,
+  [switch]$ExportIssues,
+  [switch]$HideIp
 )
 <#
-  Claude 桌面版 启动前检查 + 自动设置（v3.2.0）
+  Claude 桌面版 启动前检查 + 自动设置（v3.3.0）
   用法: powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 [选项]
   -Force    : 即使有「必须修」项也启动 Claude
   -NoPause  : 结束时不等待按键；单独使用时不提示也不自动修复
@@ -26,11 +28,14 @@
   -ListFixes : 列出可撤销操作（脱敏）
   -TestMode : 仅允许操作 CSL_TEST_ 前缀变量；测试请配合 -FixVarPattern 'CSL_TEST_ANTHROPIC_*'
   -FailAtIndex <n> : （仅 -TestMode）使第 n 个变量变更抛错，用于验证整单回滚；非 TestMode 警告并忽略
+  -ExportIssues : 检查结束后打印可复制的「问题说明」（脱敏四段结构）；建议配合 -NoLaunch -NoPause
+  -HideIp : 与 -ExportIssues 同用时，出口 IP / WebRTC IP 也脱敏，并省略 IP 提示行
   配置文件  : 同目录 preflight.json（可用 fixVarPatterns；controllerSecret 不会被打印）
-  依赖      : 同目录 claude-common.ps1、claude-envfix.ps1、claude-monitor.ps1
+  依赖      : 同目录 claude-common.ps1、claude-envfix.ps1、claude-issueexport.ps1、claude-monitor.ps1
 #>
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-common.ps1')
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-envfix.ps1')
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-issueexport.ps1')
 try { $Host.UI.RawUI.WindowTitle = 'Claude 安全启动 - 启动前检查' } catch {}
 $cfg = Load-Config
 if ($Relearn) { Save-Learned $cfg @{ expectedIp = ''; expectedLoc = ''; expectedNode = ''; timezone = ''; expectedTzIana = '' } }
@@ -106,8 +111,9 @@ if ($FixEnv) {
 # ---------- 输出与评分 ----------
 # FAIL = 必须修（默认扣 25）  WARN = 建议修（默认扣 8）  NOTE = 不用管（0 分）
 $script:Items = New-Object System.Collections.ArrayList
-function Add-Item($level, $t, $w) { [void]$script:Items.Add([pscustomobject]@{ Level = $level; Text = $t; Weight = $w }) }
-function Say-Head($t) { Write-Host ''; Write-Host "== $($t)" -ForegroundColor Cyan }
+$script:CurrentHead = ''
+function Add-Item($level, $t, $w) { [void]$script:Items.Add([pscustomobject]@{ Level = $level; Text = $t; Weight = $w; Group = $script:CurrentHead }) }
+function Say-Head($t) { $script:CurrentHead = [string]$t; Write-Host ''; Write-Host "== $($t)" -ForegroundColor Cyan }
 function Say-Pass($t) { Write-Host "  [通过] $($t)" -ForegroundColor Green }
 function Say-Info($t) { Write-Host "  [信息] $($t)" -ForegroundColor Gray }
 function Say-Fix($t)  { Write-Host "  [修复] $($t)" -ForegroundColor Yellow }
@@ -116,7 +122,7 @@ function Say-Warn($t, $w = 8)  { Write-Host "  [警告] $($t)" -ForegroundColor 
 function Say-Fail($t, $w = 25) { Write-Host "  [失败] $($t)" -ForegroundColor Red; Add-Item 'FAIL' $t $w }
 
 Write-Host '==============================================' -ForegroundColor Cyan
-Write-Host '   Claude 桌面版 启动前检查 v3.2.0' -ForegroundColor Cyan
+Write-Host '   Claude 桌面版 启动前检查 v3.3.0' -ForegroundColor Cyan
 if ($Relearn) { Write-Host '   [重新学习] 将按当前环境重新记住出口 IP / 节点 / 时区' -ForegroundColor Cyan }
 Write-Host ("   " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + $(if ($NoLaunch) { '   [NoLaunch 测试模式]' } else { '' })) -ForegroundColor Cyan
 Write-Host '==============================================' -ForegroundColor Cyan
@@ -584,6 +590,14 @@ if ($notes.Count) { Write-Host "  【不用管】$($notes.Count) 项" -Foregroun
 if (-not ($fails.Count + $warns.Count + $notes.Count)) { Write-Host '  全部通过' -ForegroundColor Green }
 Write-Host '==============================================' -ForegroundColor Cyan
 $result = $(if ($fails.Count) { 'FAIL' } elseif ($warns.Count) { 'WARN' } else { 'PASS' })
+
+if ($ExportIssues) {
+  Write-Host ''
+  Write-Host '-------- 问题说明（可复制） --------' -ForegroundColor Cyan
+  $pack = Format-CslIssuePack -Items @($script:Items.ToArray()) -HideIp:$HideIp
+  Write-Host $pack
+  Write-Host '-------- 结束 --------' -ForegroundColor Cyan
+}
 
 # ---------- 启动 ----------
 $launched = 'no'

@@ -136,6 +136,8 @@ sudo systemsetup -settimezone America/New_York
 | `-ListFixes` | （暂无） | 列出可撤销操作（值已脱敏） |
 | `-TestMode` | （暂无） | 仅允许操作 `CSL_TEST_` 前缀变量；测试请配合 `-FixVarPattern 'CSL_TEST_ANTHROPIC_*'` |
 | `-FailAtIndex <n>` | （暂无） | **仅** `-TestMode`：第 n 个变量变更时抛错以验证整单回滚；非 TestMode 警告并忽略 |
+| `-ExportIssues` | （暂无） | 检查结束后打印可复制的「问题说明」（脱敏四段）；建议配合 `-NoLaunch -NoPause` |
+| `-HideIp` | （暂无） | 与 `-ExportIssues` 同用：出口 IP / WebRTC IP 也脱敏，并省略 IP 提示行 |
 
 ### 环境变量一键修复（Windows）
 
@@ -160,6 +162,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoPa
 ```
 
 修复后请**新开终端**再看环境变量；面板第 9 组也有「修复 / 撤销上次修复」按钮。
+
+
+### 问题说明导出（Windows · v3.3.0）
+
+给不可一键修复的失败/警告项生成可复制说明，方便粘贴到你自己的 agent；**本工具不会调用任何 agent**。
+
+```powershell
+# 打印全部失败/警告的问题说明（出口 IP 默认保留，文首有提示）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -ExportIssues
+
+# 连出口 IP 一并脱敏
+powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -ExportIssues -HideIp
+```
+
+面板：不可一键修复的失败/警告行有「复制问题说明」；页脚有「复制全部问题」与「隐藏 IP」。每条含问题 / 当前状态（脱敏） / 期望状态 / 复查命令，并以固定句结尾。路径用户名、计算机名、订阅链接与节点域名会被遮罩；`controllerSecret` 与会话令牌不会出现在说明里。
+
 
 ## 配置文件 preflight.json
 
@@ -197,7 +215,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoPa
 ## 目录结构
 
 ```text
-├── claude-common.ps1 / claude-preflight.ps1 / claude-envfix.ps1 / claude-monitor.ps1 / claude-panel.ps1   # Windows
+├── claude-common.ps1 / claude-preflight.ps1 / claude-envfix.ps1 / claude-issueexport.ps1 / claude-monitor.ps1 / claude-panel.ps1   # Windows
 ├── claude-panel.html / install.cmd / install.ps1
 ├── backups/            # 本地修复备份（gitignore，含原始值）
 ├── mac/
