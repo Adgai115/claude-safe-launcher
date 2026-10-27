@@ -773,6 +773,10 @@ Assert-True ($pfText -match 'Test-CslFixConfirmed -Yes:\$Yes') 'preflight -FixEn
 Assert-True (-not ($pfText -match 'valueMasked')) 'preflight prints no masked values'
 $panelText = [IO.File]::ReadAllText((Join-Path $repoDir 'claude-panel.html'))
 Assert-True (-not ($panelText -match 'valueMasked')) 'panel confirm boxes show no values'
+Write-Host '== v3.3.0 check 9 card lines are not truncated ==' -ForegroundColor Cyan
+Assert-True ($panelText -match "className='card'\+\(isEnvGroup\(g\)\?' env':''\)") 'env group card gets class env'
+Assert-True ($panelText -match '\.card\.env \.row \.txt\{white-space:normal;overflow-wrap:anywhere;text-overflow:clip\}') 'env card rows wrap (no ellipsis), long tokens break'
+Assert-True ($panelText -match '\.row\.fail \.txt,\.row\.warn \.txt,\.row\.fix \.txt\{white-space:normal;overflow-wrap:anywhere\}') 'fail/warn/fix rows break long tokens'
 $fnAst = $pfAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Write-CslEnvFixPlan' }, $true)
 Assert-True ($null -ne $fnAst) 'preflight defines Write-CslEnvFixPlan'
 if ($fnAst) {

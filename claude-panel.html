@@ -131,7 +131,9 @@ main{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;overflow:hidden auto;
 .row{font-size:12px;padding:3px 0;gap:7px}
 .tag{font-size:10px;padding:1px 6px}
 .txt{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.45}
-.row.fail .txt,.row.warn .txt,.row.fix .txt{white-space:normal}
+.row.fail .txt,.row.warn .txt,.row.fix .txt{white-space:normal;overflow-wrap:anywhere}
+/* v3.3.0: 第 9 组（环境变量）每行都完整换行显示，长 PATH 类值不再被截断 */
+.card.env .row .txt{white-space:normal;overflow-wrap:anywhere;text-overflow:clip}
 .card.r-fail{order:-2;border-color:var(--fail);box-shadow:0 0 0 2px var(--fail)}
 .card.r-warn{order:-1;border-color:var(--warn);box-shadow:0 0 0 2px var(--warn)}
 .btn{padding:8px 16px;font-size:13px}
@@ -223,7 +225,7 @@ function count(){for(const k in st.cnt)$('c'+k).textContent=st.cnt[k]}
 function setState(){$('state').textContent=T[theme].s[st.phase]; $('ring').classList.toggle('running',st.phase==='run')}
 function setScore(s){const bar=$('bar');if(s==null){$('score').textContent='--';bar.style.strokeDashoffset=326.7;return}
  $('score').textContent=s;bar.style.strokeDashoffset=326.7*(1-s/100);bar.style.stroke=s>=90?'var(--pass)':s>=70?'var(--warn)':'var(--fail)'}
-function addCard(g){const el=document.createElement('div');el.className='card';
+function addCard(g){const el=document.createElement('div');el.className='card'+(isEnvGroup(g)?' env':'');
  el.innerHTML=`<h3><span class="idx">${idxLabel(g.n)}</span><span>${esc(g.name)}</span><span class="cst"></span></h3><div class="card-actions" hidden></div>`;g.el=el;$('groups').appendChild(el);g.rows.forEach(r=>addRow(g,r));cardStatus(g)}
 function hideIpOn(){const el=$('hideIp');return !!(el&&el.checked)}
 function isPrivateOrFakeIp(ip){if(!ip)return true;if(/^127\./.test(ip)||/^10\./.test(ip)||/^192\.168\./.test(ip)||/^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)||/^198\.18\./.test(ip)||/^::1$/i.test(ip)||/^fe80:/i.test(ip))return true;return false}
