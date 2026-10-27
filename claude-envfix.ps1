@@ -98,6 +98,20 @@ function Get-CslDefaultEnvStore {
       } catch {}
       return $names
     }
+    # v3.3.0: read-only list of machine-level names, used only so wildcard patterns can report
+    # machine-only matches ("需要管理员手动处理"); machine values are never written
+    ListMachineNames = {
+      $names = New-Object System.Collections.Generic.List[string]
+      try {
+        $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $false)
+        if ($k) {
+          try {
+            foreach ($n in $k.GetValueNames()) { if ($n) { [void]$names.Add([string]$n) } }
+          } finally { $k.Close() }
+        }
+      } catch {}
+      return $names
+    }
   }
 }
 
@@ -173,14 +187,28 @@ function Find-CslRelayEnvTargets {
   $machineOnly = @()
   $seen = @{}
   $names = @(& $Store.ListUserNames)
+  $userListed = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  foreach ($un in @($names)) { if ($null -ne $un) { [void]$userListed.Add([string]$un) } }
   foreach ($p in $Patterns) {
     if ($p -notmatch '[\*\?]' ) { $names += $p }
   }
-  $names = @($names | Select-Object -Unique)
+  # v3.3.0: wildcard patterns also see machine-level names (hint only; ListMachineNames is optional)
+  $machineListed = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  if ($Store.PSObject.Properties['ListMachineNames'] -and $Store.ListMachineNames) {
+    $mnames = @()
+    try { $mnames = @(& $Store.ListMachineNames) } catch { $mnames = @() }
+    foreach ($mn in $mnames) {
+      if ($null -eq $mn -or [string]::IsNullOrEmpty([string]$mn)) { continue }
+      [void]$machineListed.Add([string]$mn)
+      $names += [string]$mn
+    }
+  }
+  $names = @($names | Where-Object { $null -ne $_ -and [string]$_ -ne '' } | Select-Object -Unique)
   foreach ($n in $names) {
     if (-not (Test-CslNameMatchesPatterns -Name $n -Patterns $Patterns)) { continue }
     if (-not (Test-CslVarNameAllowed -Name $n -TestMode:$TestMode)) {
-      if ($TestMode) {
+      $onlyFromMachine = $machineListed.Contains($n) -and -not $userListed.Contains($n) -and ($Patterns -notcontains $n)
+      if ($TestMode -and -not $onlyFromMachine) {
         return @{ ok = $false; error = "TestMode 拒绝非 CSL_TEST_ 变量: $n"; user = @(); machineOnly = @() }
       }
       continue
@@ -226,10 +254,35 @@ function Read-CslEnvBackupFile {
     if (-not $j.PSObject.Properties['entries'] -or $null -eq $j.entries) {
       return @{ ok = $false; error = "备份文件损坏或无法解析: $Path" }
     }
+    # v3.3.0: 条目缺 name 或 name 为空/空白 = 整份备份按损坏处理（绝不以空变量名调用存储）；null 元素仍按第 7 项跳过
+    foreach ($e in @($j.entries)) {
+      if ($null -eq $e) { continue }
+      if (-not $e.PSObject.Properties['name'] -or [string]::IsNullOrWhiteSpace([string]$e.name)) {
+        return @{ ok = $false; error = "备份文件损坏（有条目缺少变量名）: $Path" }
+      }
+    }
     return @{ ok = $true; data = $j; path = $Path }
   } catch {
     return @{ ok = $false; error = "备份文件损坏或无法解析: $Path ($_)" }
   }
+}
+
+function Test-CslEntryUndone($Backup, $Entry) {
+  # v3.3.0: per-entry undo state; legacy file-level undone still means every entry is undone
+  if ($null -ne $Backup -and [bool]$Backup.undone) { return $true }
+  if ($null -eq $Entry) { return $true }
+  if ($Entry.PSObject.Properties['undone'] -and [bool]$Entry.undone) { return $true }
+  return $false
+}
+
+function Test-CslBackupFullyUndone($Backup) {
+  if ($null -eq $Backup) { return $true }
+  if ([bool]$Backup.undone) { return $true }
+  foreach ($e in @($Backup.entries)) {
+    if ($null -eq $e) { continue }
+    if (-not (Test-CslEntryUndone $Backup $e)) { return $false }
+  }
+  return $true
 }
 
 function Get-CslEarliestMap {
@@ -241,8 +294,10 @@ function Get-CslEarliestMap {
     $rd = Read-CslEnvBackupFile -Path $f.FullName
     if (-not $rd.ok) { continue }
     $j = $rd.data
-    if ($j.undone) { continue }
+    if (Test-CslBackupFullyUndone $j) { continue }
     foreach ($e in @($j.entries)) {
+      if ($null -eq $e) { continue }
+      if (Test-CslEntryUndone $j $e) { continue }
       $n = [string]$e.name
       if (-not $map.ContainsKey($n)) {
         $ex = $true
@@ -330,14 +385,15 @@ function Write-CslEnvBackup($obj) {
   $undone = @()
   foreach ($f in $all) {
     $rr = Read-CslEnvBackupFile -Path $f.FullName
-    if (-not $rr.ok) { $undone += $f; continue }
+    # v3.3.0: corrupt backups are never auto-pruned and do not count toward the keep quota
+    if (-not $rr.ok) { continue }
     # Never prune backups that recorded conflict-skipped entries (values kept for manual recovery)
     $hasSkipped = $false
     if ($rr.data.PSObject.Properties['skipped'] -and $rr.data.skipped) {
       $hasSkipped = (@($rr.data.skipped).Count -gt 0)
     }
     if ($hasSkipped) { continue }
-    if ($rr.data.undone) { $undone += $f } else { $undoable += $f }
+    if (Test-CslBackupFullyUndone $rr.data) { $undone += $f } else { $undoable += $f }
   }
   if ($undoable.Count -gt $script:CslEnvBackupKeep) {
     foreach ($old in $undoable[$script:CslEnvBackupKeep..($undoable.Count - 1)]) {
@@ -389,7 +445,7 @@ function Get-CslEnvBackupById {
       if ($Strict) { return $rd }
       continue
     }
-    if (-not $rd.data.undone) {
+    if (-not (Test-CslBackupFullyUndone $rd.data)) {
       if ($Strict) { return @{ ok = $true; data = $rd.data; path = $rd.path } }
       return $rd.data
     }
@@ -404,25 +460,39 @@ function Get-CslEnvFixList {
   foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter 'envfix-*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name -Descending)) {
     $rd = Read-CslEnvBackupFile -Path $f.FullName
     if (-not $rd.ok) {
-      $out += [pscustomobject]@{ id = $f.BaseName; ts = ''; undone = $true; corrupt = $true; error = $rd.error; vars = @() }
+      $out += [pscustomobject]@{ id = $f.BaseName; ts = ''; undone = $true; corrupt = $true; path = $f.FullName; error = $rd.error; vars = @() }
       continue
     }
     $j = $rd.data
-    $vars = @($j.entries | ForEach-Object {
-      $mask = if ($_.existed) { Protect-Secret ([string]$_.before) } else { '(不存在)' }
+    $vars = @($j.entries | Where-Object { $null -ne $_ } | ForEach-Object {
+      # v3.3.0: names and actions only, no values (not even masked)
       [pscustomobject]@{
         name = $_.name
-        beforeMasked = $mask
-        after = $(if ($null -eq $_.after) { '(删除)' } else { Protect-Secret ([string]$_.after) })
+        action = $(if ($null -eq $_.after) { '已删除' } else { '已修改' })
         kind = $(if ($_.kind) { $_.kind } else { 'String' })
+        undone = (Test-CslEntryUndone $j $_)
       }
     })
+    $fully = Test-CslBackupFullyUndone $j
+    $partial = (-not $fully) -and (@($vars | Where-Object { $_.undone }).Count -gt 0)
     $out += [pscustomobject]@{
-      id = $j.id; ts = $j.ts; undone = [bool]$j.undone; testMode = [bool]$j.testMode; corrupt = $false
+      id = $j.id; ts = $j.ts; undone = [bool]$fully; partiallyUndone = [bool]$partial; testMode = [bool]$j.testMode; corrupt = $false
       vars = $vars
     }
   }
   return $out
+}
+
+# v3.3.0: -FixEnv confirmation. -Yes skips the question; otherwise only an answer starting with y/Y agrees.
+# Empty input, EOF, $null, or an exception while reading all mean "no change".
+function Test-CslFixConfirmed {
+  param([switch]$Yes, [scriptblock]$ReadAnswer)
+  if ($Yes) { return $true }
+  if (-not $ReadAnswer) { return $false }
+  $ans = $null
+  try { $ans = & $ReadAnswer } catch { return $false }
+  if ($null -eq $ans) { return $false }
+  return ([string]$ans -match '^\s*[yY]')
 }
 
 function Invoke-CslEnvFix {
@@ -432,9 +502,11 @@ function Invoke-CslEnvFix {
     [switch]$DryRun,
     [int]$FailAtIndex = 0,
     $Store,
-    [switch]$PassThru
+    [switch]$PassThru,
+    [string[]]$Keep
   )
   if (-not $Store) { $Store = Get-CslDefaultEnvStore }
+  $keepPatterns = @(@($Keep) | Where-Object { $null -ne $_ -and ([string]$_).Trim() } | ForEach-Object { ([string]$_).Trim() })
 
   $failIdx = 0
   if ($FailAtIndex -gt 0) {
@@ -454,14 +526,27 @@ function Invoke-CslEnvFix {
       return @{ ok = $false; error = "变量名未通过 TestMode 守卫: $($u.Name)"; exitCode = 2 }
     }
   }
-  $plan = @()
+  # v3.3.0: envFixKeep names stay; plan rows carry names and actions only (no values, not even masked)
+  $toFix = @()
+  $kept = @()
   foreach ($u in $found.user) {
+    if ($keepPatterns.Count -gt 0 -and (Test-CslNameMatchesPatterns -Name $u.Name -Patterns $keepPatterns)) { $kept += $u } else { $toFix += $u }
+  }
+  $plan = @()
+  foreach ($u in $toFix) {
     $plan += [pscustomobject]@{
       name = $u.Name
       scope = 'User'
       action = 'remove'
-      valueMasked = Protect-Secret $u.Value
       kind = $u.Kind
+    }
+  }
+  foreach ($u in $kept) {
+    $plan += [pscustomobject]@{
+      name = $u.Name
+      scope = 'User'
+      action = 'keep'
+      note = '按 envFixKeep 保留'
     }
   }
   foreach ($m in $found.machineOnly) {
@@ -469,20 +554,19 @@ function Invoke-CslEnvFix {
       name = $m.Name
       scope = 'Machine'
       action = 'skip-admin'
-      valueMasked = ''
       note = '需要管理员手动处理'
     }
   }
   if ($DryRun) {
     return @{ ok = $true; dryRun = $true; plan = $plan; applied = @(); id = $null; exitCode = 0; hint = 'DryRun：未修改系统' }
   }
-  if ($found.user.Count -eq 0) {
+  if ($toFix.Count -eq 0) {
     return @{ ok = $true; dryRun = $false; plan = $plan; applied = @(); id = $null; message = '没有可清除的用户级变量'; exitCode = 0; hint = '' }
   }
 
   $earliest = Get-CslEarliestMap
   $entries = @()
-  foreach ($u in $found.user) {
+  foreach ($u in $toFix) {
     $ex0 = $true
     $bf0 = $u.Value
     $kd0 = $u.Kind
@@ -528,7 +612,7 @@ function Invoke-CslEnvFix {
       }
       & $Store.SetUserEntry -Name $e.name -Value $null
       $doneNames += $e.name
-      $applied += [pscustomobject]@{ name = $e.name; valueMasked = Protect-Secret $e.before; action = 'removed'; kind = $e.kind }
+      $applied += [pscustomobject]@{ name = $e.name; action = 'removed'; kind = $e.kind }
     }
     Broadcast-CslEnvironmentChange
   } catch {
@@ -576,7 +660,7 @@ function Invoke-CslEnvUndo {
     return @{ ok = $false; error = $got.error; exitCode = 1 }
   }
   $bak = $got.data
-  if ($bak.undone) {
+  if (Test-CslBackupFullyUndone $bak) {
     return @{
       ok = $true
       alreadyUndone = $true
@@ -597,7 +681,7 @@ function Invoke-CslEnvUndo {
   $dir = Get-CslEnvBackupDir
 
   $targetNames = New-Object System.Collections.Generic.HashSet[string]
-  foreach ($e in @($bak.entries)) { [void]$targetNames.Add([string]$e.name) }
+  foreach ($e in @($bak.entries)) { if ($null -eq $e) { continue }; if (Test-CslEntryUndone $bak $e) { continue }; [void]$targetNames.Add([string]$e.name) }
 
   # 扫描连通备份；相关文件若损坏则整单中止、不改系统（无关损坏文件跳过）
   $changed = $true
@@ -607,9 +691,11 @@ function Invoke-CslEnvUndo {
       $rd = Read-CslEnvBackupFile -Path $f.FullName
       if (-not $rd.ok) { continue }
       $j = $rd.data
-      if ($j.undone) { continue }
+      if (Test-CslBackupFullyUndone $j) { continue }
       $hit = $false
       foreach ($e in @($j.entries)) {
+        if ($null -eq $e) { continue }
+        if (Test-CslEntryUndone $j $e) { continue }
         if ($targetNames.Contains([string]$e.name)) { $hit = $true; break }
       }
       if ($hit) {
@@ -622,7 +708,7 @@ function Invoke-CslEnvUndo {
           $opsToMark[$j.id] = $f.FullName
           $changed = $true
         }
-        foreach ($e in @($j.entries)) { [void]$targetNames.Add([string]$e.name) }
+        foreach ($e in @($j.entries)) { if ($null -eq $e) { continue }; if (Test-CslEntryUndone $j $e) { continue }; [void]$targetNames.Add([string]$e.name) }
       }
     }
   }
@@ -643,9 +729,11 @@ function Invoke-CslEnvUndo {
     $rd = Read-CslEnvBackupFile -Path $f.FullName
     if (-not $rd.ok) { continue }
     $j = $rd.data
-    if ($j.undone) { continue }
+    if (Test-CslBackupFullyUndone $j) { continue }
     if (-not $opsToMark.ContainsKey($j.id)) { continue }
     foreach ($e in @($j.entries)) {
+      if ($null -eq $e) { continue }
+      if (Test-CslEntryUndone $j $e) { continue }
       $nm = [string]$e.name
       if (-not $targetNames.Contains($nm)) { continue }
       # after: $null = 删除；'' = 空字符串（若将来支持写入）
@@ -685,10 +773,8 @@ function Invoke-CslEnvUndo {
       elseif ([string]$curEntry.Value -ne [string]$expectAfter) { $conflict = $true }
     }
 
-    $curShow = if ($curAbsent) { '(不存在)' } else { Protect-Secret $curEntry.Value }
-    $expShow = if ($expectAbsent) { '(删除)' } else { Protect-Secret ([string]$expectAfter) }
-    $restoreShow = if (-not $wantExisted) { '(不存在)' } else { Protect-Secret ([string]$wantVal) }
-    $conflictMsg = "冲突: $name 当前值与修复后不一致（当前=$curShow，修复后应为=$expShow，撤销将恢复为=$restoreShow）"
+    # v3.3.0: conflict text carries the name only, never a value (not even masked)
+    $conflictMsg = "冲突: $name 当前值与修复后不一致"
 
     if ($conflict) {
       $decision = $DefaultConflictDecision
@@ -697,7 +783,7 @@ function Invoke-CslEnvUndo {
       if ($ConflictDecisions -and $ConflictDecisions.ContainsKey($name)) {
         $decision = [string]$ConflictDecisions[$name]
       } elseif ($OnConflict) {
-        $decision = [string](& $OnConflict $name $curShow $expShow)
+        $decision = [string](& $OnConflict $name)
       } elseif ($ForceSkipConflicts) {
         $decision = 'skip'
       } elseif ($NoPause) {
@@ -714,16 +800,13 @@ function Invoke-CslEnvUndo {
       if ($decision -eq 'abort') {
         return @{
           ok = $false; error = '用户中止撤销'
-          conflicts = @($conflicts + @{ name = $name; currentMasked = $curShow; expectedMasked = $expShow; restoreMasked = $restoreShow; message = $conflictMsg })
+          conflicts = @($conflicts + @{ name = $name; message = ($conflictMsg + '，已中止撤销') })
           exitCode = 1; partial = $restored; dryRun = [bool]$DryRun
         }
       }
       $conflicts += @{
         name = $name
-        currentMasked = $curShow
-        expectedMasked = $expShow
-        restoreMasked = $restoreShow
-        message = $conflictMsg
+        message = $(if ($decision -eq 'overwrite') { $conflictMsg + '，已按选择覆盖' } else { $conflictMsg + '，已跳过' })
         decision = $decision
       }
       if ($decision -eq 'overwrite') {
@@ -753,7 +836,7 @@ function Invoke-CslEnvUndo {
         $pending | ForEach-Object {
           [pscustomobject]@{
             name = $_.name
-            valueMasked = $(if ($_.wantExisted) { Protect-Secret $_.wantVal } else { '(删除)' })
+            action = $(if ($_.wantExisted) { '恢复' } else { '删除' })
             kind = $_.wantKind
             conflict = [bool]$_.conflict
           }
@@ -786,7 +869,7 @@ function Invoke-CslEnvUndo {
       $done += $p.name
       $restored += [pscustomobject]@{
         name = $p.name
-        valueMasked = $(if ($p.wantExisted) { Protect-Secret $p.wantVal } else { '(删除)' })
+        action = $(if ($p.wantExisted) { '已恢复' } else { '已删除' })
         kind = $p.wantKind
       }
     }
@@ -816,19 +899,27 @@ function Invoke-CslEnvUndo {
           return @{ ok = $false; error = $rd.error; exitCode = 1 }
         }
         $j = $rd.data
-        $j.undone = $true
-        # Record conflict-skipped names on this backup so pruning never deletes it (values stay for manual recovery)
-        if ($skipped -and @($skipped).Count -gt 0) {
-          $namesInThis = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-          foreach ($e in @($j.entries)) { [void]$namesInThis.Add([string]$e.name) }
-          $skipHere = @($skipped | Where-Object { $namesInThis.Contains([string]$_) } | Select-Object -Unique)
-          if ($skipHere.Count -gt 0) {
-            $prev = @()
-            if ($j.PSObject.Properties['skipped'] -and $j.skipped) { $prev = @($j.skipped | ForEach-Object { [string]$_ }) }
-            $merged = @($prev + $skipHere | Select-Object -Unique)
-            $j | Add-Member -NotePropertyName skipped -NotePropertyValue $merged -Force
-          }
+        # v3.3.0: mark undone per entry; conflict-skipped names stay undoable for a later -UndoFix
+        $skipSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($sn in @($skipped)) { if ($null -eq $sn) { continue }; [void]$skipSet.Add([string]$sn) }
+        $legacyUndone = [bool]$j.undone
+        $stillOpen = @()
+        foreach ($e in @($j.entries)) {
+          if ($null -eq $e) { continue }
+          $en = [string]$e.name
+          $wasUndone = $legacyUndone -or ($e.PSObject.Properties['undone'] -and [bool]$e.undone)
+          $nowUndone = $wasUndone -or ($targetNames.Contains($en) -and -not $skipSet.Contains($en))
+          $e | Add-Member -NotePropertyName undone -NotePropertyValue ([bool]$nowUndone) -Force
+          if (-not $nowUndone) { $stillOpen += $en }
         }
+        $j | Add-Member -NotePropertyName undone -NotePropertyValue ($stillOpen.Count -eq 0) -Force
+        # Keep conflict-skipped names that are still open so pruning never deletes this backup
+        $prevSkipped = @()
+        if ($j.PSObject.Properties['skipped'] -and $j.skipped) { $prevSkipped = @($j.skipped | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ }) }
+        $openSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($on in $stillOpen) { [void]$openSet.Add($on) }
+        $mergedSkipped = @(@($prevSkipped) + @($skipped) | Where-Object { $null -ne $_ -and $openSet.Contains([string]$_) } | Select-Object -Unique)
+        $j | Add-Member -NotePropertyName skipped -NotePropertyValue $mergedSkipped -Force
         [IO.File]::WriteAllText($p, ($j | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
       }
     } catch {
@@ -845,7 +936,7 @@ function Invoke-CslEnvUndo {
     skipped = $skipped
     conflicts = $conflicts
     exitCode = $code
-    hint = '新开的终端才会生效'
+    hint = $(if ($skipped.Count -gt 0) { '新开的终端才会生效；被跳过的变量处理好冲突后可再次撤销：-UndoFix -UndoId ' + $bak.id } else { '新开的终端才会生效' })
   }
 }
 

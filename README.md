@@ -130,29 +130,35 @@ sudo systemsetup -settimezone America/New_York
 | `-Force` | `--force` | 即使检查有失败项也启动 |
 | `-Relearn` | `--relearn` | 忘掉记住的 IP、节点和时区，按当前环境重新记住 |
 | `-FixVarPattern <通配符…>` | （暂无） | 限定要检测/修复的**用户级**变量名；默认等同当前第 9 组列表 |
-| `-FixEnv` | （暂无） | 一键清除匹配的用户级中转变量（**显式指定=同意**，可与 `-NoPause` 同用） |
-| `-DryRun` | （暂无） | 只列出将修改项（脱敏），不写系统、不写备份；配合 `-FixEnv` |
-| `-UndoFix [-UndoId <id>]` | （暂无） | 撤销一次修复（默认最近一次）；冲突时配合 `-NoPause` 跳过该变量并返回非 0 |
+| `-FixEnv` | （暂无） | 一键清除匹配的用户级中转变量；先列出变量名和动作（不显示值）并问 y/N，回答 y 才修改，`-NoPause` 下也会问（v3.3.0 起） |
+| `-Yes` | （暂无） | 配合 `-FixEnv` 跳过 y/N 确认，直接修复（脚本/无人值守用） |
+| `-DryRun` | （暂无） | 只列出将修改的变量名和动作，不写系统、不写备份；配合 `-FixEnv` |
+| `-UndoFix [-UndoId <id>]` | （暂无） | 撤销一次修复（默认最近一次）；冲突时配合 `-NoPause` 跳过该变量并返回非 0；被跳过的变量处理好冲突后可用同一 `-UndoId` 再撤销（v3.3.0 起逐项记录撤销状态） |
 | `-ListFixes` | （暂无） | 列出可撤销操作（值已脱敏） |
 | `-TestMode` | （暂无） | 仅允许操作 `CSL_TEST_` 前缀变量；测试请配合 `-FixVarPattern 'CSL_TEST_ANTHROPIC_*'` |
 | `-FailAtIndex <n>` | （暂无） | **仅** `-TestMode`：第 n 个变量变更时抛错以验证整单回滚；非 TestMode 警告并忽略 |
+| `-ExportIssues` | （暂无） | 检查结束后打印可复制的「问题说明」（脱敏四段）；建议配合 `-NoLaunch -NoPause` |
+| `-HideIp` | （暂无） | 与 `-ExportIssues` 同用：出口 IP / WebRTC IP 也脱敏，并省略 IP 提示行 |
 
 ### 环境变量一键修复（Windows）
 
 只动**用户级**（`[Environment]::… 'User'` / `HKCU\Environment`）。Machine 级仅提示「需要管理员手动处理」，不会提权。
 
 ```powershell
-# 预览（脱敏）
+# 预览（只列变量名和动作）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -FixEnv -DryRun
 
-# 正式清除默认 ANTHROPIC_* 列表（会写 backups\ 并可 -UndoFix）
+# 正式清除默认 ANTHROPIC_* 列表（先问 y/N；会写 backups\ 并可 -UndoFix）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -FixEnv
 
+# 无人值守：跳过确认
+powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -FixEnv -Yes
+
 # 测试（只用 CSL_TEST_ 前缀，不会碰真变量）
-powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -TestMode -FixVarPattern 'CSL_TEST_ANTHROPIC_*' -FixEnv
+powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -TestMode -FixVarPattern 'CSL_TEST_ANTHROPIC_*' -FixEnv -Yes
 
 # 验证整单回滚（仅 TestMode；第 2 个变量变更时失败，系统应恢复原样且不留备份）
-powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -TestMode -FixVarPattern 'CSL_TEST_ANTHROPIC_*' -FixEnv -FailAtIndex 2
+powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -TestMode -FixVarPattern 'CSL_TEST_ANTHROPIC_*' -FixEnv -Yes -FailAtIndex 2
 
 # 列出 / 撤销
 powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoPause -ListFixes
@@ -160,6 +166,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoPa
 ```
 
 修复后请**新开终端**再看环境变量；面板第 9 组也有「修复 / 撤销上次修复」按钮。
+
+
+### 问题说明导出（Windows · v3.3.0）
+
+给不可一键修复的失败/警告项生成可复制说明，方便粘贴到你自己的 agent；**本工具不会调用任何 agent**。
+
+```powershell
+# 打印全部失败/警告的问题说明（出口 IP 默认保留，文首有提示）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -ExportIssues
+
+# 连出口 IP 一并脱敏
+powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -ExportIssues -HideIp
+```
+
+面板：不可一键修复的失败/警告行有「复制问题说明」；页脚有「复制全部问题」与「隐藏 IP」。每条含问题 / 当前状态（脱敏） / 期望状态 / 复查命令，并以固定句结尾。路径用户名、计算机名、订阅链接与节点域名会被遮罩；`controllerSecret` 与会话令牌不会出现在说明里。
+
 
 ## 配置文件 preflight.json
 
@@ -180,6 +202,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoPa
 | `monitorIntervalMin` | 后台监控间隔（分钟），默认 5 |
 | `monitorKillOnChange` | IP 变化时是否自动关闭 Claude，默认 `false` |
 | `fixVarPatterns` | （Windows）用户级中转变量名通配符数组；空则用内置 `ANTHROPIC_*` 默认列表。非 TestMode 下禁止含 `CSL_TEST_` |
+| `envFixEnabled` | （Windows）默认 `true`；设为 `false` 时 `-FixEnv` 与面板「修复」不做任何修改（撤销、列表照常） |
+| `envFixKeep` | （Windows）默认 `[]`；一键修复时保留的变量名（可用通配符），确认名单里显示为「保留」 |
 
 
 ## 面板 API 长期安全规则
@@ -197,7 +221,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoPa
 ## 目录结构
 
 ```text
-├── claude-common.ps1 / claude-preflight.ps1 / claude-envfix.ps1 / claude-monitor.ps1 / claude-panel.ps1   # Windows
+├── claude-common.ps1 / claude-preflight.ps1 / claude-envfix.ps1 / claude-issueexport.ps1 / claude-monitor.ps1 / claude-panel.ps1   # Windows
 ├── claude-panel.html / install.cmd / install.ps1
 ├── backups/            # 本地修复备份（gitignore，含原始值）
 ├── mac/

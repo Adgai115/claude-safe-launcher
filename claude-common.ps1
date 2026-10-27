@@ -96,6 +96,25 @@ function Find-NpmGlobalDir {
   return ''
 }
 
+# v3.3.0: one-click env fix switches from preflight.json
+#   envFixEnabled (default true): false turns off -FixEnv / panel「修复」 (undo and list keep working)
+#   envFixKeep (default empty): variable names (wildcards allowed) the fix must keep
+function Get-CslEnvFixSettings($Cfg) {
+  $enabled = $true
+  $keep = @()
+  if ($Cfg) {
+    if ($Cfg.PSObject.Properties['envFixEnabled'] -and $null -ne $Cfg.envFixEnabled) {
+      $v = $Cfg.envFixEnabled
+      if ($v -is [bool]) { $enabled = $v }
+      elseif ([string]$v -match '^(?i:false|0|no|off)$') { $enabled = $false }
+    }
+    if ($Cfg.PSObject.Properties['envFixKeep'] -and $null -ne $Cfg.envFixKeep) {
+      $keep = @(@($Cfg.envFixKeep) | Where-Object { $null -ne $_ } | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+    }
+  }
+  return @{ enabled = [bool]$enabled; keep = @($keep) }
+}
+
 function Load-Config {
   # 留空的项会自动检测，或在第一次运行时自动记住
   $defaults = [ordered]@{
@@ -119,6 +138,8 @@ function Load-Config {
     monitorKillOnChange = $false
     npmGlobalDir        = ''
     fixVarPatterns      = @()
+    envFixEnabled       = $true
+    envFixKeep          = @()
   }
   $cfg = $null
   if (Test-Path $script:CfgPath) { try { $cfg = Get-Content $script:CfgPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $cfg = $null } }
@@ -176,14 +197,18 @@ function Mask-Value {
   $v = [string]$Value
   # 预留：Path / Url 规则（v3.3+）；当前 Auto 与 Secret 同路径，先做前缀掩码
   if ($Kind -eq 'Path' -or ($Kind -eq 'Auto' -and $v -match '(?i)^[A-Za-z]:\\|^/')) {
-    # placeholder: collapse user profile prefix when present
+    # collapse user profile prefix when present; never fall through to Secret for Path kind
     try {
       $up = [string]$env:USERPROFILE
-      if ($up -and $v.StartsWith($up, [StringComparison]::OrdinalIgnoreCase)) {
-        $v = '%USERPROFILE%' + $v.Substring($up.Length)
-        return $v
+      if ($up -and $v.IndexOf($up, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        $v = [regex]::Replace($v, [regex]::Escape($up), '%USERPROFILE%', 'IgnoreCase')
       }
     } catch {}
+    $v = [regex]::Replace($v, '(?i)([A-Za-z]:\\Users\\)[^\\\/\s"'']+', '%USERPROFILE%')
+    $v = [regex]::Replace($v, '(?i)(/Users/)[^\/\s"'']+', '%USERPROFILE%')
+    if ($Kind -eq 'Path') { return $v }
+    # Auto: if it looked like a path, return after path rules (do not secret-mask paths)
+    if ($v -match '(?i)%USERPROFILE%|^[A-Za-z]:\\|^/') { return $v }
   }
   if ($Kind -eq 'Url' -or ($Kind -eq 'Auto' -and $v -match '(?i)^https?://')) {
     # placeholder: keep scheme+host, mask path/query for future; for now treat as secret-ish

@@ -28,6 +28,12 @@ function Assert-Eq($a, $b, $msg) {
   else { Write-Host "  FAIL  $msg (got=[$a] expected=[$b])" -ForegroundColor Red; $script:Fail++ }
 }
 
+# A fresh MemStore stands for a different machine. Since v3.3.0 a conflict-skipped entry stays
+# undoable, so sections that leave one open clear the shared backup dir before the next section.
+function Clear-TestBackups {
+  Get-ChildItem -LiteralPath (Get-CslEnvBackupDir) -Filter 'envfix-*.json' -File -ErrorAction SilentlyContinue | Remove-Item -Force
+}
+
 function New-MemStore {
   # Value: key -> @{ Value = string (may be ''); Kind = 'String'|'ExpandString' } ; absent = no key
   $state = @{ u = @{}; m = @{} }
@@ -51,12 +57,14 @@ function New-MemStore {
     }
   }.GetNewClosure()
   $listU = { @($state.u.Keys) }.GetNewClosure()
+  $listM = { @($state.m.Keys) }.GetNewClosure()
   return [pscustomobject]@{
     State = $state
     GetUserEntry = $getU
     GetMachine = $getM
     SetUserEntry = $setU
     ListUserNames = $listU
+    ListMachineNames = $listM
   }
 }
 
@@ -123,6 +131,7 @@ $u = Invoke-CslEnvUndo -Id $f.id -NoPause -Store $store
 Assert-True ($u.exitCode -ne 0) 'conflict exit nonzero'
 Assert-True ($u.conflicts.Count -ge 1) 'conflict reported'
 Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_API_KEY').Value 'tampered' 'conflict skipped leave current'
+Clear-TestBackups
 
 Write-Host '== FailAtIndex rollback (TestMode) ==' -ForegroundColor Cyan
 $store = New-MemStore
@@ -266,6 +275,7 @@ Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_API_KEY').Value 'tampered-k
 # After first fix both deleted; tamper only API_KEY. Undo with skip: API_KEY skipped, BASE_URL restored.
 $bu = & $store.GetUserEntry 'CSL_TEST_ANTHROPIC_BASE_URL'
 Assert-True ($null -ne $bu -and $bu.Value -eq 'https://orig.example') 'skip still restores non-conflict'
+Clear-TestBackups
 
 # fresh for overwrite
 $store = New-MemStore
@@ -289,6 +299,7 @@ $u3 = Invoke-CslEnvUndo -Id $f3.id -Store $store -DefaultConflictDecision skip -
 Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_API_KEY').Value 'a0' 'per-item overwrite'
 Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_BASE_URL').Value 'bX' 'per-item skip'
 Assert-True ($u3.skipped -contains 'CSL_TEST_ANTHROPIC_BASE_URL') 'per-item skip listed'
+Clear-TestBackups
 
 
 
@@ -322,6 +333,7 @@ Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_BASE_URL').Value 'uX' 'mixe
 Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_MODEL').Value 'm0' 'mixed3 overwrite model'
 Assert-True ($u4.skipped -contains 'CSL_TEST_ANTHROPIC_BASE_URL') 'mixed3 skip listed'
 Assert-Eq $u4.exitCode 3 'mixed3 exitCode 3'
+Clear-TestBackups
 
 Write-Host '== Panel CSL_PANEL_TESTMODE gate (logic) ==' -ForegroundColor Cyan
 # 模拟：仅环境变量可开；开则固定 CSL_TEST_ANTHROPIC_*
@@ -496,7 +508,7 @@ Assert-True ($uSkip.exitCode -eq 3 -or -not $uSkip.ok) 'skip-retain undo conflic
 $skipPath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $fSkip.id)
 Assert-True (Test-Path -LiteralPath $skipPath) 'skip-retain backup exists after undo'
 $skipJson = Get-Content -LiteralPath $skipPath -Raw -Encoding UTF8 | ConvertFrom-Json
-Assert-True ([bool]$skipJson.undone) 'skip-retain marked undone'
+Assert-True (-not [bool]$skipJson.undone) 'skip-retain backup stays undoable (skipped entry open)'
 Assert-True (@($skipJson.skipped).Count -ge 1) 'skip-retain recorded skipped names'
 Assert-True (@($skipJson.skipped) -contains 'CSL_TEST_ANTHROPIC_KEEPVAL') 'skip-retain skipped name listed'
 $beforeVal = @($skipJson.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPVAL')[0].before
@@ -517,6 +529,102 @@ try {
 Assert-True (Test-Path -LiteralPath $skipPath) 'skip-retain backup survived prune'
 $skipJson2 = Get-Content -LiteralPath $skipPath -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-Eq @($skipJson2.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPVAL')[0].before 'precious-orig-xxxx' 'skip-retain value intact after prune'
+Clear-TestBackups
+
+Write-Host '== Wildcard patterns enumerate machine-level names (hint only) ==' -ForegroundColor Cyan
+$mw = New-MemStore
+$mw.State.m['CSL_TEST_ANTHROPIC_MW_ONLY'] = 'machine-only-val'
+$mw.State.m['CSL_TEST_ANTHROPIC_MW_BOTH'] = 'machine-both-val'
+$mw.State.m['CSL_TEST_OTHER_MW'] = 'other'
+& $mw.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_MW_BOTH' -Value 'user-both'
+& $mw.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_MW_USER' -Value 'user-only'
+$mwT = Find-CslRelayEnvTargets -Patterns @('CSL_TEST_ANTHROPIC_MW_*') -TestMode -Store $mw
+Assert-True $mwT.ok 'machine wildcard find ok'
+Assert-Eq (@($mwT.machineOnly | ForEach-Object { $_.Name }) -join ',') 'CSL_TEST_ANTHROPIC_MW_ONLY' 'machine-only match listed via wildcard'
+Assert-Eq (@($mwT.user | ForEach-Object { $_.Name } | Sort-Object) -join ',') 'CSL_TEST_ANTHROPIC_MW_BOTH,CSL_TEST_ANTHROPIC_MW_USER' 'user-level matches unchanged (BOTH stays user)'
+$mwPlan = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_MW_*') -TestMode -DryRun -Store $mw
+$mwRow = @($mwPlan.plan | Where-Object { $_.name -eq 'CSL_TEST_ANTHROPIC_MW_ONLY' })
+Assert-True ($mwRow.Count -eq 1 -and $mwRow[0].action -eq 'skip-admin' -and $mwRow[0].note -eq '需要管理员手动处理') 'plan shows machine-only as skip-admin with admin note'
+$mwFix = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_MW_*') -TestMode -Store $mw
+Assert-True ($mwFix.ok -and $mw.State.m['CSL_TEST_ANTHROPIC_MW_ONLY'] -eq 'machine-only-val' -and $mw.State.m['CSL_TEST_ANTHROPIC_MW_BOTH'] -eq 'machine-both-val' -and $mw.State.m.Count -eq 3) 'fix never touches machine-level values'
+Assert-True ($null -eq (& $mw.GetUserEntry 'CSL_TEST_ANTHROPIC_MW_BOTH') -and $null -eq (& $mw.GetUserEntry 'CSL_TEST_ANTHROPIC_MW_USER')) 'fix still removes user-level matches'
+# TestMode: a non CSL_TEST_ machine-only name matched by a wildcard is ignored, not an error
+$mw2 = New-MemStore
+$mw2.State.m['REAL_MW_X'] = 'real'
+& $mw2.SetUserEntry -Name 'CSL_TEST_MW_X' -Value 'tv'
+$mwT2 = Find-CslRelayEnvTargets -Patterns @('*_MW_X') -TestMode -Store $mw2
+Assert-True ($mwT2.ok -and @($mwT2.machineOnly).Count -eq 0 -and (@($mwT2.user | ForEach-Object { $_.Name }) -join ',') -eq 'CSL_TEST_MW_X') 'TestMode ignores real machine-only names'
+# stores without ListMachineNames keep the v3.2.0 behaviour
+$mw3 = New-MemStore
+$mw3.State.m['CSL_TEST_ANTHROPIC_MW_ONLY'] = 'x'
+$mw3Old = [pscustomobject]@{ GetUserEntry = $mw3.GetUserEntry; GetMachine = $mw3.GetMachine; SetUserEntry = $mw3.SetUserEntry; ListUserNames = $mw3.ListUserNames }
+$mwT3 = Find-CslRelayEnvTargets -Patterns @('CSL_TEST_ANTHROPIC_MW_*') -TestMode -Store $mw3Old
+Assert-True ($mwT3.ok -and @($mwT3.machineOnly).Count -eq 0) 'store without ListMachineNames still works'
+# v3.3.0: HKLM unreadable (access denied / key missing) falls back to v3.2.0 behaviour, no error
+$mw4 = New-MemStore
+& $mw4.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_MW_U4' -Value 'u4'
+$mw4Throw = [pscustomobject]@{ GetUserEntry = $mw4.GetUserEntry; GetMachine = $mw4.GetMachine; SetUserEntry = $mw4.SetUserEntry; ListUserNames = $mw4.ListUserNames; ListMachineNames = { throw [System.UnauthorizedAccessException]::new('Requested registry access is not allowed.') } }
+$mwT4 = Find-CslRelayEnvTargets -Patterns @('CSL_TEST_ANTHROPIC_MW_*') -TestMode -Store $mw4Throw
+Assert-True ($mwT4.ok -and @($mwT4.machineOnly).Count -eq 0 -and (@($mwT4.user | ForEach-Object { $_.Name }) -join ',') -eq 'CSL_TEST_ANTHROPIC_MW_U4') 'HKLM access denied: find falls back to user-only (v3.2.0)'
+$mwF4 = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_MW_*') -TestMode -Store $mw4Throw
+Assert-True ($mwF4.ok -and $null -eq (& $mw4.GetUserEntry 'CSL_TEST_ANTHROPIC_MW_U4') -and @(@($mwF4.plan) | Where-Object { $_.action -eq 'skip-admin' }).Count -eq 0) 'HKLM access denied: fix still works, no admin rows'
+$mw5 = New-MemStore
+& $mw5.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_MW_U5' -Value 'u5'
+$mw5Null = [pscustomobject]@{ GetUserEntry = $mw5.GetUserEntry; GetMachine = $mw5.GetMachine; SetUserEntry = $mw5.SetUserEntry; ListUserNames = $mw5.ListUserNames; ListMachineNames = { return $null } }
+$mwT5 = Find-CslRelayEnvTargets -Patterns @('CSL_TEST_ANTHROPIC_MW_*') -TestMode -Store $mw5Null
+Assert-True ($mwT5.ok -and @($mwT5.machineOnly).Count -eq 0 -and @($mwT5.user).Count -eq 1) 'HKLM key missing (null list): falls back to user-only (v3.2.0)'
+$efSrc = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'claude-envfix.ps1') -Raw
+Assert-True ($efSrc -match "ListMachineNames = \{\s*\r?\n\s*\`$names = New-Object[^\r\n]*\r?\n\s*try \{") 'default ListMachineNames wraps HKLM read in try'
+$dStore = Get-CslDefaultEnvStore
+Assert-True ($null -ne $dStore.PSObject.Properties['ListMachineNames']) 'default store exposes ListMachineNames'
+Clear-TestBackups
+
+Write-Host '== Per-entry undo: conflict-skipped entry can be undone later ==' -ForegroundColor Cyan
+Clear-TestBackups
+$pe = New-MemStore
+& $pe.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PE_A' -Value 'pe-a0'
+& $pe.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PE_B' -Value 'pe-b0'
+$peFix = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_PE_*') -TestMode -Store $pe
+& $pe.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PE_B' -Value 'pe-bX'
+$peU1 = Invoke-CslEnvUndo -Id $peFix.id -NoPause -Store $pe
+Assert-Eq $peU1.exitCode 3 'first undo exitCode 3 (B skipped)'
+Assert-Eq (& $pe.GetUserEntry 'CSL_TEST_ANTHROPIC_PE_A').Value 'pe-a0' 'first undo restored A'
+Assert-Eq (& $pe.GetUserEntry 'CSL_TEST_ANTHROPIC_PE_B').Value 'pe-bX' 'first undo left B'
+Assert-True ([string]$peU1.hint -match ('-UndoFix -UndoId ' + [regex]::Escape($peFix.id))) 'hint tells how to retry the skipped variable'
+$pePath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $peFix.id)
+$peJ1 = Get-Content -LiteralPath $pePath -Raw -Encoding UTF8 | ConvertFrom-Json
+$peA1 = @($peJ1.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_PE_A')[0]
+$peB1 = @($peJ1.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_PE_B')[0]
+Assert-True (-not [bool]$peJ1.undone) 'backup not fully undone after skip'
+Assert-True ([bool]$peA1.undone) 'entry A marked undone'
+Assert-True (-not [bool]$peB1.undone) 'entry B still open'
+Assert-Eq (@($peJ1.skipped) -join ',') 'CSL_TEST_ANTHROPIC_PE_B' 'skipped lists only B'
+$peList = @(Get-CslEnvFixList | Where-Object { $_.id -eq $peFix.id })[0]
+Assert-True ($peList.partiallyUndone -and -not $peList.undone) 'list reports partially undone'
+# user resolves the conflict (B back to the fixed state), and changes A afterwards
+& $pe.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PE_B' -Value $null
+& $pe.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PE_A' -Value 'pe-a-user'
+$peU2 = Invoke-CslEnvUndo -Id $peFix.id -NoPause -Store $pe
+Assert-True ($peU2.ok -and $peU2.exitCode -eq 0 -and -not $peU2.alreadyUndone) 'second undo ok, exitCode 0'
+Assert-Eq (& $pe.GetUserEntry 'CSL_TEST_ANTHROPIC_PE_B').Value 'pe-b0' 'second undo restored B'
+Assert-Eq (& $pe.GetUserEntry 'CSL_TEST_ANTHROPIC_PE_A').Value 'pe-a-user' 'second undo did not touch A again'
+Assert-Eq (@($peU2.restored | ForEach-Object { $_.name }) -join ',') 'CSL_TEST_ANTHROPIC_PE_B' 'second undo restored only B'
+$peJ2 = Get-Content -LiteralPath $pePath -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True ([bool]$peJ2.undone) 'backup fully undone after second undo'
+Assert-Eq @($peJ2.skipped).Count 0 'skipped cleared once B undone'
+$peU3 = Invoke-CslEnvUndo -Id $peFix.id -NoPause -Store $pe
+Assert-True $peU3.alreadyUndone 'third undo reports already undone'
+# legacy backups: file-level undone only (no entry flags) still count as fully undone
+$lgStore = New-MemStore
+& $lgStore.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PE_LEGACY' -Value 'lg0'
+$lgFix = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_PE_LEGACY') -TestMode -Store $lgStore
+$lgPath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $lgFix.id)
+$lgJ = Get-Content -LiteralPath $lgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$lgJ.undone = $true
+[IO.File]::WriteAllText($lgPath, ($lgJ | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+$lgU = Invoke-CslEnvUndo -Id $lgFix.id -NoPause -Store $lgStore
+Assert-True ($lgU.alreadyUndone -and $null -eq (& $lgStore.GetUserEntry 'CSL_TEST_ANTHROPIC_PE_LEGACY')) 'legacy file-level undone still already undone, no change'
+Clear-TestBackups
 
 Write-Host '== Preflight undo conflict print skips null/empty ==' -ForegroundColor Cyan
 $pfPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'claude-preflight.ps1'
@@ -540,6 +648,42 @@ $printedOne = @(Write-CslUndoConflicts @($null, 'x') 6>&1 | ForEach-Object { [st
 Assert-Eq ($printedOne -join '|') '  [警告] x' 'one real conflict printed once'
 Assert-Eq $Error.Count $errBefore 'conflict print raised no error'
 
+Write-Host '== -ListFixes / undo conflict / undo results show names and actions only (no values, not even masked) ==' -ForegroundColor Cyan
+$lfAst = $pfAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Write-CslEnvFixList' }, $true)
+Assert-Eq @($lfAst).Count 1 'preflight Write-CslEnvFixList found'
+foreach ($fnAst in $lfAst) { . ([scriptblock]::Create($fnAst.Extent.Text)) }
+$leakVals = @('leakval-ABCD12345', 'https://leak-host.example/v1', 'tampered-WXYZ67890', 'leakval', 'ABCD', '12345', 'leak-host', 'WXYZ', '67890')
+function Test-CslNoValueLeak([string]$Text) {
+  if ($Text -match '\*') { return $false }
+  foreach ($lv in $leakVals) { if ($Text.Contains($lv)) { return $false } }
+  return $true
+}
+Clear-TestBackups
+$stLk = New-MemStore
+& $stLk.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_API_KEY' -Value 'leakval-ABCD12345'
+& $stLk.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_BASE_URL' -Value 'https://leak-host.example/v1'
+$fLk = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_*') -TestMode -Store $stLk
+Assert-True $fLk.ok 'leak check: fix ok'
+Assert-True (Test-CslNoValueLeak ($fLk | ConvertTo-Json -Depth 8)) 'fix result carries no value (plain or masked)'
+$lsTxt0 = (@(Write-CslEnvFixList @(Get-CslEnvFixList) 6>&1 | ForEach-Object { [string]$_ }) -join "`n")
+Assert-True (Test-CslNoValueLeak $lsTxt0) '-ListFixes output has no value (plain or masked)'
+Assert-True ($lsTxt0.Contains('    - CSL_TEST_ANTHROPIC_API_KEY: 已删除（可撤销）')) '-ListFixes line is name: action (status)'
+Assert-True (Test-CslNoValueLeak (@(Get-CslEnvFixList) | ConvertTo-Json -Depth 8)) 'fix list data carries no value (plain or masked)'
+& $stLk.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_API_KEY' -Value 'tampered-WXYZ67890'
+$pLk = Invoke-CslEnvUndo -Id $fLk.id -DryRun -Store $stLk -DefaultConflictDecision skip
+Assert-True (Test-CslNoValueLeak ($pLk | ConvertTo-Json -Depth 8)) 'undo dry-run plan and conflicts carry no value (plain or masked)'
+$uLk = Invoke-CslEnvUndo -Id $fLk.id -Store $stLk -DefaultConflictDecision skip
+$cwTxt = (@(Write-CslUndoConflicts $uLk.conflicts 6>&1 | ForEach-Object { [string]$_ }) -join "`n")
+Assert-Eq $cwTxt '  [警告] 冲突: CSL_TEST_ANTHROPIC_API_KEY 当前值与修复后不一致，已跳过' 'undo conflict warning is name only, then skipped'
+Assert-True (Test-CslNoValueLeak ($uLk | ConvertTo-Json -Depth 8)) 'undo result (restored/conflicts/skipped) carries no value (plain or masked)'
+$lsTxt1 = (@(Write-CslEnvFixList @(Get-CslEnvFixList) 6>&1 | ForEach-Object { [string]$_ }) -join "`n")
+Assert-True ((Test-CslNoValueLeak $lsTxt1) -and $lsTxt1.Contains('部分已撤销（其余可撤销）') -and $lsTxt1.Contains('    - CSL_TEST_ANTHROPIC_API_KEY: 已删除（可撤销）') -and $lsTxt1.Contains('    - CSL_TEST_ANTHROPIC_BASE_URL: 已删除（已撤销）')) '-ListFixes after partial undo: names and status only'
+$uOv = Invoke-CslEnvUndo -Id $fLk.id -Store $stLk -DefaultConflictDecision overwrite
+Assert-True ((Test-CslNoValueLeak ($uOv | ConvertTo-Json -Depth 8)) -and (@($uOv.conflicts | Where-Object { $null -ne $_ } | ForEach-Object { $_.message }) -join '|') -eq '冲突: CSL_TEST_ANTHROPIC_API_KEY 当前值与修复后不一致，已按选择覆盖') 'overwrite conflict message is name only'
+$lkPanel = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'claude-panel.html'))
+Assert-True ($lkPanel.Length -gt 1000 -and $lkPanel.Contains('当前值与修复后不一致') -and -not ($lkPanel -match 'currentMasked|expectedMasked|restoreMasked|beforeMasked|valueMasked|当前=|修复后应为=|撤销将恢复为=')) 'panel undo dialog and lists render no values (plain or masked)'
+Clear-TestBackups
+
 Write-Host '== Backup without entries treated as corrupt ==' -ForegroundColor Cyan
 $uncBefore2 = $script:Uncaught
 $neDir = Get-CslEnvBackupDir
@@ -556,6 +700,247 @@ $fNe = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_NOENT') -TestMode -Store
 $uNe = Invoke-CslEnvUndo -Id $fNe.id -NoPause -TestMode -Store $storeNe
 Assert-True ($fNe.ok -and $uNe.ok -and ((& $storeNe.GetUserEntry 'CSL_TEST_ANTHROPIC_NOENT').Value -eq 'noent-orig') -and (@($uNe.conflicts | Where-Object { $null -ne $_ }).Count -eq 0) -and ($script:Uncaught -eq $uncBefore2)) 'undo other backup ok with entries-less files present'
 Remove-Item -LiteralPath $neMissing, $neNull -Force -ErrorAction SilentlyContinue
+
+Write-Host '== Undo never calls the store with an empty name ==' -ForegroundColor Cyan
+function New-RecordingStore {
+  $inner = New-MemStore
+  $calls = New-Object System.Collections.ArrayList
+  $g = { param([string]$Name) [void]$calls.Add("get:$Name"); & $inner.GetUserEntry $Name }.GetNewClosure()
+  $m = { param([string]$Name) [void]$calls.Add("machine:$Name"); & $inner.GetMachine $Name }.GetNewClosure()
+  $s = { param([string]$Name, [AllowNull()][object]$Value, [string]$Kind = 'String') [void]$calls.Add("set:$Name"); & $inner.SetUserEntry -Name $Name -Value $Value -Kind $Kind }.GetNewClosure()
+  return [pscustomobject]@{ State = $inner.State; GetUserEntry = $g; GetMachine = $m; SetUserEntry = $s; ListUserNames = $inner.ListUserNames; Calls = $calls }
+}
+$recDir = Get-CslEnvBackupDir
+$recMissing = Join-Path $recDir 'envfix-20000101T000000002-rcm1.json'
+$recNull = Join-Path $recDir 'envfix-20000101T000000003-rcn1.json'
+[IO.File]::WriteAllText($recMissing, '{"id":"20000101T000000002-rcm1","ts":"2000-01-01T00:00:00Z"}', (New-Object System.Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText($recNull, '{"id":"20000101T000000003-rcn1","ts":"2000-01-01T00:00:00Z","entries":null}', (New-Object System.Text.UTF8Encoding($false)))
+$rec = New-RecordingStore
+& $rec.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_REC_A' -Value 'rec-a'
+& $rec.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_REC_B' -Value 'rec-b'
+$rec.Calls.Clear()
+$fRec = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_REC_*') -TestMode -Store $rec
+& $rec.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_REC_B' -Value 'rec-b-changed'
+$uRec = Invoke-CslEnvUndo -Id $fRec.id -NoPause -TestMode -Store $rec
+$uRecMissing = Invoke-CslEnvUndo -Id '20000101T000000002-rcm1' -NoPause -TestMode -Store $rec
+$uRecNull = Invoke-CslEnvUndo -Id '20000101T000000003-rcn1' -NoPause -TestMode -Store $rec
+$names = @($rec.Calls | ForEach-Object { ([string]$_).Split(':', 2)[1] })
+Assert-True ($fRec.ok -and $names.Count -ge 4) 'recording store saw fix/undo calls'
+Assert-Eq @($names | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count 0 'no store call with empty name'
+Assert-Eq (& $rec.GetUserEntry 'CSL_TEST_ANTHROPIC_REC_A').Value 'rec-a' 'recording undo restored non-conflict var'
+Assert-True ((-not $uRecMissing.ok) -and (-not $uRecNull.ok)) 'recording undo of entries-less backups refused'
+Remove-Item -LiteralPath $recMissing, $recNull -Force -ErrorAction SilentlyContinue
+
+Write-Host '== Backup entry with missing/empty name: whole backup corrupt, no store call ==' -ForegroundColor Cyan
+$enDir = Get-CslEnvBackupDir
+$enCases = @(
+  @{ id = '20000101T000000011-enm1'; entry = '{"existed":true,"before":"x1","kind":"String"}'; label = 'name missing' },
+  @{ id = '20000101T000000012-ene1'; entry = '{"name":"","existed":true,"before":"x2","kind":"String"}'; label = 'name empty' },
+  @{ id = '20000101T000000013-enw1'; entry = '{"name":"   ","existed":true,"before":"x3","kind":"String"}'; label = 'name blank' },
+  @{ id = '20000101T000000014-enx1'; entry = '{"name":null,"existed":true,"before":"x4","kind":"String"}'; label = 'name null' }
+)
+$recE = New-RecordingStore
+& $recE.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_EN_OK' -Value 'en-now'
+foreach ($c in $enCases) {
+  $json = '{"id":"' + $c.id + '","ts":"2000-01-01T00:00:00Z","testMode":true,"entries":[{"name":"CSL_TEST_ANTHROPIC_EN_OK","existed":true,"before":"en-orig","kind":"String","after":null},' + $c.entry + ']}'
+  [IO.File]::WriteAllText((Join-Path $enDir ("envfix-{0}.json" -f $c.id)), $json, (New-Object System.Text.UTF8Encoding($false)))
+  $recE.Calls.Clear()
+  $uE = Invoke-CslEnvUndo -Id $c.id -NoPause -TestMode -Store $recE
+  Assert-True ((-not $uE.ok) -and ([string]$uE.error -match '缺少变量名')) ("$($c.label): undo refused as corrupt with clear message")
+  Assert-Eq (& $recE.GetUserEntry 'CSL_TEST_ANTHROPIC_EN_OK').Value 'en-now' ("$($c.label): valid entry in same backup not touched")
+  Assert-Eq @($recE.Calls | Where-Object { [string]::IsNullOrWhiteSpace(([string]$_).Split(':', 2)[1]) }).Count 0 ("$($c.label): no store call with empty name")
+  Remove-Item -LiteralPath (Join-Path $enDir ("envfix-{0}.json" -f $c.id)) -Force -ErrorAction SilentlyContinue
+}
+$enList = '{"id":"20000101T000000015-enl1","ts":"2000-01-01T00:00:00Z","entries":[{"name":"","before":"x"}]}'
+[IO.File]::WriteAllText((Join-Path $enDir 'envfix-20000101T000000015-enl1.json'), $enList, (New-Object System.Text.UTF8Encoding($false)))
+$lst = @(Get-CslEnvFixList | Where-Object { $_.id -eq 'envfix-20000101T000000015-enl1' -or $_.id -eq '20000101T000000015-enl1' })
+Assert-True ($lst.Count -eq 1 -and [bool]$lst[0].corrupt) '-ListFixes shows empty-name backup as corrupt'
+Clear-TestBackups
+
+Write-Host '== Corrupt (nameless-entry) backup is never pruned ==' -ForegroundColor Cyan
+$gfhCmd = Get-Command Get-FileHash -ErrorAction SilentlyContinue
+if (-not $gfhCmd) {
+  $utilMods = @(Get-Module Microsoft.PowerShell.Utility | ForEach-Object { '{0} {1} {2}' -f $_.Name, $_.Version, $_.ModuleType })
+  Write-Host ('  DIAG  Get-FileHash missing; Utility modules loaded=[{0}] PSModuleAutoLoadingPreference=[{1}] PSModulePath=[{2}]' -f ($utilMods -join '; '), $PSModuleAutoLoadingPreference, $env:PSModulePath) -ForegroundColor Yellow
+}
+Assert-True ($null -ne $gfhCmd) 'Get-FileHash command available at corrupt-backup section start'
+$crId = '20000101T000000021-crp1'
+$crPath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $crId)
+$crJson = '{"id":"' + $crId + '","ts":"2000-01-01T00:00:00Z","testMode":true,"entries":[{"name":"CSL_TEST_ANTHROPIC_CR_OK","existed":true,"before":"cr-orig","kind":"String"},{"name":"","existed":true,"before":"x","kind":"String"}]}'
+[IO.File]::WriteAllText($crPath, $crJson, (New-Object System.Text.UTF8Encoding($false)))
+# Get-FileHash is a script-module function on Windows PowerShell 5.1 and can fail to
+# autoload mid-suite; hash via .NET directly so the test does not depend on module loading.
+function Get-CslTestSha256([string]$Path) {
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { return ([BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path)))).Replace('-', '') }
+  finally { $sha.Dispose() }
+}
+$crHash = Get-CslTestSha256 $crPath
+Assert-True ($crHash -match '^[0-9A-F]{64}$') 'corrupt backup sha256 computed'
+$storeC = New-MemStore
+$prevKeepC = $script:CslEnvBackupKeep
+$script:CslEnvBackupKeep = 3
+try {
+  for ($i = 0; $i -lt 8; $i++) {
+    $n = "CSL_TEST_ANTHROPIC_CFLOOD_$i"
+    & $storeC.SetUserEntry -Name $n -Value ("c$i")
+    [void](Invoke-CslEnvFix -Patterns @($n) -TestMode -Store $storeC)
+    if ($i % 2 -eq 0) { [void](Invoke-CslEnvUndo -Id (@(Get-CslEnvFixList | Where-Object { -not $_.corrupt })[0].id) -NoPause -TestMode -Store $storeC) }
+  }
+} finally { $script:CslEnvBackupKeep = $prevKeepC }
+$crLeft = @(Get-ChildItem -LiteralPath (Get-CslEnvBackupDir) -Filter 'envfix-*.json' -File).Count
+Assert-True ($crLeft -le 7) ("prune ran during corrupt-backup flood ($crLeft files left)")
+Assert-True (Test-Path -LiteralPath $crPath) 'corrupt backup survived prune'
+Assert-Eq $(if (Test-Path -LiteralPath $crPath) { Get-CslTestSha256 $crPath } else { '' }) $crHash 'corrupt backup content unchanged'
+$crItem = @(Get-CslEnvFixList | Where-Object { $_.corrupt })
+Assert-True ($crItem.Count -eq 1 -and [string]$crItem[0].path -eq $crPath) '-ListFixes marks it corrupt with file path'
+Clear-TestBackups
+
+Write-Host '== Partially undone backup is never pruned ==' -ForegroundColor Cyan
+$storeP = New-MemStore
+& $storeP.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PART_A' -Value 'part-a-orig'
+& $storeP.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PART_B' -Value 'part-b-orig'
+$fP = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_PART_*') -TestMode -Store $storeP
+& $storeP.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PART_B' -Value 'part-b-tampered'
+$uP = Invoke-CslEnvUndo -Id $fP.id -NoPause -TestMode -Store $storeP
+$partPath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $fP.id)
+$pItem = @(Get-CslEnvFixList | Where-Object { $_.id -eq $fP.id })
+Assert-True ($pItem.Count -eq 1 -and [bool]$pItem[0].partiallyUndone -and -not [bool]$pItem[0].undone) 'backup is partially undone before flood'
+$prevKeepP = $script:CslEnvBackupKeep
+$script:CslEnvBackupKeep = 3
+try {
+  for ($i = 0; $i -lt 12; $i++) {
+    $n = "CSL_TEST_ANTHROPIC_PFLOOD_$i"
+    & $storeP.SetUserEntry -Name $n -Value ("p$i")
+    [void](Invoke-CslEnvFix -Patterns @($n) -TestMode -Store $storeP)
+    $u2 = Invoke-CslEnvUndo -Id (@(Get-CslEnvFixList)[0].id) -NoPause -TestMode -Store $storeP
+  }
+  for ($i = 12; $i -lt 20; $i++) {
+    $n = "CSL_TEST_ANTHROPIC_PFLOOD_$i"
+    & $storeP.SetUserEntry -Name $n -Value ("p$i")
+    [void](Invoke-CslEnvFix -Patterns @($n) -TestMode -Store $storeP)
+  }
+} finally {
+  $script:CslEnvBackupKeep = $prevKeepP
+}
+$remaining = @(Get-ChildItem -LiteralPath (Get-CslEnvBackupDir) -Filter 'envfix-*.json' -File).Count
+Assert-True ($remaining -lt 30) ("prune actually ran during flood ($remaining files left)")
+Assert-True (Test-Path -LiteralPath $partPath) 'partially undone backup survived prune (undoable and fully-undone floods)'
+& $storeP.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PART_B' -Value $null
+$uP2 = Invoke-CslEnvUndo -Id $fP.id -NoPause -TestMode -Store $storeP
+Assert-True ($uP2.ok -and (& $storeP.GetUserEntry 'CSL_TEST_ANTHROPIC_PART_B').Value -eq 'part-b-orig') 'skipped entry still undoable after prune'
+Clear-TestBackups
+
+Write-Host '== foreach over @($x.prop) skips $null explicitly ==' -ForegroundColor Cyan
+$guardMissing = @()
+$guardTotal = 0
+$repoDir = Split-Path -Parent $PSScriptRoot
+foreach ($srcName in @('claude-envfix.ps1', 'claude-preflight.ps1')) {
+  $srcAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoDir $srcName), [ref]$null, [ref]$null)
+  $loops = $srcAst.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.ForEachStatementAst] -and
+    $n.Condition -is [System.Management.Automation.Language.PipelineAst] -and
+    $n.Condition.Extent.Text -match '^@\(\$[\w]+(\.[\w]+)+\)$' }, $true)
+  foreach ($lp in $loops) {
+    $guardTotal++
+    $first = @($lp.Body.Statements)[0]
+    $vn = $lp.Variable.VariablePath.UserPath
+    $ok = ($null -ne $first) -and ($first.Extent.Text -match ('^if \(\$null -eq \$' + [regex]::Escape($vn) + '\) \{ continue \}$'))
+    if (-not $ok) { $guardMissing += ("{0}:{1}" -f $srcName, $lp.Extent.StartLineNumber) }
+  }
+}
+Assert-True ($guardTotal -ge 8) ("found foreach @(`$x.prop) loops ($guardTotal)")
+Assert-Eq ($guardMissing -join ',') '' 'every such loop skips $null first'
+$nlDir = Get-CslEnvBackupDir
+$storeNl = New-MemStore
+& $storeNl.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_NULLENT' -Value 'nullent-orig'
+$fNl = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_NULLENT') -TestMode -Store $storeNl
+$nlPath = Join-Path $nlDir ("envfix-{0}.json" -f $fNl.id)
+$nlJson = Get-Content -LiteralPath $nlPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$nlJson.entries = @($null) + @($nlJson.entries)
+[IO.File]::WriteAllText($nlPath, ($nlJson | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+$uncBefore3 = $script:Uncaught
+$uNl = Invoke-CslEnvUndo -Id $fNl.id -NoPause -TestMode -Store $storeNl
+Assert-True ($uNl.ok -and ((& $storeNl.GetUserEntry 'CSL_TEST_ANTHROPIC_NULLENT').Value -eq 'nullent-orig') -and ($script:Uncaught -eq $uncBefore3)) 'undo with a null element in entries restores, no error'
+
+Write-Host '== v3.3.0 envFixEnabled / envFixKeep settings ==' -ForegroundColor Cyan
+$dflt = Get-CslEnvFixSettings ([pscustomobject]@{ monitorIntervalMin = 5 })
+Assert-True ($dflt.enabled -eq $true -and @($dflt.keep).Count -eq 0) 'missing keys: enabled=true, keep empty'
+$dflt2 = Get-CslEnvFixSettings $null
+Assert-True ($dflt2.enabled -eq $true -and @($dflt2.keep).Count -eq 0) 'null cfg: enabled=true, keep empty'
+$off = Get-CslEnvFixSettings ([pscustomobject]@{ envFixEnabled = $false; envFixKeep = @('CSL_TEST_ANTHROPIC_BASE_URL', $null, '  ') })
+Assert-True ($off.enabled -eq $false) 'envFixEnabled=false is honored'
+Assert-Eq (@($off.keep) -join ',') 'CSL_TEST_ANTHROPIC_BASE_URL' 'envFixKeep drops null/blank entries'
+$offStr = Get-CslEnvFixSettings ([pscustomobject]@{ envFixEnabled = 'false'; envFixKeep = 'CSL_TEST_ANTHROPIC_MODEL' })
+Assert-True ($offStr.enabled -eq $false -and (@($offStr.keep) -join ',') -eq 'CSL_TEST_ANTHROPIC_MODEL') 'string false / single-string keep accepted'
+$commonText = [IO.File]::ReadAllText((Join-Path $repoDir 'claude-common.ps1'))
+Assert-True ($commonText -match 'envFixEnabled\s*=\s*\$true' -and $commonText -match 'envFixKeep\s*=\s*@\(\)') 'Load-Config defaults: envFixEnabled=$true, envFixKeep=@()'
+
+$storeK = New-MemStore
+& $storeK.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_BASE_URL' -Value 'https://keep.example'
+& $storeK.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_AUTH_TOKEN' -Value 'sk-keeptest-123456'
+$pK = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_*') -TestMode -DryRun -Store $storeK -Keep @('CSL_TEST_ANTHROPIC_BASE_URL')
+$pKeep = @(@($pK.plan) | Where-Object { $_.action -eq 'keep' } | ForEach-Object { $_.name })
+$pRem = @(@($pK.plan) | Where-Object { $_.action -eq 'remove' } | ForEach-Object { $_.name })
+Assert-Eq ($pKeep -join ',') 'CSL_TEST_ANTHROPIC_BASE_URL' 'plan: kept name has action keep'
+Assert-Eq ($pRem -join ',') 'CSL_TEST_ANTHROPIC_AUTH_TOKEN' 'plan: only non-kept name is removed'
+$fK = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_*') -TestMode -Store $storeK -Keep @('CSL_TEST_ANTHROPIC_BASE*')
+Assert-True ($fK.ok -and ((& $storeK.GetUserEntry 'CSL_TEST_ANTHROPIC_BASE_URL').Value -eq 'https://keep.example')) 'apply: envFixKeep (wildcard) variable kept'
+Assert-True ($null -eq (& $storeK.GetUserEntry 'CSL_TEST_ANTHROPIC_AUTH_TOKEN')) 'apply: non-kept variable removed'
+$kBak = Get-Content -LiteralPath (Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $fK.id)) -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-Eq ((@($kBak.entries) | Where-Object { $null -ne $_ } | ForEach-Object { $_.name }) -join ',') 'CSL_TEST_ANTHROPIC_AUTH_TOKEN' 'backup holds only the removed variable'
+$storeK2 = New-MemStore
+& $storeK2.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_BASE_URL' -Value 'https://keep.example'
+$fK2 = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_*') -TestMode -Store $storeK2 -Keep @('CSL_TEST_ANTHROPIC_BASE_URL')
+Assert-True ($fK2.ok -and $null -eq $fK2.id -and ((& $storeK2.GetUserEntry 'CSL_TEST_ANTHROPIC_BASE_URL').Value -eq 'https://keep.example')) 'all kept: no change, no backup'
+Clear-TestBackups
+
+Write-Host '== v3.3.0 confirm list: names and actions only; -FixEnv asks y/N ==' -ForegroundColor Cyan
+$storeV = New-MemStore
+& $storeV.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_AUTH_TOKEN' -Value 'sk-secretvalue-987654'
+$pV = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_*') -TestMode -DryRun -Store $storeV
+$planJson = ConvertTo-Json @($pV.plan) -Depth 6 -Compress
+Assert-True (-not ($planJson -match 'secretvalue|9876|valueMasked')) 'plan rows carry no value (plain or masked)'
+Assert-True ($null -eq (@($pV.plan)[0].PSObject.Properties['valueMasked'])) 'plan row has no valueMasked field'
+Assert-True (Test-CslFixConfirmed -Yes -ReadAnswer { throw 'must not ask' }) '-Yes skips the question'
+Assert-True (Test-CslFixConfirmed -ReadAnswer { 'y' }) 'answer y agrees'
+Assert-True (Test-CslFixConfirmed -ReadAnswer { ' Y ' }) 'answer Y agrees'
+Assert-True (-not (Test-CslFixConfirmed -ReadAnswer { 'n' })) 'answer n refuses'
+Assert-True (-not (Test-CslFixConfirmed -ReadAnswer { '' })) 'empty answer refuses'
+Assert-True (-not (Test-CslFixConfirmed -ReadAnswer { $null })) 'EOF/null refuses'
+Assert-True (-not (Test-CslFixConfirmed -ReadAnswer { throw 'no console' })) 'read error refuses'
+Assert-True (-not (Test-CslFixConfirmed)) 'no reader and no -Yes refuses'
+$pfPath = Join-Path $repoDir 'claude-preflight.ps1'
+foreach ($srcName in @('claude-preflight.ps1', 'claude-envfix.ps1', 'claude-common.ps1', 'claude-panel.ps1')) {
+  $pe = $null
+  [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoDir $srcName), [ref]$null, [ref]$pe)
+  Assert-Eq (@($pe).Count) 0 ("$srcName parses with no syntax errors")
+}
+$pfAst = [System.Management.Automation.Language.Parser]::ParseFile($pfPath, [ref]$null, [ref]$null)
+$pfParams = @($pfAst.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+Assert-True ($pfParams -contains 'Yes') 'preflight has -Yes switch'
+$pfText = [IO.File]::ReadAllText($pfPath)
+Assert-True ($pfText -match 'Test-CslFixConfirmed -Yes:\$Yes') 'preflight -FixEnv goes through Test-CslFixConfirmed'
+Assert-True (-not ($pfText -match 'valueMasked')) 'preflight prints no masked values'
+$panelText = [IO.File]::ReadAllText((Join-Path $repoDir 'claude-panel.html'))
+Assert-True (-not ($panelText -match 'valueMasked')) 'panel confirm boxes show no values'
+Write-Host '== v3.3.0 check 9 card lines are not truncated ==' -ForegroundColor Cyan
+Assert-True ($panelText -match "className='card'\+\(isEnvGroup\(g\)\?' env':''\)") 'env group card gets class env'
+Assert-True ($panelText -match '\.card\.env \.row \.txt\{white-space:normal;overflow-wrap:anywhere;text-overflow:clip\}') 'env card rows wrap (no ellipsis), long tokens break'
+Assert-True ($panelText -match '\.row\.fail \.txt,\.row\.warn \.txt,\.row\.fix \.txt\{white-space:normal;overflow-wrap:anywhere\}') 'fail/warn/fix rows break long tokens'
+Assert-True ($panelText -match 'function fitAll\(\)' -and $panelText -match "class=""row more""|className='row more'" -and $panelText -match "more\.title=") 'overflowing card rows fold into a hover row (no silent clipping)'
+Assert-True ($panelText -match '#groups>\.card\{max-height:none\}' -and $panelText -match 'function finish\(\)\{busy=false;setBusy\(false\);fitAll\(\);') 'cards not clipped by max-height; fold recomputed on finish'
+Assert-True ($panelText -match "const nFail=hidden\.filter\(o=>o\.r\.classList\.contains\('fail'\)\)\.length;more\.classList\.toggle\('has-fail',nFail>0\)" -and $panelText -match "'（含 '\+nFail\+' 条失败）'") 'fold row counts folded failures and gets fail style'
+Assert-True ($panelText -match '\.row\.more\.has-fail \.tag\{background:var\(--fail\)\}' -and $panelText -match '\.row\.more\.has-fail \.txt\{color:var\(--fail\);font-weight:600\}') 'fold row with failures uses the fail colour (no gradient)'
+Assert-True ($panelText -match "const nW=g\.rows\.filter\(r=>r\.cls===w\)\.length" ) 'card title count is computed from all rows (folded included)'
+$fnAst = $pfAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Write-CslEnvFixPlan' }, $true)
+Assert-True ($null -ne $fnAst) 'preflight defines Write-CslEnvFixPlan'
+if ($fnAst) {
+  Invoke-Expression $fnAst.Extent.Text
+  $planOut = @(Write-CslEnvFixPlan $pV.plan 6>&1 | ForEach-Object { [string]$_ })
+  Assert-True ((@($planOut | Where-Object { $_ -match '将清除 User (\S+)$' }).Count -eq 1)) 'plan line reads 将清除 User NAME'
+  Assert-True (-not (($planOut -join "`n") -match 'secretvalue|9876|\*')) 'plan output has no value'
+}
 
 Remove-Item -LiteralPath $script:Root -Recurse -Force -ErrorAction SilentlyContinue
 
