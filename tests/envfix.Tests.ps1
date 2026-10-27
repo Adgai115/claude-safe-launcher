@@ -207,7 +207,8 @@ Write-Host '== Panel API security helpers ==' -ForegroundColor Cyan
 $token = New-CslSessionToken
 Assert-True ($token.Length -ge 64) 'token length >= 64 hex chars'
 Assert-True (Test-CslSecureEqual $token $token) 'secure equal same'
-Assert-True (-not (Test-CslSecureEqual $token ($token.Substring(0, $token.Length-1) + '0'))) 'secure equal different'
+$altLast = if ($token[-1] -eq '0') { '1' } else { '0' }  # token may already end in '0' (1/16): always flip
+Assert-True (-not (Test-CslSecureEqual $token ($token.Substring(0, $token.Length-1) + $altLast))) 'secure equal different'
 Assert-True (Test-CslPanelHostAllowed -HostHeader 'localhost:47831') 'host localhost ok'
 Assert-True (Test-CslPanelHostAllowed -HostHeader '127.0.0.1:47831') 'host 127 ok'
 Assert-True (-not (Test-CslPanelHostAllowed -HostHeader 'evil.example:47831')) 'host evil rejected'
