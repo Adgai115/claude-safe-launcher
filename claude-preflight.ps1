@@ -9,7 +9,8 @@
   [switch]$UndoFix,
   [string]$UndoId,
   [switch]$ListFixes,
-  [string[]]$FixVarPattern
+  [string[]]$FixVarPattern,
+  [int]$FailAtIndex = 0
 )
 <#
   Claude 桌面版 启动前检查 + 自动设置（v3.2.0）
@@ -24,6 +25,7 @@
   -UndoFix [-UndoId <id>] : 撤销一次修复（默认最近一次）；冲突时 -NoPause 跳过并返回非 0
   -ListFixes : 列出可撤销操作（脱敏）
   -TestMode : 仅允许操作 CSL_TEST_ 前缀变量；测试请配合 -FixVarPattern 'CSL_TEST_ANTHROPIC_*'
+  -FailAtIndex <n> : （仅 -TestMode）使第 n 个变量变更抛错，用于验证整单回滚；非 TestMode 警告并忽略
   配置文件  : 同目录 preflight.json（可用 fixVarPatterns；controllerSecret 不会被打印）
   依赖      : 同目录 claude-common.ps1、claude-envfix.ps1、claude-monitor.ps1
 #>
@@ -56,7 +58,10 @@ if ($ListFixes) {
 
 if ($script:DoUndoFix) {
   Write-Host '撤销环境变量修复…' -ForegroundColor Cyan
-  $undo = Invoke-CslEnvUndo -Id $script:UndoFixId -NoPause:$NoPause
+  $undo = Invoke-CslEnvUndo -Id $script:UndoFixId -NoPause:$NoPause -TestMode:$TestMode -FailAtIndex $FailAtIndex
+  if ($undo.alreadyUndone) {
+    Write-Host ("  [信息] already undone（{0}）" -f $undo.id) -ForegroundColor Gray
+  }
   if ($undo.restored) {
     foreach ($r in $undo.restored) { Write-Host ("  [修复] 已恢复 {0} = {1}" -f $r.name, $r.valueMasked) -ForegroundColor Yellow }
   }
@@ -70,7 +75,7 @@ if ($script:DoUndoFix) {
 if ($FixEnv) {
   Write-Host '一键修复用户级中转环境变量…' -ForegroundColor Cyan
   if ($DryRun) { Write-Host '  [信息] DryRun：只预览，不修改' -ForegroundColor Gray }
-  $fix = Invoke-CslEnvFix -Patterns $script:FixPatterns -TestMode:$TestMode -DryRun:$DryRun
+  $fix = Invoke-CslEnvFix -Patterns $script:FixPatterns -TestMode:$TestMode -DryRun:$DryRun -FailAtIndex $FailAtIndex
   if (-not $fix.ok) {
     Write-Host ("  [失败] {0}" -f $fix.error) -ForegroundColor Red
     if (-not $NoPause) { try { Read-Host '按回车退出' | Out-Null } catch {} }
@@ -290,7 +295,7 @@ if (-not $targets.ok) {
       $ans = ''
       try { $ans = Read-Host '  是否删除这些用户级变量？(y/N)' } catch {}
       if ($ans -match '^[yY]') {
-        $fix = Invoke-CslEnvFix -Patterns $script:FixPatterns -TestMode:$TestMode
+        $fix = Invoke-CslEnvFix -Patterns $script:FixPatterns -TestMode:$TestMode -FailAtIndex $FailAtIndex
         if ($fix.ok) {
           foreach ($a in @($fix.applied)) { Say-Fix ("已删除用户级 {0}（原 {1}）" -f $a.name, $a.valueMasked) }
           if ($fix.id) { Say-Info ("备份 id={0}，可用 -UndoFix 撤销；新开的终端才会生效" -f $fix.id) }

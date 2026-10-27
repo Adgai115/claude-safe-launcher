@@ -1,6 +1,6 @@
 ﻿# Claude 安全启动 · 用户级环境变量一键修复 / 撤销（Windows）
 # 由 claude-preflight.ps1 / claude-panel.ps1 dot-source。仅操作用户级（User / HKCU\Environment）。
-# 备份含原始值，仅用于撤销；面板与日志必须走 Protect-Secret，禁止打印明文。
+# 备份含原始值与 RegistryValueKind，仅用于撤销；面板与日志必须走 Protect-Secret，禁止打印明文。
 
 if (-not $script:CslEnvFixLoaded) {
 
@@ -26,33 +26,76 @@ function Get-CslEnvBackupDir {
 }
 
 # ----- injectable user-env store (tests replace this) -----
+# GetUserEntry: $null = 不存在；@{ Value = <string, 可为 ''>; Kind = 'String'|'ExpandString' }
+# SetUserEntry: Value 用 [object]；$null = 删除名；'' = 写入空字符串；Kind 默认 String
 function Get-CslDefaultEnvStore {
   if ($script:CslEnvStore) { return $script:CslEnvStore }
   return [pscustomobject]@{
-    GetUser = {
+    GetUserEntry = {
       param([string]$Name)
-      return [Environment]::GetEnvironmentVariable($Name, 'User')
+      try {
+        $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
+        if (-not $k) { return $null }
+        try {
+          $names = $k.GetValueNames()
+          if ($names -notcontains $Name) { return $null }
+          $raw = $k.GetValue($Name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          $kindObj = $k.GetValueKind($Name)
+          $kind = 'String'
+          if ($kindObj -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) { $kind = 'ExpandString' }
+          elseif ($kindObj -eq [Microsoft.Win32.RegistryValueKind]::String) { $kind = 'String' }
+          else { $kind = [string]$kindObj }
+          if ($null -eq $raw) { $raw = '' }
+          return @{ Value = [string]$raw; Kind = $kind }
+        } finally { $k.Close() }
+      } catch { return $null }
     }
     GetMachine = {
       param([string]$Name)
-      return [Environment]::GetEnvironmentVariable($Name, 'Machine')
-    }
-    SetUser = {
-      param([string]$Name, [AllowNull()][string]$Value)
-      if ($null -eq $Value -or $Value -eq '') {
-        [Environment]::SetEnvironmentVariable($Name, $null, 'User')
-        Remove-ItemProperty -Path 'HKCU:\Environment' -Name $Name -ErrorAction SilentlyContinue
-      } else {
-        [Environment]::SetEnvironmentVariable($Name, $Value, 'User')
+      try {
+        $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $false)
+        if (-not $k) { return $null }
+        try {
+          if ($k.GetValueNames() -notcontains $Name) { return $null }
+          $raw = $k.GetValue($Name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          if ($null -eq $raw) { return '' }
+          return [string]$raw
+        } finally { $k.Close() }
+      } catch {
+        return [Environment]::GetEnvironmentVariable($Name, 'Machine')
       }
+    }
+    SetUserEntry = {
+      param(
+        [string]$Name,
+        [AllowNull()][object]$Value,
+        [string]$Kind = 'String'
+      )
+      # [object] 才能区分 $null（删除名）与 ''（空字符串）；[string] 会把 $null 收成 ''
+      $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+      if (-not $k) { throw '无法打开 HKCU\Environment 进行写入' }
+      try {
+        if ($null -eq $Value) {
+          if ($k.GetValueNames() -contains $Name) {
+            $k.DeleteValue($Name, $false)
+          }
+        } else {
+          $rk = [Microsoft.Win32.RegistryValueKind]::String
+          if ($Kind -eq 'ExpandString') { $rk = [Microsoft.Win32.RegistryValueKind]::ExpandString }
+          $k.SetValue($Name, [string]$Value, $rk)
+        }
+      } finally { $k.Close() }
     }
     ListUserNames = {
       $names = New-Object System.Collections.Generic.List[string]
       try {
-        $key = Get-Item -Path 'HKCU:\Environment' -ErrorAction Stop
-        foreach ($n in $key.GetValueNames()) { if ($n) { [void]$names.Add([string]$n) } }
+        $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
+        if ($k) {
+          try {
+            foreach ($n in $k.GetValueNames()) { if ($n) { [void]$names.Add([string]$n) } }
+          } finally { $k.Close() }
+        }
       } catch {}
-      # also include process-known User vars via Environment API is incomplete; registry is source of truth
       return $names
     }
   }
@@ -92,7 +135,6 @@ function Test-CslPatternsAllowed {
   param([string[]]$Patterns, [switch]$TestMode)
   foreach ($p in $Patterns) {
     if ($TestMode) {
-      # In TestMode patterns should target CSL_TEST_* ; still enforced per-name
       continue
     } else {
       if ($p -like '*CSL_TEST_*' -or $p -eq 'CSL_TEST_*' -or $p -match '(?i)CSL_TEST_') {
@@ -131,7 +173,6 @@ function Find-CslRelayEnvTargets {
   $machineOnly = @()
   $seen = @{}
   $names = @(& $Store.ListUserNames)
-  # Also probe exact default/pattern literals (wildcards need list; literals may exist even if List incomplete)
   foreach ($p in $Patterns) {
     if ($p -notmatch '[\*\?]' ) { $names += $p }
   }
@@ -146,41 +187,72 @@ function Find-CslRelayEnvTargets {
     }
     if ($seen.ContainsKey($n)) { continue }
     $seen[$n] = $true
-    $uv = & $Store.GetUser $n
+    $entry = & $Store.GetUserEntry $n
     $mv = $null
     try { $mv = & $Store.GetMachine $n } catch {}
-    if ($null -ne $uv -and $uv -ne '') {
-      $userHits += [pscustomobject]@{ Name = $n; Value = [string]$uv; Scope = 'User' }
-    } elseif ($null -ne $mv -and $mv -ne '') {
+    if ($null -ne $entry) {
+      # 存在（值可为 ''）
+      $kind = 'String'
+      if ($entry.Kind) { $kind = [string]$entry.Kind }
+      $userHits += [pscustomobject]@{
+        Name = $n
+        Value = [string]$entry.Value
+        Kind = $kind
+        Scope = 'User'
+      }
+    } elseif ($null -ne $mv) {
       $machineOnly += [pscustomobject]@{ Name = $n; Scope = 'Machine' }
     }
   }
-  # TestMode: refuse if any matched name from patterns expansion would be non-CSL_TEST (already handled)
   return @{ ok = $true; user = $userHits; machineOnly = $machineOnly }
 }
 
+function Read-CslEnvBackupFile {
+  param([string]$Path, [switch]$Strict)
+  if (-not (Test-Path -LiteralPath $Path)) {
+    if ($Strict) { return @{ ok = $false; error = "备份文件不存在: $Path" } }
+    return @{ ok = $false; error = 'not found' }
+  }
+  try {
+    $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+      return @{ ok = $false; error = "备份文件损坏或无法解析: $Path" }
+    }
+    $j = $raw | ConvertFrom-Json
+    if (-not $j -or -not $j.id) {
+      return @{ ok = $false; error = "备份文件损坏或无法解析: $Path" }
+    }
+    return @{ ok = $true; data = $j; path = $Path }
+  } catch {
+    return @{ ok = $false; error = "备份文件损坏或无法解析: $Path ($_)" }
+  }
+}
+
 function Get-CslEarliestMap {
-  # name -> @{ existed; before } from oldest non-undone backup
+  # name -> @{ existed; before; kind }
   $dir = Get-CslEnvBackupDir
   $map = @{}
   $files = @(Get-ChildItem -LiteralPath $dir -Filter 'envfix-*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name)
   foreach ($f in $files) {
-    try {
-      $j = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-      if ($j.undone) { continue }
-      foreach ($e in @($j.entries)) {
-        $n = [string]$e.name
-        if (-not $map.ContainsKey($n)) {
-          $ex = $true
-          if ($e.PSObject.Properties['earliestExisted']) { $ex = [bool]$e.earliestExisted }
-          elseif ($e.PSObject.Properties['existed']) { $ex = [bool]$e.existed }
-          $bf = $null
-          if ($e.PSObject.Properties['earliestBefore']) { $bf = $e.earliestBefore }
-          else { $bf = $e.before }
-          $map[$n] = @{ existed = $ex; before = $bf }
-        }
+    $rd = Read-CslEnvBackupFile -Path $f.FullName
+    if (-not $rd.ok) { continue }
+    $j = $rd.data
+    if ($j.undone) { continue }
+    foreach ($e in @($j.entries)) {
+      $n = [string]$e.name
+      if (-not $map.ContainsKey($n)) {
+        $ex = $true
+        if ($e.PSObject.Properties['earliestExisted']) { $ex = [bool]$e.earliestExisted }
+        elseif ($e.PSObject.Properties['existed']) { $ex = [bool]$e.existed }
+        $bf = $null
+        if ($e.PSObject.Properties['earliestBefore']) { $bf = $e.earliestBefore }
+        else { $bf = $e.before }
+        $kd = 'String'
+        if ($e.PSObject.Properties['earliestKind'] -and $e.earliestKind) { $kd = [string]$e.earliestKind }
+        elseif ($e.PSObject.Properties['kind'] -and $e.kind) { $kd = [string]$e.kind }
+        $map[$n] = @{ existed = $ex; before = $bf; kind = $kd }
       }
-    } catch {}
+    }
   }
   return $map
 }
@@ -196,15 +268,13 @@ function Write-CslEnvBackup($obj) {
   $path = Join-Path $dir ("envfix-{0}.json" -f $obj.id)
   $json = $obj | ConvertTo-Json -Depth 6
   [IO.File]::WriteAllText($path, $json, [Text.UTF8Encoding]::new($false))
-  # 至少保留 N 条仍可撤销的备份；额外已撤销的审计记录可再留一些
   $all = @(Get-ChildItem -LiteralPath $dir -Filter 'envfix-*.json' -File | Sort-Object Name -Descending)
   $undoable = @()
   $undone = @()
   foreach ($f in $all) {
-    try {
-      $j = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-      if ($j.undone) { $undone += $f } else { $undoable += $f }
-    } catch { $undone += $f }
+    $rd = Read-CslEnvBackupFile -Path $f.FullName
+    if (-not $rd.ok) { $undone += $f; continue }
+    if ($rd.data.undone) { $undone += $f } else { $undoable += $f }
   }
   if ($undoable.Count -gt $script:CslEnvBackupKeep) {
     foreach ($old in $undoable[$script:CslEnvBackupKeep..($undoable.Count - 1)]) {
@@ -219,23 +289,49 @@ function Write-CslEnvBackup($obj) {
   return $path
 }
 
-function Get-CslEnvBackupById([string]$Id) {
+function Remove-CslEnvBackupById([string]$Id) {
+  if (-not $Id) { return }
+  $dir = Get-CslEnvBackupDir
+  $p = Join-Path $dir ("envfix-{0}.json" -f $Id)
+  if (Test-Path -LiteralPath $p) {
+    Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Get-CslEnvBackupById {
+  param([string]$Id, [switch]$Strict)
   $dir = Get-CslEnvBackupDir
   if ($Id) {
     $p = Join-Path $dir ("envfix-{0}.json" -f $Id)
     if (-not (Test-Path -LiteralPath $p)) {
       $hit = Get-ChildItem -LiteralPath $dir -Filter ("envfix-{0}*.json" -f $Id) -File -ErrorAction SilentlyContinue | Select-Object -First 1
-      if ($hit) { $p = $hit.FullName } else { return $null }
+      if ($hit) { $p = $hit.FullName }
+      else {
+        if ($Strict) { return @{ ok = $false; error = "没有可撤销的备份: $Id" } }
+        return $null
+      }
     }
-    try { return (Get-Content -LiteralPath $p -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return $null }
+    $rd = Read-CslEnvBackupFile -Path $p -Strict
+    if (-not $rd.ok) {
+      if ($Strict) { return $rd }
+      return $null
+    }
+    if ($Strict) { return @{ ok = $true; data = $rd.data; path = $rd.path } }
+    return $rd.data
   }
   $files = @(Get-ChildItem -LiteralPath $dir -Filter 'envfix-*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
   foreach ($f in $files) {
-    try {
-      $j = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-      if (-not $j.undone) { return $j }
-    } catch {}
+    $rd = Read-CslEnvBackupFile -Path $f.FullName -Strict
+    if (-not $rd.ok) {
+      if ($Strict) { return $rd }
+      continue
+    }
+    if (-not $rd.data.undone) {
+      if ($Strict) { return @{ ok = $true; data = $rd.data; path = $rd.path } }
+      return $rd.data
+    }
   }
+  if ($Strict) { return @{ ok = $false; error = '没有可撤销的备份' } }
   return $null
 }
 
@@ -243,19 +339,27 @@ function Get-CslEnvFixList {
   $dir = Get-CslEnvBackupDir
   $out = @()
   foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter 'envfix-*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name -Descending)) {
-    try {
-      $j = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-      $vars = @($j.entries | ForEach-Object {
-        $mask = if ($_.existed) { Protect-Secret ([string]$_.before) } else { '(不存在)' }
-        [pscustomobject]@{ name = $_.name; beforeMasked = $mask; after = $(if ($null -eq $_.after -or $_.after -eq '') { '(删除)' } else { Protect-Secret ([string]$_.after) }) }
-      })
-      $out += [pscustomobject]@{
-        id = $j.id; ts = $j.ts; undone = [bool]$j.undone; testMode = [bool]$j.testMode
-        vars = $vars
+    $rd = Read-CslEnvBackupFile -Path $f.FullName
+    if (-not $rd.ok) {
+      $out += [pscustomobject]@{ id = $f.BaseName; ts = ''; undone = $true; corrupt = $true; error = $rd.error; vars = @() }
+      continue
+    }
+    $j = $rd.data
+    $vars = @($j.entries | ForEach-Object {
+      $mask = if ($_.existed) { Protect-Secret ([string]$_.before) } else { '(不存在)' }
+      [pscustomobject]@{
+        name = $_.name
+        beforeMasked = $mask
+        after = $(if ($null -eq $_.after) { '(删除)' } else { Protect-Secret ([string]$_.after) })
+        kind = $(if ($_.kind) { $_.kind } else { 'String' })
       }
-    } catch {}
+    })
+    $out += [pscustomobject]@{
+      id = $j.id; ts = $j.ts; undone = [bool]$j.undone; testMode = [bool]$j.testMode; corrupt = $false
+      vars = $vars
+    }
   }
-  return @($out | Select-Object -First $script:CslEnvBackupKeep)
+  return $out
 }
 
 function Invoke-CslEnvFix {
@@ -263,15 +367,25 @@ function Invoke-CslEnvFix {
     [string[]]$Patterns,
     [switch]$TestMode,
     [switch]$DryRun,
+    [int]$FailAtIndex = 0,
     $Store,
     [switch]$PassThru
   )
   if (-not $Store) { $Store = Get-CslDefaultEnvStore }
+
+  $failIdx = 0
+  if ($FailAtIndex -gt 0) {
+    if ($TestMode) {
+      $failIdx = $FailAtIndex
+    } else {
+      Write-Warning '-FailAtIndex 仅在 -TestMode 下生效，已忽略'
+    }
+  }
+
   $found = Find-CslRelayEnvTargets -Patterns $Patterns -TestMode:$TestMode -Store $Store
   if (-not $found.ok) {
     return @{ ok = $false; error = $found.error; exitCode = 2 }
   }
-  # Extra guard: every user target must pass TestMode name check (abort whole op before backup)
   foreach ($u in $found.user) {
     if (-not (Test-CslVarNameAllowed -Name $u.Name -TestMode:$TestMode)) {
       return @{ ok = $false; error = "变量名未通过 TestMode 守卫: $($u.Name)"; exitCode = 2 }
@@ -284,6 +398,7 @@ function Invoke-CslEnvFix {
       scope = 'User'
       action = 'remove'
       valueMasked = Protect-Secret $u.Value
+      kind = $u.Kind
     }
   }
   foreach ($m in $found.machineOnly) {
@@ -296,10 +411,10 @@ function Invoke-CslEnvFix {
     }
   }
   if ($DryRun) {
-    return @{ ok = $true; dryRun = $true; plan = $plan; applied = @(); id = $null; exitCode = 0 }
+    return @{ ok = $true; dryRun = $true; plan = $plan; applied = @(); id = $null; exitCode = 0; hint = 'DryRun：未修改系统' }
   }
   if ($found.user.Count -eq 0) {
-    return @{ ok = $true; dryRun = $false; plan = $plan; applied = @(); id = $null; message = '没有可清除的用户级变量'; exitCode = 0 }
+    return @{ ok = $true; dryRun = $false; plan = $plan; applied = @(); id = $null; message = '没有可清除的用户级变量'; exitCode = 0; hint = '' }
   }
 
   $earliest = Get-CslEarliestMap
@@ -307,17 +422,21 @@ function Invoke-CslEnvFix {
   foreach ($u in $found.user) {
     $ex0 = $true
     $bf0 = $u.Value
+    $kd0 = $u.Kind
     if ($earliest.ContainsKey($u.Name)) {
       $ex0 = [bool]$earliest[$u.Name].existed
       $bf0 = $earliest[$u.Name].before
+      if ($earliest[$u.Name].kind) { $kd0 = $earliest[$u.Name].kind }
     }
     $entries += [pscustomobject]@{
       name = $u.Name
       existed = $true
       before = $u.Value
+      kind = $u.Kind
       after = $null
       earliestExisted = $ex0
       earliestBefore = $bf0
+      earliestKind = $kd0
     }
   }
 
@@ -329,30 +448,34 @@ function Invoke-CslEnvFix {
     undone = $false
     entries = $entries
   }
-  # Write backup BEFORE mutating
-  [void](Write-CslEnvBackup $backupObj)
+  $backupPath = Write-CslEnvBackup $backupObj
 
   $applied = @()
   $doneNames = @()
+  $idx = 0
   try {
     foreach ($e in $entries) {
-      & $Store.SetUser -Name $e.name -Value $null
+      $idx++
+      if ($failIdx -gt 0 -and $idx -eq $failIdx) {
+        throw "FailAtIndex=$failIdx 模拟失败（变量 $($e.name)）"
+      }
+      & $Store.SetUserEntry -Name $e.name -Value $null
       $doneNames += $e.name
-      $applied += [pscustomobject]@{ name = $e.name; valueMasked = Protect-Secret $e.before; action = 'removed' }
+      $applied += [pscustomobject]@{ name = $e.name; valueMasked = Protect-Secret $e.before; action = 'removed'; kind = $e.kind }
     }
     Broadcast-CslEnvironmentChange
   } catch {
-    # rollback whole operation
+    # 整单回滚到操作前，并删除未提交的备份（不留下可撤销条目）
     foreach ($e in $entries) {
       if ($doneNames -contains $e.name) {
-        if ($e.existed) { & $Store.SetUser -Name $e.name -Value $e.before }
+        if ($e.existed) {
+          & $Store.SetUserEntry -Name $e.name -Value $e.before -Kind $(if ($e.kind) { $e.kind } else { 'String' })
+        }
       }
     }
     Broadcast-CslEnvironmentChange
-    $backupObj.undone = $true
-    $backupObj | Add-Member -NotePropertyName rollback -NotePropertyValue $true -Force
-    [void](Write-CslEnvBackup $backupObj)
-    return @{ ok = $false; error = "修复失败已回滚: $_"; exitCode = 1; id = $id }
+    Remove-CslEnvBackupById $id
+    return @{ ok = $false; error = "修复失败已回滚: $_"; exitCode = 1; id = $null; rolledBack = $true }
   }
   return @{ ok = $true; dryRun = $false; plan = $plan; applied = $applied; id = $id; exitCode = 0; hint = '新开的终端才会生效' }
 }
@@ -362,90 +485,134 @@ function Invoke-CslEnvUndo {
     [string]$Id,
     [switch]$NoPause,
     [switch]$ForceSkipConflicts,
+    [int]$FailAtIndex = 0,
+    [switch]$TestMode,
     $Store,
-    [scriptblock]$OnConflict  # optional; receives name, currentMasked, expectedMasked; returns 'skip'|'abort'|'overwrite' — we only use skip/abort for safety
+    [scriptblock]$OnConflict
   )
   if (-not $Store) { $Store = Get-CslDefaultEnvStore }
-  $bak = Get-CslEnvBackupById -Id $Id
-  if (-not $bak) { return @{ ok = $false; error = '没有可撤销的备份'; exitCode = 1 } }
-  if ($bak.undone) { return @{ ok = $false; error = "备份 $($bak.id) 已撤销"; exitCode = 1 } }
+
+  $failIdx = 0
+  if ($FailAtIndex -gt 0) {
+    if ($TestMode) {
+      $failIdx = $FailAtIndex
+    } else {
+      Write-Warning '-FailAtIndex 仅在 -TestMode 下生效，已忽略'
+    }
+  }
+
+  $got = Get-CslEnvBackupById -Id $Id -Strict
+  if (-not $got.ok) {
+    return @{ ok = $false; error = $got.error; exitCode = 1 }
+  }
+  $bak = $got.data
+  if ($bak.undone) {
+    return @{
+      ok = $true
+      alreadyUndone = $true
+      id = $bak.id
+      message = 'already undone'
+      restored = @()
+      skipped = @()
+      conflicts = @()
+      exitCode = 0
+      hint = ''
+    }
+  }
 
   $conflicts = @()
   $restored = @()
   $skipped = @()
   $opsToMark = @{}
+  $dir = Get-CslEnvBackupDir
 
-  # 连通：与本次备份共享变量名的所有未撤销操作一并处理；各变量恢复到链路 earliest
   $targetNames = New-Object System.Collections.Generic.HashSet[string]
   foreach ($e in @($bak.entries)) { [void]$targetNames.Add([string]$e.name) }
-  $dir = Get-CslEnvBackupDir
+
+  # 扫描连通备份；相关文件若损坏则整单中止、不改系统（无关损坏文件跳过）
   $changed = $true
   while ($changed) {
     $changed = $false
     foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter 'envfix-*.json' -File -ErrorAction SilentlyContinue)) {
-      try {
-        $j = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($j.undone) { continue }
-        $hit = $false
-        foreach ($e in @($j.entries)) {
-          if ($targetNames.Contains([string]$e.name)) { $hit = $true; break }
+      $rd = Read-CslEnvBackupFile -Path $f.FullName
+      if (-not $rd.ok) { continue }
+      $j = $rd.data
+      if ($j.undone) { continue }
+      $hit = $false
+      foreach ($e in @($j.entries)) {
+        if ($targetNames.Contains([string]$e.name)) { $hit = $true; break }
+      }
+      if ($hit) {
+        # 再次严格校验：相关备份必须可解析
+        $rd2 = Read-CslEnvBackupFile -Path $f.FullName -Strict
+        if (-not $rd2.ok) {
+          return @{ ok = $false; error = $rd2.error; exitCode = 1 }
         }
-        if ($hit) {
-          if (-not $opsToMark.ContainsKey($j.id)) {
-            $opsToMark[$j.id] = $f.FullName
-            $changed = $true
-          }
-          foreach ($e in @($j.entries)) { [void]$targetNames.Add([string]$e.name) }
+        if (-not $opsToMark.ContainsKey($j.id)) {
+          $opsToMark[$j.id] = $f.FullName
+          $changed = $true
         }
-      } catch {}
+        foreach ($e in @($j.entries)) { [void]$targetNames.Add([string]$e.name) }
+      }
     }
   }
-  $opsToMark[$bak.id] = (Join-Path $dir ("envfix-{0}.json" -f $bak.id))
+  $opsToMark[$bak.id] = $got.path
 
-  # 每个变量的期望「修复后」状态：取最新未撤销操作中该变量的 after（我们写入的）
   $latestAfter = @{}
+  $latestAfterKind = @{}
   foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter 'envfix-*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
-    try {
-      $j = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-      if ($j.undone) { continue }
-      if (-not $opsToMark.ContainsKey($j.id)) { continue }
-      foreach ($e in @($j.entries)) {
-        $nm = [string]$e.name
-        if (-not $targetNames.Contains($nm)) { continue }
+    $rd = Read-CslEnvBackupFile -Path $f.FullName
+    if (-not $rd.ok) { continue }
+    $j = $rd.data
+    if ($j.undone) { continue }
+    if (-not $opsToMark.ContainsKey($j.id)) { continue }
+    foreach ($e in @($j.entries)) {
+      $nm = [string]$e.name
+      if (-not $targetNames.Contains($nm)) { continue }
+      # after: $null = 删除；'' = 空字符串（若将来支持写入）
+      if ($e.PSObject.Properties.Name -contains 'after') {
         $latestAfter[$nm] = $e.after
+      } else {
+        $latestAfter[$nm] = $null
       }
-    } catch {}
+      if ($e.kind) { $latestAfterKind[$nm] = [string]$e.kind }
+    }
   }
 
   $earliest = Get-CslEarliestMap
-
+  $pending = @()
   foreach ($name in @($targetNames)) {
-    $wantExisted = $true
-    $wantVal = $null
-    if ($earliest.ContainsKey($name)) {
-      $wantExisted = [bool]$earliest[$name].existed
-      $wantVal = $earliest[$name].before
-    } else {
-      continue
+    if (-not $earliest.ContainsKey($name)) { continue }
+    $wantExisted = [bool]$earliest[$name].existed
+    $wantVal = $earliest[$name].before
+    $wantKind = 'String'
+    if ($earliest[$name].kind) { $wantKind = $earliest[$name].kind }
+
+    $curEntry = & $Store.GetUserEntry $name
+    $curAbsent = ($null -eq $curEntry)
+    $expectAbsent = $true
+    $expectAfter = $null
+    if ($latestAfter.ContainsKey($name)) {
+      $expectAfter = $latestAfter[$name]
+      # JSON null -> $null；区分空字符串
+      $expectAbsent = ($null -eq $expectAfter)
     }
 
-    $cur = & $Store.GetUser $name
-    $curAbsent = ($null -eq $cur -or $cur -eq '')
-    $expectAfter = $null
-    if ($latestAfter.ContainsKey($name)) { $expectAfter = $latestAfter[$name] }
-    $expectAbsent = ($null -eq $expectAfter -or $expectAfter -eq '')
     $conflict = $false
     if ($expectAbsent) {
       if (-not $curAbsent) { $conflict = $true }
     } else {
-      if ($curAbsent -or $cur -ne [string]$expectAfter) { $conflict = $true }
+      if ($curAbsent) { $conflict = $true }
+      elseif ([string]$curEntry.Value -ne [string]$expectAfter) { $conflict = $true }
     }
 
     if ($conflict) {
-      $msg = "冲突: $name 当前值与修复后不一致（当前=$(Protect-Secret $cur)，期望修复后=$(if($expectAbsent){'(删除)'}else{Protect-Secret ([string]$expectAfter)}))"
+      $curShow = if ($curAbsent) { '(不存在)' } else { Protect-Secret $curEntry.Value }
+      $expShow = if ($expectAbsent) { '(删除)' } else { Protect-Secret ([string]$expectAfter) }
+      $msg = "冲突: $name 当前值与修复后不一致（当前=$curShow，期望修复后=$expShow）"
       $decision = 'skip'
       if ($OnConflict) {
-        $decision = & $OnConflict $name (Protect-Secret $cur) $(if($expectAbsent){'(删除)'}else{Protect-Secret ([string]$expectAfter)})
+        $decision = & $OnConflict $name $curShow $expShow
       } elseif ($NoPause -or $ForceSkipConflicts) {
         $decision = 'skip'
       } else {
@@ -462,11 +629,52 @@ function Invoke-CslEnvUndo {
       continue
     }
 
-    if ($wantExisted) { & $Store.SetUser -Name $name -Value $wantVal }
-    else { & $Store.SetUser -Name $name -Value $null }
-    $restored += [pscustomobject]@{ name = $name; valueMasked = $(if ($wantExisted) { Protect-Secret $wantVal } else { '(删除)' }) }
+    $pending += [pscustomobject]@{
+      name = $name
+      wantExisted = $wantExisted
+      wantVal = $wantVal
+      wantKind = $wantKind
+    }
   }
-  Broadcast-CslEnvironmentChange
+
+  # 应用前已确认无损坏文件；开始写入，FailAtIndex 可注入失败并回滚本轮写入
+  $done = @()
+  $idx = 0
+  $snapshot = @{}
+  try {
+    foreach ($p in $pending) {
+      $idx++
+      $prev = & $Store.GetUserEntry $p.name
+      $snapshot[$p.name] = $prev
+      if ($failIdx -gt 0 -and $idx -eq $failIdx) {
+        throw "FailAtIndex=$failIdx 模拟失败（撤销变量 $($p.name)）"
+      }
+      if ($p.wantExisted) {
+        # 允许恢复空字符串
+        & $Store.SetUserEntry -Name $p.name -Value $p.wantVal -Kind $p.wantKind
+      } else {
+        & $Store.SetUserEntry -Name $p.name -Value $null
+      }
+      $done += $p.name
+      $restored += [pscustomobject]@{
+        name = $p.name
+        valueMasked = $(if ($p.wantExisted) { Protect-Secret $p.wantVal } else { '(删除)' })
+        kind = $p.wantKind
+      }
+    }
+    Broadcast-CslEnvironmentChange
+  } catch {
+    foreach ($name in $done) {
+      $prev = $snapshot[$name]
+      if ($null -eq $prev) {
+        & $Store.SetUserEntry -Name $name -Value $null
+      } else {
+        & $Store.SetUserEntry -Name $name -Value $prev.Value -Kind $(if ($prev.Kind) { $prev.Kind } else { 'String' })
+      }
+    }
+    Broadcast-CslEnvironmentChange
+    return @{ ok = $false; error = "撤销失败已回滚: $_"; exitCode = 1; rolledBack = $true }
+  }
 
   foreach ($kv in $opsToMark.GetEnumerator()) {
     try {
@@ -475,11 +683,17 @@ function Invoke-CslEnvUndo {
         $p = Join-Path $dir ("envfix-{0}.json" -f $kv.Key)
       }
       if (Test-Path -LiteralPath $p) {
-        $j = Get-Content -LiteralPath $p -Raw -Encoding UTF8 | ConvertFrom-Json
+        $rd = Read-CslEnvBackupFile -Path $p -Strict
+        if (-not $rd.ok) {
+          return @{ ok = $false; error = $rd.error; exitCode = 1 }
+        }
+        $j = $rd.data
         $j.undone = $true
         [IO.File]::WriteAllText($p, ($j | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
       }
-    } catch {}
+    } catch {
+      return @{ ok = $false; error = "标记备份失败: $_"; exitCode = 1 }
+    }
   }
 
   $code = 0

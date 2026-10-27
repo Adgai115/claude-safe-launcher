@@ -135,6 +135,7 @@ sudo systemsetup -settimezone America/New_York
 | `-UndoFix [-UndoId <id>]` | （暂无） | 撤销一次修复（默认最近一次）；冲突时配合 `-NoPause` 跳过该变量并返回非 0 |
 | `-ListFixes` | （暂无） | 列出可撤销操作（值已脱敏） |
 | `-TestMode` | （暂无） | 仅允许操作 `CSL_TEST_` 前缀变量；测试请配合 `-FixVarPattern 'CSL_TEST_ANTHROPIC_*'` |
+| `-FailAtIndex <n>` | （暂无） | **仅** `-TestMode`：第 n 个变量变更时抛错以验证整单回滚；非 TestMode 警告并忽略 |
 
 ### 环境变量一键修复（Windows）
 
@@ -149,6 +150,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLa
 
 # 测试（只用 CSL_TEST_ 前缀，不会碰真变量）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -TestMode -FixVarPattern 'CSL_TEST_ANTHROPIC_*' -FixEnv
+
+# 验证整单回滚（仅 TestMode；第 2 个变量变更时失败，系统应恢复原样且不留备份）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -TestMode -FixVarPattern 'CSL_TEST_ANTHROPIC_*' -FixEnv -FailAtIndex 2
 
 # 列出 / 撤销
 powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoPause -ListFixes

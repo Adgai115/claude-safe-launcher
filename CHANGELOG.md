@@ -9,6 +9,8 @@
 - 备份目录 `backups/`（已 gitignore），保留至少 10 条可撤销记录；两次修复后一次撤销回到最早原值；冲突时 `-NoPause` 跳过并非 0 退出。
 - `-TestMode` 仅允许 `CSL_TEST_` 前缀；非 TestMode 拒绝含 `CSL_TEST_` 的模式。
 - 脱敏集中到 `claude-common.ps1` 的 `Protect-Secret` / `Mask-Value`（预留 Path→`%USERPROFILE%`、URL 掩码，供 v3.3.0 复用）。
+- 用户级读写走注册表原始值（`DoNotExpandEnvironmentNames` + `GetValueKind` / `SetValue`+kind / `DeleteValue`），保留 String vs ExpandString；空字符串与「不存在」区分。
+- `-FailAtIndex`（仅 TestMode）验证整单回滚；重复撤销报告 already undone；损坏备份报错且不改系统。
 - 已知限制：Mac 端这一版没有改动；Machine 级变量只提示需管理员手动处理，不提权修改。
 
 ## v3.1.0（一期 · Windows）
