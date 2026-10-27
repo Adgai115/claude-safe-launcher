@@ -95,7 +95,8 @@ while (-not $quit) {
               $out = Join-Path $dir 'browser-check.json'
               if ($body -notmatch '"ts"') {
                 $obj = $body | ConvertFrom-Json
-                $obj | Add-Member -NotePropertyName ts -NotePropertyValue ((Get-Date).ToString('o')) -Force
+                $utcTs = [datetime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                $obj | Add-Member -NotePropertyName ts -NotePropertyValue $utcTs -Force
                 $body = ($obj | ConvertTo-Json -Depth 6 -Compress)
               }
               [IO.File]::WriteAllText($out, $body, [Text.UTF8Encoding]::new($false))

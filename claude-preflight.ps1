@@ -272,13 +272,41 @@ function Get-JsonStr([string]$txt, [string]$key) {
   if ($m.Success) { return $m.Groups[1].Value } else { return $null }
 }
 function Test-LangMismatch([string]$langs, [string]$loc) {
+  # en* never reported. Otherwise compare base language with exit-IP country's common languages.
+  # Mismatch -> caller should Say-Warn with weight 0 (建议修, 不扣分).
   if (-not $langs -or -not $loc) { return $false }
   $first = (($langs -split ',')[0]).Trim().ToLowerInvariant()
+  if (-not $first) { return $false }
+  if ($first.StartsWith('en')) { return $false }
   $cc = $loc.ToUpperInvariant()
-  if ($first.StartsWith('zh')) { return -not ($cc -in @('CN','TW','HK','MO','SG')) }
-  if ($first -match '^([a-z]{2})-([a-z]{2})$') {
-    $reg = $Matches[2].ToUpperInvariant()
-    if ($reg -ne $cc -and -not $first.StartsWith('en')) { return $true }
+  $base = ($first -split '-')[0]
+  $map = @{
+    'zh' = @('CN','TW','HK','MO','SG')
+    'ja' = @('JP')
+    'ko' = @('KR')
+    'de' = @('DE','AT','CH','LI')
+    'fr' = @('FR','BE','CH','LU','MC','CA')
+    'es' = @('ES','MX','AR','CO','CL','PE','VE','EC','GT','CU','BO','DO','HN','PY','SV','NI','CR','PA','UY','PR')
+    'pt' = @('PT','BR','AO','MZ')
+    'ru' = @('RU','BY','KZ','KG')
+    'it' = @('IT','CH','SM','VA')
+    'nl' = @('NL','BE','SR')
+    'ar' = @('SA','AE','EG','IQ','JO','KW','LB','MA','OM','QA','SY','TN','YE','BH','DZ','LY','SD')
+    'th' = @('TH')
+    'vi' = @('VN')
+    'id' = @('ID')
+    'ms' = @('MY','BN','SG')
+    'tr' = @('TR','CY')
+    'pl' = @('PL')
+    'uk' = @('UA')
+    'hi' = @('IN')
+  }
+  if ($map.ContainsKey($base)) {
+    return -not ($cc -in $map[$base])
+  }
+  # Unknown language with region tag: warn when region != exit country
+  if ($first -match '^[a-z]{2}-([a-z]{2})$') {
+    return ($Matches[1].ToUpperInvariant() -ne $cc)
   }
   return $false
 }
@@ -299,28 +327,44 @@ foreach ($b in $browserRoots) {
     if (-not (Test-Path -LiteralPath $prefPath)) { continue }
     $foundBrowser = $true
     $txt = Read-PrefText $prefPath
-    if (-not $txt) { Say-Info "$($b.Name)/$($prof.Name): 无法读取 Preferences"; continue }
-    $pname = Get-JsonStr $txt 'name'; if (-not $pname) { $pname = $prof.Name }
+    if (-not $txt) { Say-Info "$($b.Name) · $($prof.Name): 无法读取 Preferences"; continue }
+    # Label always includes profile directory name; optional profile.name from JSON as secondary.
+    $dirName = $prof.Name
+    $displayName = $null
+    $langs = $null
+    try {
+      $prefObj = $txt | ConvertFrom-Json -ErrorAction Stop
+      if ($prefObj.profile -and $prefObj.profile.PSObject.Properties['name'] -and $prefObj.profile.name) {
+        $displayName = [string]$prefObj.profile.name
+      }
+      if ($prefObj.intl -and $prefObj.intl.PSObject.Properties['accept_languages']) {
+        $langs = [string]$prefObj.intl.accept_languages
+      }
+    } catch { }
+    if (-not $langs) { $langs = Get-JsonStr $txt 'accept_languages' }
+    $label = "$($b.Name) · $dirName"
+    if ($displayName -and $displayName -ne $dirName -and $displayName -ne 'Person 1') {
+      $label = "$($b.Name) · $dirName（$displayName）"
+    }
     $webrtc = $null
     $wm = [regex]::Match($txt, '"ip_handling_policy"\s*:\s*"([^"]+)"')
     if ($wm.Success) { $webrtc = $wm.Groups[1].Value }
-    $langs = Get-JsonStr $txt 'accept_languages'
     if ($webrtc -eq 'disable_non_proxied_udp') {
-      Say-Pass "$($b.Name)「$pname」: WebRTC=disable_non_proxied_udp"
+      Say-Pass "${label}: WebRTC=disable_non_proxied_udp"
     } elseif ($webrtc) {
-      Soft-BrowserWarn "$($b.Name)「$pname」: WebRTC=$webrtc（建议 disable_non_proxied_udp 或用扩展禁用）" 5
+      Soft-BrowserWarn "${label}: WebRTC=$webrtc（建议 disable_non_proxied_udp 或用扩展禁用）" 5
     } else {
-      Soft-BrowserWarn "$($b.Name)「$pname」: 未设置 webrtc.ip_handling_policy，可能暴露真实/局域网 IP（建议 disable_non_proxied_udp）" 5
+      Soft-BrowserWarn "${label}: 未设置 webrtc.ip_handling_policy，可能暴露真实/局域网 IP（建议 disable_non_proxied_udp）" 5
     }
     if ($langs) {
       if (Test-LangMismatch $langs $cfg.expectedLoc) {
-        Soft-BrowserWarn "$($b.Name)「$pname」: 语言 $langs 与出口地区 $($cfg.expectedLoc) 不一致" 5
+        Say-Warn "${label}: 语言 $langs 与出口地区 $($cfg.expectedLoc) 不一致" 0
       } else {
-        Say-Info "$($b.Name)「$pname」: 语言 $langs"
+        Say-Info "${label}: 语言 $langs"
       }
     }
     if ($txt -match '(?i)switchyomega|foxyproxy|proxy\s*switch|webrtc.?leak|canvas.?blocker|fingerprint|指纹|CanvasFingerprint|WebRTC Control') {
-      Say-Info "$($b.Name)「$pname」: 检测到代理/指纹相关扩展（仅提示）"
+      Say-Info "${label}: 检测到代理/指纹相关扩展（仅提示）"
     }
   }
 }
@@ -344,21 +388,27 @@ if (Test-Path -LiteralPath $ffRoot) {
 
 $bcPath = Join-Path $script:Root 'browser-check.json'
 if (-not (Test-Path -LiteralPath $bcPath)) {
-  Say-Note '实时浏览器检查（WebRTC/时区/语言）请从检查面板运行；命令行模式跳过，不扣分'
+  Say-Info '实时浏览器检查（WebRTC/时区/语言）请从检查面板运行；命令行模式跳过，不扣分'
 } else {
   $raw = $null; try { $raw = [IO.File]::ReadAllText($bcPath, [Text.Encoding]::UTF8) } catch {}
   $bc = $null; if ($raw) { try { $bc = $raw | ConvertFrom-Json } catch { Say-Warn 'browser-check.json 解析失败' 3 } }
   if ($bc) {
     $ts = $null
     if ($bc.ts) {
-      try { $ts = [datetime]::Parse([string]$bc.ts, $null, [Globalization.DateTimeStyles]::RoundtripKind) } catch {
-        try { $ts = [datetime]$bc.ts } catch {}
+      try {
+        $ts = [datetime]::Parse(
+          [string]$bc.ts,
+          [Globalization.CultureInfo]::InvariantCulture,
+          [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal
+        )
+      } catch {
+        try { $ts = [datetime]::Parse([string]$bc.ts, $null, [Globalization.DateTimeStyles]::AssumeUniversal).ToUniversalTime() } catch {}
       }
     }
-    if (-not $ts -or ((Get-Date) - $ts).TotalMinutes -gt 3) {
-      Say-Note 'browser-check.json 超过 3 分钟或无时间戳，视为过期；请从面板重新检查（不扣分）'
+    if (-not $ts -or (([datetime]::UtcNow) - $ts).TotalMinutes -gt 3) {
+      Say-Info 'browser-check.json 超过 3 分钟或无时间戳，视为过期；请从面板重新检查（不扣分）'
     } else {
-      Say-Info ("实时快照 " + $ts.ToString('HH:mm:ss'))
+      Say-Info ("实时快照 " + $ts.ToUniversalTime().ToString('HH:mm:ss') + ' UTC')
       $srflx = @(); $hostC = @(); $v6extra = @()
       if ($bc.webrtc) {
         if ($bc.webrtc.srflx) { $srflx = @($bc.webrtc.srflx | ForEach-Object { [string]$_ } | Where-Object { $_ }) }
@@ -397,7 +447,7 @@ if (-not (Test-Path -LiteralPath $bcPath)) {
       $blang = [string]$bc.language
       if ((-not $blang) -and $bc.languages) { $blang = [string](@($bc.languages)[0]) }
       if ($blang -and $cfg.expectedLoc) {
-        if (Test-LangMismatch $blang $cfg.expectedLoc) { Say-Warn "浏览器语言 $blang 与出口地区 $($cfg.expectedLoc) 不一致" 5 }
+        if (Test-LangMismatch $blang $cfg.expectedLoc) { Say-Warn "浏览器语言 $blang 与出口地区 $($cfg.expectedLoc) 不一致" 0 }
         else { Say-Pass "浏览器语言 $blang" }
       } elseif ($blang) { Say-Info "浏览器语言: $blang" }
 
