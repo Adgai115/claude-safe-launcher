@@ -66,7 +66,7 @@ if ($script:DoUndoFix) {
     foreach ($r in $undo.restored) { Write-Host ("  [修复] 已恢复 {0} = {1}" -f $r.name, $r.valueMasked) -ForegroundColor Yellow }
   }
   foreach ($c in @($undo.conflicts)) {
-    $msg = if ($c -is [string]) { $c } elseif ($c.PSObject.Properties['message']) { [string]$c.message } else { [string]$c }
+    $msg = if ($c -is [string]) { $c } elseif ($c -is [System.Collections.IDictionary]) { if ($c.Contains('message') -and $c['message']) { [string]$c['message'] } else { [string]$c['name'] } } elseif ($c.PSObject.Properties['message']) { [string]$c.message } else { [string]$c }
     Write-Host ("  [警告] {0}" -f $msg) -ForegroundColor Yellow
   }
   if (-not $undo.ok -and $undo.error) { Write-Host ("  [失败] {0}" -f $undo.error) -ForegroundColor Red }
