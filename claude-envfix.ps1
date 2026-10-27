@@ -611,7 +611,8 @@ function Invoke-CslEnvUndo {
 
     $curShow = if ($curAbsent) { '(不存在)' } else { Protect-Secret $curEntry.Value }
     $expShow = if ($expectAbsent) { '(删除)' } else { Protect-Secret ([string]$expectAfter) }
-    $conflictMsg = "冲突: $name 当前值与修复后不一致（当前=$curShow，期望修复后=$expShow）"
+    $restoreShow = if (-not $wantExisted) { '(不存在)' } else { Protect-Secret ([string]$wantVal) }
+    $conflictMsg = "冲突: $name 当前值与修复后不一致（当前=$curShow，修复后应为=$expShow，撤销将恢复为=$restoreShow）"
 
     if ($conflict) {
       $decision = $DefaultConflictDecision
@@ -637,7 +638,7 @@ function Invoke-CslEnvUndo {
       if ($decision -eq 'abort') {
         return @{
           ok = $false; error = '用户中止撤销'
-          conflicts = @($conflicts + @{ name = $name; currentMasked = $curShow; expectedMasked = $expShow; message = $conflictMsg })
+          conflicts = @($conflicts + @{ name = $name; currentMasked = $curShow; expectedMasked = $expShow; restoreMasked = $restoreShow; message = $conflictMsg })
           exitCode = 1; partial = $restored; dryRun = [bool]$DryRun
         }
       }
@@ -645,6 +646,7 @@ function Invoke-CslEnvUndo {
         name = $name
         currentMasked = $curShow
         expectedMasked = $expShow
+        restoreMasked = $restoreShow
         message = $conflictMsg
         decision = $decision
       }
