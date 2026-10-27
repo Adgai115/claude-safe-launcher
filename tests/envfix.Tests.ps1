@@ -560,6 +560,21 @@ $mw3.State.m['CSL_TEST_ANTHROPIC_MW_ONLY'] = 'x'
 $mw3Old = [pscustomobject]@{ GetUserEntry = $mw3.GetUserEntry; GetMachine = $mw3.GetMachine; SetUserEntry = $mw3.SetUserEntry; ListUserNames = $mw3.ListUserNames }
 $mwT3 = Find-CslRelayEnvTargets -Patterns @('CSL_TEST_ANTHROPIC_MW_*') -TestMode -Store $mw3Old
 Assert-True ($mwT3.ok -and @($mwT3.machineOnly).Count -eq 0) 'store without ListMachineNames still works'
+# v3.3.0: HKLM unreadable (access denied / key missing) falls back to v3.2.0 behaviour, no error
+$mw4 = New-MemStore
+& $mw4.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_MW_U4' -Value 'u4'
+$mw4Throw = [pscustomobject]@{ GetUserEntry = $mw4.GetUserEntry; GetMachine = $mw4.GetMachine; SetUserEntry = $mw4.SetUserEntry; ListUserNames = $mw4.ListUserNames; ListMachineNames = { throw [System.UnauthorizedAccessException]::new('Requested registry access is not allowed.') } }
+$mwT4 = Find-CslRelayEnvTargets -Patterns @('CSL_TEST_ANTHROPIC_MW_*') -TestMode -Store $mw4Throw
+Assert-True ($mwT4.ok -and @($mwT4.machineOnly).Count -eq 0 -and (@($mwT4.user | ForEach-Object { $_.Name }) -join ',') -eq 'CSL_TEST_ANTHROPIC_MW_U4') 'HKLM access denied: find falls back to user-only (v3.2.0)'
+$mwF4 = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_MW_*') -TestMode -Store $mw4Throw
+Assert-True ($mwF4.ok -and $null -eq (& $mw4.GetUserEntry 'CSL_TEST_ANTHROPIC_MW_U4') -and @(@($mwF4.plan) | Where-Object { $_.action -eq 'skip-admin' }).Count -eq 0) 'HKLM access denied: fix still works, no admin rows'
+$mw5 = New-MemStore
+& $mw5.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_MW_U5' -Value 'u5'
+$mw5Null = [pscustomobject]@{ GetUserEntry = $mw5.GetUserEntry; GetMachine = $mw5.GetMachine; SetUserEntry = $mw5.SetUserEntry; ListUserNames = $mw5.ListUserNames; ListMachineNames = { return $null } }
+$mwT5 = Find-CslRelayEnvTargets -Patterns @('CSL_TEST_ANTHROPIC_MW_*') -TestMode -Store $mw5Null
+Assert-True ($mwT5.ok -and @($mwT5.machineOnly).Count -eq 0 -and @($mwT5.user).Count -eq 1) 'HKLM key missing (null list): falls back to user-only (v3.2.0)'
+$efSrc = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'claude-envfix.ps1') -Raw
+Assert-True ($efSrc -match "ListMachineNames = \{\s*\r?\n\s*\`$names = New-Object[^\r\n]*\r?\n\s*try \{") 'default ListMachineNames wraps HKLM read in try'
 $dStore = Get-CslDefaultEnvStore
 Assert-True ($null -ne $dStore.PSObject.Properties['ListMachineNames']) 'default store exposes ListMachineNames'
 Clear-TestBackups
@@ -706,6 +721,31 @@ $lst = @(Get-CslEnvFixList | Where-Object { $_.id -eq 'envfix-20000101T000000015
 Assert-True ($lst.Count -eq 1 -and [bool]$lst[0].corrupt) '-ListFixes shows empty-name backup as corrupt'
 Clear-TestBackups
 
+Write-Host '== Corrupt (nameless-entry) backup is never pruned ==' -ForegroundColor Cyan
+$crId = '20000101T000000021-crp1'
+$crPath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $crId)
+$crJson = '{"id":"' + $crId + '","ts":"2000-01-01T00:00:00Z","testMode":true,"entries":[{"name":"CSL_TEST_ANTHROPIC_CR_OK","existed":true,"before":"cr-orig","kind":"String"},{"name":"","existed":true,"before":"x","kind":"String"}]}'
+[IO.File]::WriteAllText($crPath, $crJson, (New-Object System.Text.UTF8Encoding($false)))
+$crHash = (Get-FileHash -LiteralPath $crPath -Algorithm SHA256).Hash
+$storeC = New-MemStore
+$prevKeepC = $script:CslEnvBackupKeep
+$script:CslEnvBackupKeep = 3
+try {
+  for ($i = 0; $i -lt 8; $i++) {
+    $n = "CSL_TEST_ANTHROPIC_CFLOOD_$i"
+    & $storeC.SetUserEntry -Name $n -Value ("c$i")
+    [void](Invoke-CslEnvFix -Patterns @($n) -TestMode -Store $storeC)
+    if ($i % 2 -eq 0) { [void](Invoke-CslEnvUndo -Id (@(Get-CslEnvFixList | Where-Object { -not $_.corrupt })[0].id) -NoPause -TestMode -Store $storeC) }
+  }
+} finally { $script:CslEnvBackupKeep = $prevKeepC }
+$crLeft = @(Get-ChildItem -LiteralPath (Get-CslEnvBackupDir) -Filter 'envfix-*.json' -File).Count
+Assert-True ($crLeft -le 7) ("prune ran during corrupt-backup flood ($crLeft files left)")
+Assert-True (Test-Path -LiteralPath $crPath) 'corrupt backup survived prune'
+Assert-Eq $(if (Test-Path -LiteralPath $crPath) { (Get-FileHash -LiteralPath $crPath -Algorithm SHA256).Hash } else { '' }) $crHash 'corrupt backup content unchanged'
+$crItem = @(Get-CslEnvFixList | Where-Object { $_.corrupt })
+Assert-True ($crItem.Count -eq 1 -and [string]$crItem[0].path -eq $crPath) '-ListFixes marks it corrupt with file path'
+Clear-TestBackups
+
 Write-Host '== Partially undone backup is never pruned ==' -ForegroundColor Cyan
 $storeP = New-MemStore
 & $storeP.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PART_A' -Value 'part-a-orig'
@@ -838,6 +878,8 @@ Write-Host '== v3.3.0 check 9 card lines are not truncated ==' -ForegroundColor 
 Assert-True ($panelText -match "className='card'\+\(isEnvGroup\(g\)\?' env':''\)") 'env group card gets class env'
 Assert-True ($panelText -match '\.card\.env \.row \.txt\{white-space:normal;overflow-wrap:anywhere;text-overflow:clip\}') 'env card rows wrap (no ellipsis), long tokens break'
 Assert-True ($panelText -match '\.row\.fail \.txt,\.row\.warn \.txt,\.row\.fix \.txt\{white-space:normal;overflow-wrap:anywhere\}') 'fail/warn/fix rows break long tokens'
+Assert-True ($panelText -match 'function fitAll\(\)' -and $panelText -match "class=""row more""|className='row more'" -and $panelText -match "more\.title=") 'overflowing card rows fold into a hover row (no silent clipping)'
+Assert-True ($panelText -match '#groups>\.card\{max-height:none\}' -and $panelText -match 'function finish\(\)\{busy=false;setBusy\(false\);fitAll\(\);') 'cards not clipped by max-height; fold recomputed on finish'
 $fnAst = $pfAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Write-CslEnvFixPlan' }, $true)
 Assert-True ($null -ne $fnAst) 'preflight defines Write-CslEnvFixPlan'
 if ($fnAst) {

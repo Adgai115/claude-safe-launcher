@@ -385,7 +385,8 @@ function Write-CslEnvBackup($obj) {
   $undone = @()
   foreach ($f in $all) {
     $rr = Read-CslEnvBackupFile -Path $f.FullName
-    if (-not $rr.ok) { $undone += $f; continue }
+    # v3.3.0: corrupt backups are never auto-pruned and do not count toward the keep quota
+    if (-not $rr.ok) { continue }
     # Never prune backups that recorded conflict-skipped entries (values kept for manual recovery)
     $hasSkipped = $false
     if ($rr.data.PSObject.Properties['skipped'] -and $rr.data.skipped) {
@@ -459,7 +460,7 @@ function Get-CslEnvFixList {
   foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter 'envfix-*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name -Descending)) {
     $rd = Read-CslEnvBackupFile -Path $f.FullName
     if (-not $rd.ok) {
-      $out += [pscustomobject]@{ id = $f.BaseName; ts = ''; undone = $true; corrupt = $true; error = $rd.error; vars = @() }
+      $out += [pscustomobject]@{ id = $f.BaseName; ts = ''; undone = $true; corrupt = $true; path = $f.FullName; error = $rd.error; vars = @() }
       continue
     }
     $j = $rd.data

@@ -149,6 +149,10 @@ body{--font:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Hiragino Sans 
 .cst{font-weight:700}
 .row.warn .tag,.cst.warn{color:#2a1a00}
 .row.info .txt,.row.note .txt{opacity:1}
+.row.more .tag{background:var(--muted)}
+.row.more .txt{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:help}
+.row[hidden]{display:none!important}
+#groups>.card{max-height:none}
 .btn{font-family:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Hiragino Sans GB",sans-serif;font-weight:600}
 .state{font-weight:700}
 body[data-theme=anime]{--muted:#5d6f92;--title-font:"YouYuan","Microsoft YaHei UI",sans-serif}
@@ -282,7 +286,28 @@ function isFixableEnvFail(g,r){return isEnvGroup(g)&&r.cls==='fail'&&/用户级/
 function isUnfixableIssue(g,r){return (r.cls==='fail'||r.cls==='warn')&&!isFixableEnvFail(g,r)}
 function addRow(g,r){const d=document.createElement('div');d.className='row '+r.cls;d.innerHTML=`<span class="tag">${r.lvl}</span><span class="txt">${esc(r.text)}</span>`;d.title=r.text;
   if(isUnfixableIssue(g,r)){const b=document.createElement('button');b.type='button';b.className='btn btn-sm btn-copy';b.textContent='复制问题说明';b.onclick=e=>{e.stopPropagation();copyOneIssue(g,r)};d.appendChild(b)}
-  g.el.appendChild(d)}
+  g.el.appendChild(d);fitCard(g)}
+// v3.3.0: a card never silently clips rows. If rows overflow the card, fold the least important
+// ones (pass/info/note first, then from the bottom) into one "还有 N 条" row; hover shows full text.
+const FOLD_ORDER={pass:0,info:0,note:0,fix:1,warn:2,fail:3};
+function cardOver(el){return el.scrollHeight>el.clientHeight+1}
+function mainOver(){const m=$('groups');return !!m&&m.scrollHeight>m.clientHeight+1}
+function setMore(el,hidden){let more=el.querySelector(':scope > .row.more');
+ if(!hidden.length){if(more)more.remove();return}
+ if(!more){more=document.createElement('div');more.className='row more';more.innerHTML='<span class="tag">更多</span><span class="txt"></span>';el.appendChild(more)}
+ more.querySelector('.txt').textContent='还有 '+hidden.length+' 条未显示，鼠标悬停看全文';
+ more.title=[...hidden].sort((x,y)=>x.i-y.i).map(o=>'['+o.r.querySelector('.tag').textContent+'] '+o.r.title).join('\n')}
+function fitAll(){const gs=(st&&st.groups)||[];
+ gs.forEach(g=>{if(!g.el)return;g.el.querySelectorAll(':scope > .row').forEach(r=>r.hidden=false);setMore(g.el,[]);g._hidden=[]});
+ for(let guard=0;guard<200;guard++){
+  let tgt=gs.find(g=>g.el&&cardOver(g.el));
+  if(!tgt&&mainOver()){tgt=gs.filter(g=>g.el).sort((a,b)=>b.el.offsetHeight-a.el.offsetHeight)[0]}
+  if(!tgt)break;
+  const vis=[...tgt.el.querySelectorAll(':scope > .row:not(.more)')].map((r,i)=>({r,i,k:FOLD_ORDER[r.className.split(' ')[1]]||0})).filter(o=>!o.r.hidden);
+  if(vis.length<2)break;
+  vis.sort((x,y)=>x.k-y.k||y.i-x.i);tgt._hidden.push(vis[0]);vis[0].r.hidden=true;setMore(tgt.el,tgt._hidden)}}
+function fitCard(g){fitAll()}
+window.addEventListener('resize',()=>fitAll());
 function cardStatus(g){let w='info';g.rows.forEach(r=>{if(RANK[r.cls]>RANK[w])w=r.cls});const c=g.el.querySelector('.cst');c.className='cst '+w;c.textContent=CST[w]||'信息';c.style.display=CST[w]?'':'none';g.el.classList.toggle('r-fail',w==='fail');g.el.classList.toggle('r-warn',w==='warn');
  if(isEnvGroup(g)){updateEnvActions(g,w)}}
 function updateEnvActions(g,w){const box=g.el.querySelector('.card-actions');if(!box)return;
@@ -394,7 +419,7 @@ function handle(line){line=line.replace(/^\uFEFF/,'').replace(/\s+$/,'');if(!lin
  if(m=line.match(/一致性评分:\s*(\d+)/)){st.score=+m[1];return}
  if(/正在启动 Claude|切换到前台|已启动后台监控|未启动 Claude|NoLaunch/.test(line)){st.events.push(line.trim());$('events').textContent=st.events.join('　·　')}
 }
-function finish(){busy=false;setBusy(false);st.phase=st.cnt.fail?'fail':st.cnt.warn?'warn':'ok';setState();
+function finish(){busy=false;setBusy(false);fitAll();st.phase=st.cnt.fail?'fail':st.cnt.warn?'warn':'ok';setState();
  setScore(st.score!=null?st.score:Math.max(0,100-st.cnt.fail*25-st.cnt.warn*8));
  $('hint').textContent='检查完成 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
  const ca=$('bCopyAll');if(ca)ca.disabled=!(st.cnt.fail||st.cnt.warn)}

@@ -69,7 +69,7 @@ if ($ListFixes) {
   $list = @(Get-CslEnvFixList)
   if ($list.Count -eq 0) { Write-Host '  （无）' -ForegroundColor DarkGray }
   foreach ($it in $list) {
-    $st = $(if ($it.undone) { '已撤销' } elseif ($it.partiallyUndone) { '部分已撤销（其余可撤销）' } else { '可撤销' })
+    $st = $(if ($it.corrupt) { "损坏（不会自动清理）: $($it.path)" } elseif ($it.undone) { '已撤销' } elseif ($it.partiallyUndone) { '部分已撤销（其余可撤销）' } else { '可撤销' })
     Write-Host ("  [{0}] {1}  {2}" -f $it.id, $it.ts, $st)
     foreach ($v in $it.vars) {
       Write-Host ("    - {0}: before={1} after={2}{3}" -f $v.name, $v.beforeMasked, $v.after, $(if ($it.partiallyUndone -and $v.undone) { '（已撤销）' } else { '' }))
