@@ -162,7 +162,7 @@ if ($ia -and $ia.status -eq 'success') {
 # ---------- 6. DNS ----------
 Say-Head '6. DNS (fake-ip)'
 $dns = Resolve-DnsName api.anthropic.com -Type A -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress } | Select-Object -First 1
-if ($dns -and $dns.IPAddress -like '198.18.*') { Say-Pass "api.anthropic.com → $($dns.IPAddress)（fake-ip，由 Clash 接管）" }
+if ($dns -and ($dns.IPAddress -like '198.18.*' -or $dns.IPAddress -like '198.19.*')) { Say-Pass "api.anthropic.com → $($dns.IPAddress)（fake-ip，由 Clash 接管）" }
 elseif ($dns) { Say-Warn "api.anthropic.com → $($dns.IPAddress)，不是 fake-ip，DNS 可能未被 Clash 接管" 10 }
 else { Say-Warn 'api.anthropic.com 解析失败' 5 }
 
