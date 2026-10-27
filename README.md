@@ -192,7 +192,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoPa
 4. **Content-Type**：POST 必须为 `application/json`（可带 charset），以触发 CORS 预检；**从不**对 OPTIONS 返回宽松 CORS，也**从不**发送 `Access-Control-Allow-Origin`。
 5. **会话令牌**：每次启动用 `RNGCryptoServiceProvider` 生成 ≥32 字节随机令牌，注入面板 HTML；所有 `/api` 请求（含 GET）必须带 `X-CSL-Token`，常量时间比较；令牌绝不写入日志。页面 HTML 本身不要求令牌。
 6. **patterns / 测试模式**：请求体中的 `patterns` / `testMode` **始终忽略**。仅当进程环境变量 `CSL_PANEL_TESTMODE=1` 时进入测试模式：强制 `TestMode`、固定模式 `CSL_TEST_ANTHROPIC_*`，页眉显示实色「测试模式」标签。未设该变量时行为与原先生产一致（配置/默认列表，排除 `CSL_TEST_*`）。启用示例：`$env:CSL_PANEL_TESTMODE='1'; .\claude-panel.ps1`。
-7. **撤销**：`undo-plan`（dry-run）→ 冲突脱敏列表 → 每项可选「跳过/覆盖」（默认跳过），另有「全部跳过 / 全部覆盖」；确认后 `undo-apply` 提交 `defaultConflictDecision=skip` 与逐项 `decisions`；取消则不改系统。不再无 `-ForceSkipConflicts`。服务端仅接受已知冲突名且值为 skip|overwrite，否则 400。
+7. **撤销**：`undo-plan`（dry-run）→ 冲突脱敏列表 → 每项可选「跳过/覆盖」（默认跳过），另有「全部跳过 / 全部覆盖」；确认后 `undo-apply` 提交 `defaultConflictDecision=skip` 与逐项 `decisions`；取消则不改系统。不再硬编码 `-ForceSkipConflicts`。服务端仅接受已知冲突名且值为 skip|overwrite，否则 400。
 
 ## 目录结构
 
