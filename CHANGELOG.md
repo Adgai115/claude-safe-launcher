@@ -1,5 +1,16 @@
 # 更新日志
 
+## v3.3.0（一期 · Windows）
+
+- 新增「问题说明」导出：面板对不可一键修复的失败/警告项提供「复制问题说明」，页脚提供「复制全部问题」与「隐藏 IP」开关；整屏布局保持不变。
+- CLI：`-ExportIssues`（建议配合 `-NoLaunch -NoPause`）打印相同四段结构文本；可选 `-HideIp`。
+- 每条说明含：问题、当前状态（脱敏）、期望状态、复查命令；固定结尾「请只给出建议，确认后再修改；不要修改 Claude Code 自身依赖的环境变量。」
+- 脱敏：路径用户名 → `%USERPROFILE%`；计算机名 → `<PC>`；订阅链接与节点域名/IP 全部遮罩；出口 IP / WebRTC IP 默认保留并附提示行「本说明包含你的出口 IP，粘贴前请确认」，「隐藏 IP」/ `-HideIp` 时一并遮罩并省略提示行。`controllerSecret` / 令牌绝不输出。复用 `Mask-Value` / `Protect-Secret`。
+- **不调用**任何本地或云端 agent，只生成可复制文本。
+- 问题说明在面板侧由已有检查结果生成（无新增写接口）；注入 `__CSL_USERPROFILE__` / `__CSL_COMPUTERNAME__` 供脱敏。既有 `/api/*` 仍走 v3.2.0 同源安全门。
+- 新增 `claude-issueexport.ps1` 与 `tests/issueexport.Tests.ps1`。
+- 已知限制：Mac 端这一版没有改动。
+
 ## v3.2.0（一期 · Windows）
 
 - 新增用户级中转环境变量一键修复 / 撤销：检查第 9 组与 CLI/面板共用同一模式源（默认 `ANTHROPIC_*` 列表，可用 `-FixVarPattern` 或 `preflight.json` 的 `fixVarPatterns`）。

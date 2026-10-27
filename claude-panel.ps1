@@ -100,6 +100,8 @@ while (-not $quit) {
         $h = $h.Replace('__THEME__', [string](Get-Theme))
         $h = $h.Replace('__CSL_TOKEN__', $script:CslPanelToken)
         $h = $h.Replace('__CSL_TESTMODE__', $(if ($script:CslPanelTestMode) { '1' } else { '0' }))
+        $h = $h.Replace('__CSL_USERPROFILE__', [string]$env:USERPROFILE)
+        $h = $h.Replace('__CSL_COMPUTERNAME__', [string]$env:COMPUTERNAME)
         Send $ctx $h 'text/html; charset=utf-8'
       }
       '/api/run' {

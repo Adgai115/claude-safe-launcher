@@ -176,14 +176,18 @@ function Mask-Value {
   $v = [string]$Value
   # 预留：Path / Url 规则（v3.3+）；当前 Auto 与 Secret 同路径，先做前缀掩码
   if ($Kind -eq 'Path' -or ($Kind -eq 'Auto' -and $v -match '(?i)^[A-Za-z]:\\|^/')) {
-    # placeholder: collapse user profile prefix when present
+    # collapse user profile prefix when present; never fall through to Secret for Path kind
     try {
       $up = [string]$env:USERPROFILE
-      if ($up -and $v.StartsWith($up, [StringComparison]::OrdinalIgnoreCase)) {
-        $v = '%USERPROFILE%' + $v.Substring($up.Length)
-        return $v
+      if ($up -and $v.IndexOf($up, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        $v = [regex]::Replace($v, [regex]::Escape($up), '%USERPROFILE%', 'IgnoreCase')
       }
     } catch {}
+    $v = [regex]::Replace($v, '(?i)([A-Za-z]:\\Users\\)[^\\\/\s"'']+', '%USERPROFILE%')
+    $v = [regex]::Replace($v, '(?i)(/Users/)[^\/\s"'']+', '%USERPROFILE%')
+    if ($Kind -eq 'Path') { return $v }
+    # Auto: if it looked like a path, return after path rules (do not secret-mask paths)
+    if ($v -match '(?i)%USERPROFILE%|^[A-Za-z]:\\|^/') { return $v }
   }
   if ($Kind -eq 'Url' -or ($Kind -eq 'Auto' -and $v -match '(?i)^https?://')) {
     # placeholder: keep scheme+host, mask path/query for future; for now treat as secret-ish
