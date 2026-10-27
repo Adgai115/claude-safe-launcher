@@ -222,6 +222,10 @@ function Read-CslEnvBackupFile {
     if (-not $j -or -not $j.id) {
       return @{ ok = $false; error = "备份文件损坏或无法解析: $Path" }
     }
+    # 缺 entries 字段或 entries 为 null 按损坏处理（否则 @($j.entries) 在 5.1 下得到一个 $null 元素）
+    if (-not $j.PSObject.Properties['entries'] -or $null -eq $j.entries) {
+      return @{ ok = $false; error = "备份文件损坏或无法解析: $Path" }
+    }
     return @{ ok = $true; data = $j; path = $Path }
   } catch {
     return @{ ok = $false; error = "备份文件损坏或无法解析: $Path ($_)" }
@@ -257,24 +261,83 @@ function Get-CslEarliestMap {
   return $map
 }
 
+function Get-CslEnvFixIdTime([string]$Id) {
+  # Parse the timestamp part of a fix id. Returns UTC datetime or $null.
+  # New ids: yyyyMMddTHHmmssfff-xxxx. Old ids: yyyyMMddTHHmmss-xxxx (treated as that second + 999ms).
+  if ([string]::IsNullOrEmpty($Id)) { return $null }
+  $ci = [Globalization.CultureInfo]::InvariantCulture
+  $st = [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+  $dt = [datetime]::MinValue
+  if ($Id -match '^(\d{8}T\d{9})(-|$)') {
+    if ([datetime]::TryParseExact($Matches[1], 'yyyyMMddTHHmmssfff', $ci, $st, [ref]$dt)) { return $dt }
+  } elseif ($Id -match '^(\d{8}T\d{6})(-|$)') {
+    if ([datetime]::TryParseExact($Matches[1], 'yyyyMMddTHHmmss', $ci, $st, [ref]$dt)) { return $dt.AddMilliseconds(999) }
+  }
+  return $null
+}
+
 function New-CslEnvFixId {
-  $t = [datetime]::UtcNow.ToString('yyyyMMddTHHmmss')
+  # Monotonic UTC id: yyyyMMddTHHmmssfff + '-' + 4 hex.
+  # Time part = later of (now, newest existing id + 1ms), so ids keep increasing even if the clock goes back.
+  param([Nullable[datetime]]$NowUtc)
+  $dir = Get-CslEnvBackupDir
+  $now = $(if ($NowUtc) { ([datetime]$NowUtc).ToUniversalTime() } else { [datetime]::UtcNow })
+  $prefix = 'envfix-'
+  $maxT = $null
+  foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter 'envfix-*.json' -File -ErrorAction SilentlyContinue)) {
+    $nid = $f.BaseName
+    if ($nid.StartsWith($prefix)) { $nid = $nid.Substring($prefix.Length) }
+    $t = Get-CslEnvFixIdTime $nid
+    if ($null -ne $t -and ($null -eq $maxT -or $t -gt $maxT)) { $maxT = $t }
+  }
+  $useT = $now
+  if ($null -ne $maxT) {
+    $next = $maxT.AddMilliseconds(1)
+    if ($next -gt $useT) { $useT = $next }
+  }
   $r = -join ((48..57 + 97..102) | Get-Random -Count 4 | ForEach-Object { [char]$_ })
-  return "$t-$r"
+  return "$($useT.ToString('yyyyMMddTHHmmssfff', [Globalization.CultureInfo]::InvariantCulture))-$r"
 }
 
 function Write-CslEnvBackup($obj) {
   $dir = Get-CslEnvBackupDir
   $path = Join-Path $dir ("envfix-{0}.json" -f $obj.id)
   $json = $obj | ConvertTo-Json -Depth 6
-  [IO.File]::WriteAllText($path, $json, [Text.UTF8Encoding]::new($false))
+  try {
+    [IO.File]::WriteAllText($path, $json, [Text.UTF8Encoding]::new($false))
+  } catch {
+    throw ("备份写入失败: " + $_)
+  }
+  if (-not (Test-Path -LiteralPath $path)) {
+    throw '备份写入失败: 文件不存在'
+  }
+  $verify = Read-CslEnvBackupFile -Path $path -Strict
+  if (-not $verify.ok) {
+    throw ("备份写入失败: " + $verify.error)
+  }
+  $written = @($verify.data.entries)
+  $expected = @($obj.entries)
+  if ($written.Count -ne $expected.Count) {
+    throw '备份写入失败: 条目数不匹配'
+  }
+  for ($i = 0; $i -lt $expected.Count; $i++) {
+    if ([string]$written[$i].name -ne [string]$expected[$i].name) {
+      throw '备份写入失败: 条目不匹配'
+    }
+  }
   $all = @(Get-ChildItem -LiteralPath $dir -Filter 'envfix-*.json' -File | Sort-Object Name -Descending)
   $undoable = @()
   $undone = @()
   foreach ($f in $all) {
-    $rd = Read-CslEnvBackupFile -Path $f.FullName
-    if (-not $rd.ok) { $undone += $f; continue }
-    if ($rd.data.undone) { $undone += $f } else { $undoable += $f }
+    $rr = Read-CslEnvBackupFile -Path $f.FullName
+    if (-not $rr.ok) { $undone += $f; continue }
+    # Never prune backups that recorded conflict-skipped entries (values kept for manual recovery)
+    $hasSkipped = $false
+    if ($rr.data.PSObject.Properties['skipped'] -and $rr.data.skipped) {
+      $hasSkipped = (@($rr.data.skipped).Count -gt 0)
+    }
+    if ($hasSkipped) { continue }
+    if ($rr.data.undone) { $undone += $f } else { $undoable += $f }
   }
   if ($undoable.Count -gt $script:CslEnvBackupKeep) {
     foreach ($old in $undoable[$script:CslEnvBackupKeep..($undoable.Count - 1)]) {
@@ -448,7 +511,11 @@ function Invoke-CslEnvFix {
     undone = $false
     entries = $entries
   }
-  $backupPath = Write-CslEnvBackup $backupObj
+  try {
+    $backupPath = Write-CslEnvBackup $backupObj
+  } catch {
+    return @{ ok = $false; error = '备份写入失败，未做任何修改'; exitCode = 1 }
+  }
 
   $applied = @()
   $doneNames = @()
@@ -561,6 +628,15 @@ function Invoke-CslEnvUndo {
   }
   $opsToMark[$bak.id] = $got.path
 
+  # TestMode: every name in the expanded undo chain must be CSL_TEST_* before any plan/write
+  if ($TestMode) {
+    foreach ($tn in @($targetNames)) {
+      if (-not (Test-CslVarNameAllowed -Name $tn -TestMode:$TestMode)) {
+        return @{ ok = $false; error = ("TestMode 拒绝非 CSL_TEST_ 变量: " + $tn); exitCode = 2 }
+      }
+    }
+  }
+
   $latestAfter = @{}
   $latestAfterKind = @{}
   foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter 'envfix-*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
@@ -611,7 +687,8 @@ function Invoke-CslEnvUndo {
 
     $curShow = if ($curAbsent) { '(不存在)' } else { Protect-Secret $curEntry.Value }
     $expShow = if ($expectAbsent) { '(删除)' } else { Protect-Secret ([string]$expectAfter) }
-    $conflictMsg = "冲突: $name 当前值与修复后不一致（当前=$curShow，期望修复后=$expShow）"
+    $restoreShow = if (-not $wantExisted) { '(不存在)' } else { Protect-Secret ([string]$wantVal) }
+    $conflictMsg = "冲突: $name 当前值与修复后不一致（当前=$curShow，修复后应为=$expShow，撤销将恢复为=$restoreShow）"
 
     if ($conflict) {
       $decision = $DefaultConflictDecision
@@ -637,7 +714,7 @@ function Invoke-CslEnvUndo {
       if ($decision -eq 'abort') {
         return @{
           ok = $false; error = '用户中止撤销'
-          conflicts = @($conflicts + @{ name = $name; currentMasked = $curShow; expectedMasked = $expShow; message = $conflictMsg })
+          conflicts = @($conflicts + @{ name = $name; currentMasked = $curShow; expectedMasked = $expShow; restoreMasked = $restoreShow; message = $conflictMsg })
           exitCode = 1; partial = $restored; dryRun = [bool]$DryRun
         }
       }
@@ -645,6 +722,7 @@ function Invoke-CslEnvUndo {
         name = $name
         currentMasked = $curShow
         expectedMasked = $expShow
+        restoreMasked = $restoreShow
         message = $conflictMsg
         decision = $decision
       }
@@ -739,6 +817,18 @@ function Invoke-CslEnvUndo {
         }
         $j = $rd.data
         $j.undone = $true
+        # Record conflict-skipped names on this backup so pruning never deletes it (values stay for manual recovery)
+        if ($skipped -and @($skipped).Count -gt 0) {
+          $namesInThis = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+          foreach ($e in @($j.entries)) { [void]$namesInThis.Add([string]$e.name) }
+          $skipHere = @($skipped | Where-Object { $namesInThis.Contains([string]$_) } | Select-Object -Unique)
+          if ($skipHere.Count -gt 0) {
+            $prev = @()
+            if ($j.PSObject.Properties['skipped'] -and $j.skipped) { $prev = @($j.skipped | ForEach-Object { [string]$_ }) }
+            $merged = @($prev + $skipHere | Select-Object -Unique)
+            $j | Add-Member -NotePropertyName skipped -NotePropertyValue $merged -Force
+          }
+        }
         [IO.File]::WriteAllText($p, ($j | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
       }
     } catch {

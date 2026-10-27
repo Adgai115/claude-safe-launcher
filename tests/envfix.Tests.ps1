@@ -6,6 +6,18 @@ $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 . (Join-Path $root 'claude-common.ps1')
 . (Join-Path $root 'claude-envfix.ps1')
 
+# Platform: do not rely on $IsWindows (absent in Windows PowerShell 5.1)
+$script:OnWindows = ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT)
+# claude-common.ps1 sets Continue when dot-sourced; restore Stop so non-terminating errors also hit the trap
+$ErrorActionPreference = 'Stop'
+# Any uncaught error counts as a failure (no more "error but ALL PASSED")
+$script:Uncaught = 0
+trap {
+  $script:Uncaught++
+  Write-Host ("  FAIL  uncaught error: {0} (line {1})" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber) -ForegroundColor Red
+  continue
+}
+
 $script:Fail = 0
 function Assert-True($cond, $msg) {
   if ($cond) { Write-Host "  PASS  $msg" -ForegroundColor Green }
@@ -207,7 +219,8 @@ Write-Host '== Panel API security helpers ==' -ForegroundColor Cyan
 $token = New-CslSessionToken
 Assert-True ($token.Length -ge 64) 'token length >= 64 hex chars'
 Assert-True (Test-CslSecureEqual $token $token) 'secure equal same'
-Assert-True (-not (Test-CslSecureEqual $token ($token.Substring(0, $token.Length-1) + '0'))) 'secure equal different'
+$altLast = if ($token[-1] -eq '0') { '1' } else { '0' }  # token may already end in '0' (1/16): always flip
+Assert-True (-not (Test-CslSecureEqual $token ($token.Substring(0, $token.Length-1) + $altLast))) 'secure equal different'
 Assert-True (Test-CslPanelHostAllowed -HostHeader 'localhost:47831') 'host localhost ok'
 Assert-True (Test-CslPanelHostAllowed -HostHeader '127.0.0.1:47831') 'host 127 ok'
 Assert-True (-not (Test-CslPanelHostAllowed -HostHeader 'evil.example:47831')) 'host evil rejected'
@@ -325,10 +338,229 @@ Assert-True ($pOff -notcontains 'CSL_TEST_ANTHROPIC_*' -or ($pOff | Where-Object
 Assert-True (($pOff | Where-Object { $_ -like 'CSL_TEST_*' }).Count -eq 0) 'normal excludes CSL_TEST patterns from defaults'
 
 
+Write-Host '== Backup write failure aborts before delete ==' -ForegroundColor Cyan
+$badRoot = Join-Path ([IO.Path]::GetTempPath()) ("csl-envfix-nowrap-" + [guid]::NewGuid().ToString('n'))
+New-Item -ItemType Directory -Path $badRoot -Force | Out-Null
+$bakDir = Join-Path $badRoot 'backups'
+New-Item -ItemType Directory -Path $bakDir -Force | Out-Null
+$prevRoot = $script:Root
+$script:Root = $badRoot
+try {
+  if (-not $script:OnWindows) {
+    & chmod a-w -- $bakDir
+  } else {
+    # Windows: replace backups dir with a file so WriteAllText fails
+    Remove-Item -LiteralPath $bakDir -Force -Recurse -ErrorAction SilentlyContinue
+    Set-Content -LiteralPath $bakDir -Value 'not-a-dir' -Encoding ascii
+  }
+  $store = New-MemStore
+  & $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_API_KEY' -Value 'must-keep-xxxx'
+  $rbw = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_API_KEY') -TestMode -Store $store
+  Assert-True (-not $rbw.ok) 'unwritable backup fails'
+  Assert-True ($rbw.error -match '备份写入失败') 'unwritable error message'
+  Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_API_KEY').Value 'must-keep-xxxx' 'unwritable left var unchanged'
+  Assert-True ($null -eq $rbw.id) 'unwritable no id'
+} finally {
+  if (-not $script:OnWindows) {
+    & chmod u+w -- $bakDir 2>$null
+  }
+  $script:Root = $prevRoot
+  Remove-Item -LiteralPath $badRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host '== Same-second fix ids: UndoFix undoes latest ==' -ForegroundColor Cyan
+$store = New-MemStore
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_A' -Value 'va-orig'
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_B' -Value 'vb-orig'
+# Force same-second collision by pre-seeding an id at current ms if possible; two rapid fixes on disjoint vars
+$fA = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_A') -TestMode -Store $store
+$fB = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_B') -TestMode -Store $store
+Assert-True $fA.ok 'same-sec fix A ok'
+Assert-True $fB.ok 'same-sec fix B ok'
+Assert-True ($fA.id -ne $fB.id) 'same-sec distinct ids'
+Assert-True ($fB.id.CompareTo($fA.id) -gt 0) 'same-sec B id sorts after A'
+# -UndoFix with no Id = latest
+$uLatest = Invoke-CslEnvUndo -NoPause -Store $store
+Assert-True $uLatest.ok 'same-sec undo latest ok'
+Assert-Eq $uLatest.id $fB.id 'same-sec undid B (latest)'
+Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_B').Value 'vb-orig' 'same-sec B restored'
+Assert-True ($null -eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_A')) 'same-sec A still deleted'
+
+Write-Host '== Fix id: later existing id / clock rollback ==' -ForegroundColor Cyan
+$idDir = Get-CslEnvBackupDir
+$seedIds = @('20991231T235959900-aaaa')
+foreach ($sid in $seedIds) {
+  [IO.File]::WriteAllText((Join-Path $idDir ("envfix-{0}.json" -f $sid)), '{"id":"' + $sid + '","ts":"2099-12-31T23:59:59Z","testMode":true,"undone":true,"entries":[]}', [Text.UTF8Encoding]::new($false))
+}
+try {
+  # existing id later than now: new id must sort after it
+  $idLater = New-CslEnvFixId
+  Assert-True ($idLater.CompareTo('20991231T235959900-aaaa') -gt 0) 'id after later existing id'
+  Assert-True ($idLater.StartsWith('20991231T235959901-')) 'id = existing max + 1ms'
+  # clock rollback > 5s: pretend now is 10s before the newest id
+  $idBack = New-CslEnvFixId -NowUtc ([datetime]::new(2099,12,31,23,59,49,900,[DateTimeKind]::Utc))
+  Assert-True ($idBack.CompareTo('20991231T235959900-aaaa') -gt 0) 'clock rollback 10s: id still after max'
+  # chained: write it, next rollback id must be after it too
+  [IO.File]::WriteAllText((Join-Path $idDir ("envfix-{0}.json" -f $idBack)), '{"id":"' + $idBack + '","ts":"2099-12-31T23:59:59Z","testMode":true,"undone":true,"entries":[]}', [Text.UTF8Encoding]::new($false))
+  $idBack2 = New-CslEnvFixId -NowUtc ([datetime]::new(2099,12,31,23,59,40,0,[DateTimeKind]::Utc))
+  Assert-True ($idBack2.CompareTo($idBack) -gt 0) 'clock rollback chained: strictly increasing'
+  # old-format id (second precision) is treated as end of that second
+  Assert-Eq ((Get-CslEnvFixIdTime '20990101T000000-abcd').Millisecond) 999 'old id parsed as +999ms'
+} finally {
+  foreach ($f in @(Get-ChildItem -LiteralPath $idDir -Filter 'envfix-2099123*.json' -File -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $f.FullName -Force }
+}
+
+Write-Host '== Fix id: old-format id mixed with new, undo latest ==' -ForegroundColor Cyan
+$store = New-MemStore
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_NEW' -Value 'vnew-orig'
+$mixDir = Get-CslEnvBackupDir
+# old-format id in the CURRENT second (worst case: same second as the new fix)
+$oldId = ([datetime]::UtcNow.ToString('yyyyMMddTHHmmss', [Globalization.CultureInfo]::InvariantCulture)) + '-ffff'
+$oldBak = [pscustomobject]@{
+  id = $oldId; ts = [datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'); testMode = $true; undone = $false
+  entries = @([pscustomobject]@{ name = 'CSL_TEST_ANTHROPIC_OLD'; existed = $true; before = 'vold-orig'; kind = 'String'; after = $null; earliestExisted = $true; earliestBefore = 'vold-orig'; earliestKind = 'String' })
+}
+$oldPath = Join-Path $mixDir ("envfix-{0}.json" -f $oldId)
+[IO.File]::WriteAllText($oldPath, ($oldBak | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+try {
+  $fNew = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_NEW') -TestMode -Store $store
+  Assert-True $fNew.ok 'mixed ids: new fix ok'
+  Assert-True ($fNew.id.CompareTo($oldId) -gt 0) 'mixed ids: new id sorts after old-format id'
+  Assert-True ((Get-CslEnvFixIdTime $fNew.id) -gt (Get-CslEnvFixIdTime $oldId)) 'mixed ids: new id time after old id time'
+  $uMix = Invoke-CslEnvUndo -NoPause -TestMode -Store $store
+  Assert-True $uMix.ok 'mixed ids: undo latest ok'
+  Assert-Eq $uMix.id $fNew.id 'mixed ids: undid the new (latest) fix'
+  Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_NEW').Value 'vnew-orig' 'mixed ids: new var restored'
+  Assert-True ($null -eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_OLD')) 'mixed ids: old backup not applied'
+} finally {
+  Remove-Item -LiteralPath $oldPath -Force -ErrorAction SilentlyContinue
+  if ($fNew -and $fNew.id) { Remove-Item -LiteralPath (Join-Path $mixDir ("envfix-{0}.json" -f $fNew.id)) -Force -ErrorAction SilentlyContinue }
+}
+
+Write-Host '== Fix id: old-format id later than now ==' -ForegroundColor Cyan
+$futDir = Get-CslEnvBackupDir
+$futOld = ([datetime]::UtcNow.AddMinutes(10).ToString('yyyyMMddTHHmmss', [Globalization.CultureInfo]::InvariantCulture)) + '-0000'
+$futPath = Join-Path $futDir ("envfix-{0}.json" -f $futOld)
+[IO.File]::WriteAllText($futPath, '{"id":"' + $futOld + '","ts":"2000-01-01T00:00:00Z","testMode":true,"undone":true,"entries":[]}', [Text.UTF8Encoding]::new($false))
+try {
+  $idFut = New-CslEnvFixId
+  Assert-True ($idFut.CompareTo($futOld) -gt 0) 'future old-format id: new id sorts after it'
+  Assert-Eq ((Get-CslEnvFixIdTime $idFut) - (Get-CslEnvFixIdTime $futOld)).TotalMilliseconds 1 'future old-format id: new id = old id (second + 999ms) + 1ms'
+} finally {
+  Remove-Item -LiteralPath $futPath -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host '== TestMode undo rejects non CSL_TEST_ names ==' -ForegroundColor Cyan
+$store = New-MemStore
+$fakeId = '20990101T000000001-fade'
+$fakeBak = [pscustomobject]@{
+  id = $fakeId
+  ts = '2099-01-01T00:00:00Z'
+  testMode = $false
+  undone = $false
+  entries = @(
+    [pscustomobject]@{
+      name = 'ANTHROPIC_FAKE_KEY'
+      existed = $true
+      before = 'fake-secret-xxxx'
+      kind = 'String'
+      after = $null
+      earliestExisted = $true
+      earliestBefore = 'fake-secret-xxxx'
+      earliestKind = 'String'
+    }
+  )
+}
+$fakePath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $fakeId)
+[IO.File]::WriteAllText($fakePath, ($fakeBak | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_KEEP' -Value 'stay'
+$uPlan = Invoke-CslEnvUndo -Id $fakeId -TestMode -DryRun -Store $store
+Assert-True (-not $uPlan.ok) 'TestMode undo-plan rejects ANTHROPIC_FAKE'
+Assert-True ($uPlan.error -match 'TestMode|CSL_TEST_') 'TestMode undo-plan error mentions guard'
+$uApply = Invoke-CslEnvUndo -Id $fakeId -TestMode -Store $store -DefaultConflictDecision overwrite
+Assert-True (-not $uApply.ok) 'TestMode undo-apply rejects ANTHROPIC_FAKE'
+Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_KEEP').Value 'stay' 'TestMode undo changed nothing'
+$chkFake = Get-CslEnvBackupById -Id $fakeId
+Assert-True ($null -ne $chkFake -and -not [bool]$chkFake.undone) 'TestMode undo did not mark backup undone'
+# cleanup fake
+Remove-Item -LiteralPath $fakePath -Force -ErrorAction SilentlyContinue
+
+Write-Host '== Conflict-skip backup retained past prune ==' -ForegroundColor Cyan
+$store = New-MemStore
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_KEEPVAL' -Value 'precious-orig-xxxx'
+$fSkip = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_KEEPVAL') -TestMode -Store $store
+Assert-True $fSkip.ok 'skip-retain fix ok'
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_KEEPVAL' -Value 'tampered-now'
+$uSkip = Invoke-CslEnvUndo -Id $fSkip.id -Store $store -DefaultConflictDecision skip
+Assert-True ($uSkip.exitCode -eq 3 -or -not $uSkip.ok) 'skip-retain undo conflict'
+$skipPath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $fSkip.id)
+Assert-True (Test-Path -LiteralPath $skipPath) 'skip-retain backup exists after undo'
+$skipJson = Get-Content -LiteralPath $skipPath -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True ([bool]$skipJson.undone) 'skip-retain marked undone'
+Assert-True (@($skipJson.skipped).Count -ge 1) 'skip-retain recorded skipped names'
+Assert-True (@($skipJson.skipped) -contains 'CSL_TEST_ANTHROPIC_KEEPVAL') 'skip-retain skipped name listed'
+$beforeVal = @($skipJson.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPVAL')[0].before
+Assert-Eq $beforeVal 'precious-orig-xxxx' 'skip-retain original value kept in file'
+# exceed keep with many more fixes (disjoint vars so chain stays separate)
+$prevKeep = $script:CslEnvBackupKeep
+$script:CslEnvBackupKeep = 10
+try {
+  for ($i = 0; $i -lt 25; $i++) {
+    $n = "CSL_TEST_ANTHROPIC_PRUNE_$i"
+    & $store.SetUserEntry -Name $n -Value ("v$i")
+    $fi = Invoke-CslEnvFix -Patterns @($n) -TestMode -Store $store
+    Assert-True $fi.ok ("prune-flood fix $i ok")
+  }
+} finally {
+  $script:CslEnvBackupKeep = $prevKeep
+}
+Assert-True (Test-Path -LiteralPath $skipPath) 'skip-retain backup survived prune'
+$skipJson2 = Get-Content -LiteralPath $skipPath -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-Eq @($skipJson2.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPVAL')[0].before 'precious-orig-xxxx' 'skip-retain value intact after prune'
+
+Write-Host '== Preflight undo conflict print skips null/empty ==' -ForegroundColor Cyan
+$pfPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'claude-preflight.ps1'
+$pfAst = [System.Management.Automation.Language.Parser]::ParseFile($pfPath, [ref]$null, [ref]$null)
+$pfFns = $pfAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ($n.Name -eq 'Get-CslUndoConflictMessages' -or $n.Name -eq 'Write-CslUndoConflicts') }, $true)
+Assert-Eq @($pfFns).Count 2 'preflight conflict helpers found'
+foreach ($fnAst in $pfFns) { . ([scriptblock]::Create($fnAst.Extent.Text)) }
+$errBefore = $Error.Count
+Assert-Eq @(Get-CslUndoConflictMessages $null).Count 0 'conflicts $null gives no message'
+Assert-Eq @(Get-CslUndoConflictMessages @()).Count 0 'conflicts empty gives no message'
+Assert-Eq @(Get-CslUndoConflictMessages @($null, '', '  ', @{ message = '' ; name = '' })).Count 0 'conflicts null/blank entries skipped'
+$mixed = @(Get-CslUndoConflictMessages @('a', $null, @{ message = 'b' }, @{ name = 'c' }, [pscustomobject]@{ message = 'd' }))
+Assert-Eq ($mixed -join ',') 'a,b,c,d' 'conflicts real entries kept in order'
+$uNo = Invoke-CslEnvUndo -Id 'envfix-20000101T000000000-none' -NoPause -TestMode -Store $store
+Assert-True (-not $uNo.ok) 'undo missing id fails'
+$printed = @(Write-CslUndoConflicts $uNo.conflicts 6>&1 | ForEach-Object { [string]$_ })
+Assert-Eq @($printed | Where-Object { $_ -like '*[[]警告]*' }).Count 0 'failed undo prints no empty warning'
+$printedNull = @(Write-CslUndoConflicts $null 6>&1 | ForEach-Object { [string]$_ })
+Assert-Eq $printedNull.Count 0 'null conflicts print nothing'
+$printedOne = @(Write-CslUndoConflicts @($null, 'x') 6>&1 | ForEach-Object { [string]$_ })
+Assert-Eq ($printedOne -join '|') '  [警告] x' 'one real conflict printed once'
+Assert-Eq $Error.Count $errBefore 'conflict print raised no error'
+
+Write-Host '== Backup without entries treated as corrupt ==' -ForegroundColor Cyan
+$uncBefore2 = $script:Uncaught
+$neDir = Get-CslEnvBackupDir
+$neMissing = Join-Path $neDir 'envfix-20000101T000000000-nent.json'
+$neNull = Join-Path $neDir 'envfix-20000101T000000001-nulx.json'
+[IO.File]::WriteAllText($neMissing, '{"id":"20000101T000000000-nent","ts":"2000-01-01T00:00:00Z"}', (New-Object System.Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText($neNull, '{"id":"20000101T000000001-nulx","ts":"2000-01-01T00:00:00Z","entries":null}', (New-Object System.Text.UTF8Encoding($false)))
+$rdMissing = Read-CslEnvBackupFile -Path $neMissing
+$rdNull = Read-CslEnvBackupFile -Path $neNull
+Assert-True ((-not $rdMissing.ok) -and ($rdMissing.error -like '备份文件损坏或无法解析*') -and (-not $rdNull.ok) -and ($rdNull.error -like '备份文件损坏或无法解析*')) 'backup missing/null entries read as corrupt'
+$storeNe = New-MemStore
+& $storeNe.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_NOENT' -Value 'noent-orig'
+$fNe = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_NOENT') -TestMode -Store $storeNe
+$uNe = Invoke-CslEnvUndo -Id $fNe.id -NoPause -TestMode -Store $storeNe
+Assert-True ($fNe.ok -and $uNe.ok -and ((& $storeNe.GetUserEntry 'CSL_TEST_ANTHROPIC_NOENT').Value -eq 'noent-orig') -and (@($uNe.conflicts | Where-Object { $null -ne $_ }).Count -eq 0) -and ($script:Uncaught -eq $uncBefore2)) 'undo other backup ok with entries-less files present'
+Remove-Item -LiteralPath $neMissing, $neNull -Force -ErrorAction SilentlyContinue
+
 Remove-Item -LiteralPath $script:Root -Recurse -Force -ErrorAction SilentlyContinue
 
-if ($script:Fail -gt 0) {
-  Write-Host "FAILED: $($script:Fail) assertion(s)" -ForegroundColor Red
+if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {
+  Write-Host "FAILED: $($script:Fail) assertion(s), $($script:Uncaught) uncaught error(s)" -ForegroundColor Red
   exit 1
 }
 Write-Host 'ALL PASSED' -ForegroundColor Green

@@ -27,6 +27,11 @@
 - `-FailAtIndex`（仅 TestMode）验证整单回滚；重复撤销报告 already undone；损坏备份报错且不改系统。
 - 面板 API：Host/Origin/JSON Content-Type/`X-CSL-Token` 校验；loopback 绑定；撤销 undo-plan → 冲突选择 → undo-apply。
 - 已知限制：Mac 端这一版没有改动；Machine 级变量只提示需管理员手动处理，不提权修改。
+- 修复：备份写入失败时立即中止，不删除任何用户变量（`Write-CslEnvBackup` 写入后校验可读可解析）。
+- 修复：修复备份 id 改为 UTC `yyyyMMddTHHmmssfff`，取「当前时间」与「已有最大 id + 1ms」中较晚者，单调递增；同一秒多次修复、已有更晚 id、时钟回拨时都按真实先后排序，`-UndoFix` 撤销最近一次。
+- 修复：`-TestMode` 下撤销（含 DryRun/plan）校验整条连通链变量名均为 `CSL_TEST_*`；面板 `undo-plan`/`undo-apply` 传入 TestMode。
+- 加固：撤销因冲突跳过的备份写入 `skipped` 名单，清理时永不删除该类备份（原值留在文件中可手动恢复）。
+- 已知问题：撤销时冲突跳过的变量，该次备份会被标记为已撤销，无法再用 `-UndoFix` 恢复；备份文件保留不删，值可从文件手动恢复；v3.3.0 修复。
 
 ## v3.1.0（一期 · Windows）
 

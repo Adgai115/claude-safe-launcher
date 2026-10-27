@@ -73,9 +73,15 @@ while (-not $quit) {
     $path = $ctx.Request.Url.AbsolutePath
     $method = $ctx.Request.HttpMethod
     $isApi = $path.StartsWith('/api/')
+    $hostHdr = [string]$ctx.Request.Headers['Host']
+
+    # SEC-01: every request (including '/' which carries the token) must pass the Host allowlist
+    if (-not (Test-CslPanelHostAllowed -HostHeader $hostHdr -Port $port)) {
+      Send-Forbidden $ctx 'forbidden host'
+      continue
+    }
 
     if ($isApi) {
-      $hostHdr = [string]$ctx.Request.Headers['Host']
       $origin = [string]$ctx.Request.Headers['Origin']
       if ([string]::IsNullOrEmpty($origin)) { $origin = $null }
       $ctype = [string]$ctx.Request.ContentType
@@ -102,7 +108,7 @@ while (-not $quit) {
           if ($job.tmp) { Remove-Item $job.tmp -Force -ErrorAction SilentlyContinue }
           $job.tmp = [IO.Path]::GetTempFileName()
           $extra = @('-NoPause'); if ($q['launch'] -ne '1') { $extra += '-NoLaunch' }; if ($q['relearn'] -eq '1') { $extra += '-Relearn' }
-          if ($script:CslPanelTestMode) { $extra += '-TestMode' }
+          if ($script:CslPanelTestMode) { $extra += '-TestMode'; $extra += "-FixVarPattern 'CSL_TEST_ANTHROPIC_*'" }
           $flagStr = ($extra -join ' ')
           $cmd = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; & powershell.exe -NoProfile -ExecutionPolicy Bypass -File '$pre' $flagStr *>&1 | ForEach-Object { Add-Content -LiteralPath '$($job.tmp)' -Value (""`$_"") -Encoding UTF8 }"
           $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
@@ -194,7 +200,7 @@ while (-not $quit) {
             'undo-plan' {
               $id = $null
               if ($bodyObj -and $bodyObj.id) { $id = [string]$bodyObj.id }
-              $undo = Invoke-CslEnvUndo -Id $id -DryRun -DefaultConflictDecision skip
+              $undo = Invoke-CslEnvUndo -Id $id -DryRun -DefaultConflictDecision skip -TestMode:$testMode
               Send $ctx (ConvertTo-Json @{
                 ok = [bool]$undo.ok; error = $undo.error; id = $undo.id; dryRun = $true
                 conflicts = @($undo.conflicts); pending = @($undo.pending); skipped = @($undo.skipped)
@@ -222,7 +228,7 @@ while (-not $quit) {
                   foreach ($p in $dobj.PSObject.Properties) { $dec[$p.Name] = [string]$p.Value }
                 }
               }
-              $planChk = Invoke-CslEnvUndo -Id $id -DryRun -DefaultConflictDecision skip
+              $planChk = Invoke-CslEnvUndo -Id $id -DryRun -DefaultConflictDecision skip -TestMode:$testMode
               if (-not $planChk.ok) {
                 $ctx.Response.StatusCode = 400
                 Send $ctx (ConvertTo-Json @{ ok = $false; error = $planChk.error } -Compress)
@@ -235,7 +241,7 @@ while (-not $quit) {
                 Send $ctx (ConvertTo-Json @{ ok = $false; error = $vdec.error } -Compress)
                 break
               }
-              $undo = Invoke-CslEnvUndo -Id $id -DefaultConflictDecision $def -ConflictDecisions $dec
+              $undo = Invoke-CslEnvUndo -Id $id -DefaultConflictDecision $def -ConflictDecisions $dec -TestMode:$testMode
               Send $ctx (ConvertTo-Json @{
                 ok = [bool]$undo.ok; error = $undo.error; id = $undo.id
                 restored = @($undo.restored); skipped = @($undo.skipped); conflicts = @($undo.conflicts)

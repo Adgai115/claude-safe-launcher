@@ -43,6 +43,21 @@ $script:UndoFixId = $(if ($UndoId) { $UndoId } else { $null })
 
 $script:FixPatterns = Get-CslFixVarPatterns -Cfg $cfg -FixVarPattern $FixVarPattern
 
+# 撤销冲突提示：跳过 $null / 空值（PS 5.1 下 @($null) 会产生一个 $null 元素）
+function Get-CslUndoConflictMessages($Conflicts) {
+  $out = @()
+  foreach ($c in @($Conflicts)) {
+    if ($null -eq $c) { continue }
+    $msg = if ($c -is [string]) { $c } elseif ($c -is [System.Collections.IDictionary]) { if ($c.Contains('message') -and $c['message']) { [string]$c['message'] } else { [string]$c['name'] } } elseif ($c.PSObject.Properties['message']) { [string]$c.message } else { [string]$c }
+    if ([string]::IsNullOrWhiteSpace($msg)) { continue }
+    $out += $msg
+  }
+  return $out
+}
+function Write-CslUndoConflicts($Conflicts) {
+  foreach ($m in @(Get-CslUndoConflictMessages $Conflicts)) { Write-Host ("  [警告] {0}" -f $m) -ForegroundColor Yellow }
+}
+
 # ----- CLI：列出 / 撤销 / 仅修复（可在完整检查前短路） -----
 if ($ListFixes) {
   Write-Host '可撤销的环境变量修复（值已脱敏）:' -ForegroundColor Cyan
@@ -68,10 +83,7 @@ if ($script:DoUndoFix) {
   if ($undo.restored) {
     foreach ($r in $undo.restored) { Write-Host ("  [修复] 已恢复 {0} = {1}" -f $r.name, $r.valueMasked) -ForegroundColor Yellow }
   }
-  foreach ($c in @($undo.conflicts)) {
-    $msg = if ($c -is [string]) { $c } elseif ($c.PSObject.Properties['message']) { [string]$c.message } else { [string]$c }
-    Write-Host ("  [警告] {0}" -f $msg) -ForegroundColor Yellow
-  }
+  Write-CslUndoConflicts $undo.conflicts
   if (-not $undo.ok -and $undo.error) { Write-Host ("  [失败] {0}" -f $undo.error) -ForegroundColor Red }
   if ($undo.hint) { Write-Host ("  [信息] {0}" -f $undo.hint) -ForegroundColor Gray }
   if (-not $NoPause) { try { Read-Host '按回车退出' | Out-Null } catch {} }
