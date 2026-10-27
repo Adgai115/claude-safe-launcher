@@ -518,6 +518,28 @@ Assert-True (Test-Path -LiteralPath $skipPath) 'skip-retain backup survived prun
 $skipJson2 = Get-Content -LiteralPath $skipPath -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-Eq @($skipJson2.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPVAL')[0].before 'precious-orig-xxxx' 'skip-retain value intact after prune'
 
+Write-Host '== Preflight undo conflict print skips null/empty ==' -ForegroundColor Cyan
+$pfPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'claude-preflight.ps1'
+$pfAst = [System.Management.Automation.Language.Parser]::ParseFile($pfPath, [ref]$null, [ref]$null)
+$pfFns = $pfAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ($n.Name -eq 'Get-CslUndoConflictMessages' -or $n.Name -eq 'Write-CslUndoConflicts') }, $true)
+Assert-Eq @($pfFns).Count 2 'preflight conflict helpers found'
+foreach ($fnAst in $pfFns) { . ([scriptblock]::Create($fnAst.Extent.Text)) }
+$errBefore = $Error.Count
+Assert-Eq @(Get-CslUndoConflictMessages $null).Count 0 'conflicts $null gives no message'
+Assert-Eq @(Get-CslUndoConflictMessages @()).Count 0 'conflicts empty gives no message'
+Assert-Eq @(Get-CslUndoConflictMessages @($null, '', '  ', @{ message = '' ; name = '' })).Count 0 'conflicts null/blank entries skipped'
+$mixed = @(Get-CslUndoConflictMessages @('a', $null, @{ message = 'b' }, @{ name = 'c' }, [pscustomobject]@{ message = 'd' }))
+Assert-Eq ($mixed -join ',') 'a,b,c,d' 'conflicts real entries kept in order'
+$uNo = Invoke-CslEnvUndo -Id 'envfix-20000101T000000000-none' -NoPause -TestMode -Store $store
+Assert-True (-not $uNo.ok) 'undo missing id fails'
+$printed = @(Write-CslUndoConflicts $uNo.conflicts 6>&1 | ForEach-Object { [string]$_ })
+Assert-Eq @($printed | Where-Object { $_ -like '*[[]警告]*' }).Count 0 'failed undo prints no empty warning'
+$printedNull = @(Write-CslUndoConflicts $null 6>&1 | ForEach-Object { [string]$_ })
+Assert-Eq $printedNull.Count 0 'null conflicts print nothing'
+$printedOne = @(Write-CslUndoConflicts @($null, 'x') 6>&1 | ForEach-Object { [string]$_ })
+Assert-Eq ($printedOne -join '|') '  [警告] x' 'one real conflict printed once'
+Assert-Eq $Error.Count $errBefore 'conflict print raised no error'
+
 Remove-Item -LiteralPath $script:Root -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {
