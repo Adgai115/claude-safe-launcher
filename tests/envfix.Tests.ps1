@@ -6,6 +6,18 @@ $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 . (Join-Path $root 'claude-common.ps1')
 . (Join-Path $root 'claude-envfix.ps1')
 
+# Platform: do not rely on $IsWindows (absent in Windows PowerShell 5.1)
+$script:OnWindows = ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT)
+# claude-common.ps1 sets Continue when dot-sourced; restore Stop so non-terminating errors also hit the trap
+$ErrorActionPreference = 'Stop'
+# Any uncaught error counts as a failure (no more "error but ALL PASSED")
+$script:Uncaught = 0
+trap {
+  $script:Uncaught++
+  Write-Host ("  FAIL  uncaught error: {0} (line {1})" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber) -ForegroundColor Red
+  continue
+}
+
 $script:Fail = 0
 function Assert-True($cond, $msg) {
   if ($cond) { Write-Host "  PASS  $msg" -ForegroundColor Green }
@@ -334,7 +346,7 @@ New-Item -ItemType Directory -Path $bakDir -Force | Out-Null
 $prevRoot = $script:Root
 $script:Root = $badRoot
 try {
-  if ($IsLinux -or $IsMacOS -or (-not $IsWindows)) {
+  if (-not $script:OnWindows) {
     & chmod a-w -- $bakDir
   } else {
     # Windows: replace backups dir with a file so WriteAllText fails
@@ -349,7 +361,7 @@ try {
   Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_API_KEY').Value 'must-keep-xxxx' 'unwritable left var unchanged'
   Assert-True ($null -eq $rbw.id) 'unwritable no id'
 } finally {
-  if ($IsLinux -or $IsMacOS -or (-not $IsWindows)) {
+  if (-not $script:OnWindows) {
     & chmod u+w -- $bakDir 2>$null
   }
   $script:Root = $prevRoot
@@ -508,8 +520,8 @@ Assert-Eq @($skipJson2.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPV
 
 Remove-Item -LiteralPath $script:Root -Recurse -Force -ErrorAction SilentlyContinue
 
-if ($script:Fail -gt 0) {
-  Write-Host "FAILED: $($script:Fail) assertion(s)" -ForegroundColor Red
+if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {
+  Write-Host "FAILED: $($script:Fail) assertion(s), $($script:Uncaught) uncaught error(s)" -ForegroundColor Red
   exit 1
 }
 Write-Host 'ALL PASSED' -ForegroundColor Green
