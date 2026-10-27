@@ -35,6 +35,35 @@ Assert-True ($null -eq $leak) "dot-sourcing claude-rules.ps1 leaves caller non-s
 $rulesSrc = Get-Content (Join-Path $root 'claude-rules.ps1') -Raw -Encoding UTF8
 Assert-True (-not ($rulesSrc -match '(?m)^\s*Set-StrictMode')) 'claude-rules.ps1 has no script-level Set-StrictMode'
 
+Write-Host '== First run: Load-Config with no preflight.json ==' -ForegroundColor Cyan
+# 空临时目录：没有 preflight.json、没有 clash-verge.yaml；Find-* 用桩函数，避免探测本机。不打印配置内容。
+$fr = Join-Path ([IO.Path]::GetTempPath()) ('csl-firstrun-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $fr | Out-Null
+$savedCfgPath = $script:CfgPath; $savedVergeDir = $script:VergeDir
+$savedFind = @{}; foreach ($fn in 'Find-ClaudeApp','Find-ClashExe','Find-NpmGlobalDir') { $savedFind[$fn] = (Get-Item "function:$fn" -ErrorAction SilentlyContinue).ScriptBlock }
+$frErr = $null; $frCfg = $null
+try {
+  $script:CfgPath = Join-Path $fr 'preflight.json'; $script:VergeDir = $fr
+  function Find-ClaudeApp { @{ aumid = ''; exe = '' } }
+  function Find-ClashExe { '' }
+  function Find-NpmGlobalDir { '' }
+  $errBefore = $Error.Count
+  try { $frCfg = Load-Config } catch { $frErr = $_.FullyQualifiedErrorId }
+  if (-not $frErr -and $Error.Count -gt $errBefore) { $frErr = $Error[0].FullyQualifiedErrorId }
+  Assert-True ($null -eq $frErr) "first-run Load-Config: 0 errors (err=[$frErr])"
+  $want = @('expectedIp','expectedLoc','expectedNode','claudeGroup','mainGroup','pinMainGroup','timezone','expectedTzIana','claudeAumid','claudeExe','clashExe','proxyUrl','controllerUrl','controllerSecret','warnRisk','failRisk','monitorIntervalMin','monitorKillOnChange','npmGlobalDir','fixVarPatterns','envFixEnabled','envFixKeep')
+  $haveNames = @(); if ($frCfg) { $haveNames = @($frCfg.PSObject.Properties | ForEach-Object { $_.Name }) }
+  $missing = @($want | Where-Object { $haveNames -notcontains $_ })
+  Assert-True (($null -ne $frCfg) -and $missing.Count -eq 0) "first-run Load-Config: all $($want.Count) defaults present (missing=[$($missing -join ',')])"
+  $written = @(); if (Test-Path $script:CfgPath) { $j = Get-Content $script:CfgPath -Raw -Encoding UTF8 | ConvertFrom-Json; $written = @($j.PSObject.Properties | ForEach-Object { $_.Name }) }
+  $missingW = @($want | Where-Object { $written -notcontains $_ })
+  Assert-True ((Test-Path $script:CfgPath) -and $missingW.Count -eq 0) "first-run preflight.json written with all defaults (missing=[$($missingW -join ',')])"
+} finally {
+  $script:CfgPath = $savedCfgPath; $script:VergeDir = $savedVergeDir
+  foreach ($fn in $savedFind.Keys) { if ($savedFind[$fn]) { Set-Item "function:script:$fn" $savedFind[$fn] } }
+  Remove-Item -Recurse -Force $fr -ErrorAction SilentlyContinue
+}
+
 Write-Host '== Catalog load ==' -ForegroundColor Cyan
 $cat = Get-CslRulesCatalog
 Assert-Eq $cat.rulesVersion '4.0.0' 'rulesVersion'
