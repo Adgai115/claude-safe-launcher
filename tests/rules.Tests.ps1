@@ -3,6 +3,9 @@
 # 用法: powershell -NoProfile -ExecutionPolicy Bypass -File tests\rules.Tests.ps1
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+# 与 claude-preflight.ps1 相同的加载顺序：common、envfix 在 rules（Set-StrictMode）之前
+. (Join-Path $root 'claude-common.ps1')
+. (Join-Path $root 'claude-envfix.ps1')
 . (Join-Path $root 'claude-rules.ps1')
 # Restore Stop after dot-sourcing so non-terminating errors also hit the trap
 $ErrorActionPreference = 'Stop'
@@ -150,6 +153,70 @@ $r6 = Get-CslRulesScore -Catalog $cat -Results @(
 )
 Assert-Eq $r6.score 100 'no policy group → 0'
 Assert-True $r6.canLaunchSafely 'info override safe'
+
+Write-Host '== JSON current: env items output names only (CSL_TEST_CANARY) ==' -ForegroundColor Cyan
+# preflight 不能在测试里整体运行（curl.exe / 注册表 / 网络），改为从 preflight 源文件取同一批函数（真实的 item 文本 + JSON 映射）
+$pfAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'claude-preflight.ps1'), [ref]$null, [ref]$null)
+foreach ($fnName in @('Format-CslEnvUserItemText', 'Get-CslJsonCurrent', 'New-CslScoreMappedResults')) {
+  $fnAst = $pfAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $fnName }, $true) | Select-Object -First 1
+  Assert-True ($null -ne $fnAst) "preflight defines $fnName"
+  if ($fnAst) { . ([scriptblock]::Create($fnAst.Extent.Text)) }
+}
+$canaryName = 'CSL_TEST_CANARY'
+$canaryVal = 'csl-canary-9f3a'
+$prevCanary = [Environment]::GetEnvironmentVariable($canaryName)
+$jsonTmp = Join-Path ([IO.Path]::GetTempPath()) ("csl-canary-result-" + [guid]::NewGuid().ToString('n') + '.json')
+try {
+  [Environment]::SetEnvironmentVariable($canaryName, $canaryVal)
+  $canaryStore = [pscustomobject]@{
+    ListUserNames    = { @('CSL_TEST_CANARY') }
+    ListMachineNames = { @() }
+    GetMachine       = { param($n) $null }
+    GetUserEntry     = { param($n) $v = [Environment]::GetEnvironmentVariable($n); if ($null -eq $v) { $null } else { @{ Value = $v; Kind = 'String' } } }
+  }
+  $found = Find-CslRelayEnvTargets -Patterns @('CSL_TEST_CANARY') -TestMode -Store $canaryStore
+  Assert-True ($found.ok -and @($found.user).Count -eq 1) 'canary shows up as an env target'
+  $canaryItems = New-Object System.Collections.ArrayList
+  foreach ($u in $found.user) {
+    $shown = Format-CslEnvUserItemText $u.Name $u.Value
+    # screen/CLI text keeps the masked value (unchanged); proves the canary row is a real masked item
+    Assert-True ($shown -like '*CSL_TEST_CANARY=*' -and $shown.Contains('*')) 'screen text still has NAME=masked'
+    Assert-True (-not $shown.Contains($canaryVal)) 'screen text does not carry the raw canary'
+    [void]$canaryItems.Add([pscustomobject]@{ Level = 'FAIL'; Text = $shown; Weight = 25; Group = '9. 环境变量' })
+  }
+  # an HTTPS_PROXY-style NAME=masked-url text goes through the same mapping
+  [void]$canaryItems.Add([pscustomobject]@{ Level = 'WARN'; Text = ('HTTPS_PROXY={0}' -f (Mask-Value -Value 'http://csl-canary-9f3a@127.0.0.1:7890' -Kind Url)); Weight = 5; Group = '9. 环境变量' })
+  $mapped = New-CslScoreMappedResults $canaryItems
+  Assert-Eq @($mapped).Count 2 'mapping keeps one result per item'
+  $cur0 = [string]@($mapped)[0].current
+  $cur1 = [string]@($mapped)[1].current
+  Assert-Eq $cur0 '用户级 CSL_TEST_CANARY：已设置' 'env item current = name + status only'
+  Assert-True ($cur0.Contains('CSL_TEST_CANARY')) 'env item current has the variable name'
+  Assert-True (-not $cur0.Contains($canaryVal)) 'env item current has no canary value'
+  Assert-True (-not $cur0.Contains('*')) 'env item current has no *'
+  Assert-True (-not $cur0.Contains('=')) 'env item current has no ='
+  Assert-Eq $cur1 'HTTPS_PROXY：已设置' 'NAME=value text current = name + status only'
+  Assert-True (-not $cur1.Contains('*') -and -not $cur1.Contains('=') -and -not $cur1.Contains('canary')) 'NAME=value current has no value, no *, no ='
+  # 兜底：没有 NAME= 形态、但仍带 * 的遗漏文本，也不能把 * 带进 current
+  $stray = Get-CslJsonCurrent 'proxy sk-ant***9f3a leaked'
+  Assert-True (-not $stray.Contains('*') -and -not $stray.Contains('9f3a')) 'stray masked token is scrubbed from current'
+  # real JSON path: score -> payload -> file
+  $canaryScore = Get-CslRulesScore -Catalog $cat -Results @($mapped)
+  $canaryPayload = New-CslPreflightResult -ScoreResult $canaryScore -Platform 'win' -Verdict 'blocked'
+  Write-CslPreflightResultJson -Result $canaryPayload -Path $jsonTmp | Out-Null
+  $jsonRaw = [IO.File]::ReadAllText($jsonTmp, (New-Object System.Text.UTF8Encoding($false)))
+  Assert-True (-not $jsonRaw.Contains($canaryVal)) 'JSON file has no canary value'
+  Assert-True (-not $jsonRaw.Contains('*')) 'JSON file has no *'
+  Assert-True ($jsonRaw.Contains('CSL_TEST_CANARY')) 'JSON file has the variable name'
+  $canaryRow = @(($jsonRaw | ConvertFrom-Json).checks | Where-Object id -eq 'item.1')[0]
+  Assert-Eq $canaryRow.current '用户级 CSL_TEST_CANARY：已设置' 'JSON checks[item.1].current = name + status only'
+  Assert-Eq $canaryRow.fixId 'envfix.user-anthropic' 'env item keeps fixId in JSON'
+}
+finally {
+  [Environment]::SetEnvironmentVariable($canaryName, $prevCanary)
+  Remove-Item -LiteralPath $jsonTmp -Force -ErrorAction SilentlyContinue
+}
+Assert-Eq ([string][Environment]::GetEnvironmentVariable($canaryName)) ([string]$prevCanary) 'canary variable cleaned up (restored to previous state)'
 
 Write-Host ''
 if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {

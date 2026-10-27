@@ -169,6 +169,52 @@ function Say-Note($t) { Write-Host "  [提示] $($t)" -ForegroundColor DarkGray;
 function Say-Warn($t, $w = 8)  { Write-Host "  [警告] $($t)" -ForegroundColor Yellow; Add-Item 'WARN' $t $w }
 function Say-Fail($t, $w = 25) { Write-Host "  [失败] $($t)" -ForegroundColor Red; Add-Item 'FAIL' $t $w }
 
+# 用户级中转变量的检查项文本（显示给人看，含打码值；JSON 不用这条文本，见 Get-CslJsonCurrent）
+function Format-CslEnvUserItemText($Name, $Value) {
+  return ("用户级 {0}={1}（会让 Claude Code 走第三方接口）" -f $Name, (Protect-Secret $Value))
+}
+
+# JSON 的 current 字段：环境变量项只输出变量名和状态，不含值、不含打码值（不含 = 和 *）
+function Get-CslJsonCurrent([string]$Text) {
+  if ($null -eq $Text) { return '' }
+  $t = [string]$Text
+  $m = [regex]::Match($t, '^用户级\s+([^\s=]+)=')
+  if ($m.Success) { return ('用户级 {0}：已设置' -f $m.Groups[1].Value) }
+  $t = [regex]::Replace($t, '\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)=\S*', '$1：已设置')
+  # 兜底：任何仍含 * 的片段（遗漏的打码值）一律替换，JSON 里不出现 *
+  return [regex]::Replace($t, '\S*\*\S*', '（已隐藏）')
+}
+
+# 检查项 → 规则评分输入（preflight-result.json 的 checks 由此而来）
+function New-CslScoreMappedResults($Items) {
+  $mapped = New-Object System.Collections.ArrayList
+  $ix = 0
+  foreach ($it in @($Items)) {
+    $ix++
+    $sev = 'info'; $st = 'info'
+    if ($it.Level -eq 'FAIL') { $sev = 'must_fix'; $st = 'failed' }
+    elseif ($it.Level -eq 'WARN') { $sev = 'should_fix'; $st = 'failed' }
+    elseif ($it.Level -eq 'NOTE') { $sev = 'info'; $st = 'info' }
+    $fixTypeOv = $null; $fixIdOv = $null
+    if ([string]$it.Text -match '用户级' -and $st -eq 'failed') {
+      $fixTypeOv = 'confirm'; $fixIdOv = 'envfix.user-anthropic'
+    }
+    [void]$mapped.Add([pscustomobject]@{
+      id                   = ('item.{0}' -f $ix)
+      status               = $st
+      severityOverride     = $sev
+      refDeductionOverride = [int]$it.Weight
+      current              = (Get-CslJsonCurrent ([string]$it.Text))
+      expected             = ''
+      recheck              = 'powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause'
+      masked               = $true
+      fixTypeOverride      = $fixTypeOv
+      fixIdOverride        = $fixIdOv
+    })
+  }
+  return ,$mapped
+}
+
 Write-Host '==============================================' -ForegroundColor Cyan
 Write-Host '   Claude 桌面版 启动前检查 v4.0.0' -ForegroundColor Cyan
 if ($Relearn) { Write-Host '   [重新学习] 将按当前环境重新记住出口 IP / 节点 / 时区' -ForegroundColor Cyan }
@@ -341,7 +387,7 @@ if (-not $targets.ok) {
     Say-Pass '没有匹配的第三方中转环境变量（用户级）'
   } else {
     foreach ($u in $targets.user) {
-      Say-Fail ("用户级 {0}={1}（会让 Claude Code 走第三方接口）" -f $u.Name, (Protect-Secret $u.Value))
+      Say-Fail (Format-CslEnvUserItemText $u.Name $u.Value)
       Write-Host 'CSL_FIX_ID=envfix.user-anthropic' -ForegroundColor DarkGray
     }
     foreach ($m in $targets.machineOnly) {
@@ -637,31 +683,7 @@ $warns = @($script:Items | Where-Object Level -eq 'WARN')
 $notes = @($script:Items | Where-Object Level -eq 'NOTE')
 
 # Map legacy Items → rules Results (weights already include Soft-BrowserWarn cap)
-$script:CslScoreMapped = New-Object System.Collections.ArrayList
-$ix = 0
-foreach ($it in @($script:Items)) {
-  $ix++
-  $sev = 'info'; $st = 'info'
-  if ($it.Level -eq 'FAIL') { $sev = 'must_fix'; $st = 'failed' }
-  elseif ($it.Level -eq 'WARN') { $sev = 'should_fix'; $st = 'failed' }
-  elseif ($it.Level -eq 'NOTE') { $sev = 'info'; $st = 'info' }
-  $fixTypeOv = $null; $fixIdOv = $null
-  if ([string]$it.Text -match '用户级' -and $st -eq 'failed') {
-    $fixTypeOv = 'confirm'; $fixIdOv = 'envfix.user-anthropic'
-  }
-  [void]$script:CslScoreMapped.Add([pscustomobject]@{
-    id                   = ('item.{0}' -f $ix)
-    status               = $st
-    severityOverride     = $sev
-    refDeductionOverride = [int]$it.Weight
-    current              = [string]$it.Text
-    expected             = ''
-    recheck              = 'powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause'
-    masked               = $true
-    fixTypeOverride      = $fixTypeOv
-    fixIdOverride        = $fixIdOv
-  })
-}
+$script:CslScoreMapped = New-CslScoreMappedResults @($script:Items)
 
 $script:CslRulesCatalog = $null
 $script:CslScoreResult = $null
