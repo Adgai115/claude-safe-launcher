@@ -1,4 +1,4 @@
-﻿# Claude Safe Launcher 安装脚本：解除下载锁定，并在桌面创建两个快捷方式
+﻿# Claude Safe Launcher 安装脚本：解除下载锁定，并在桌面创建「Claude 安全启动」快捷方式（打开检查面板）
 $ErrorActionPreference = 'Stop'
 $dir = $PSScriptRoot
 Get-ChildItem -Path $dir -File | Unblock-File -ErrorAction SilentlyContinue
@@ -15,7 +15,9 @@ function New-Lnk($name, $file, $style) {
   $l.Save()
   Write-Host "已创建桌面快捷方式: $name" -ForegroundColor Green
 }
-New-Lnk 'Claude 安全启动' 'claude-preflight.ps1' ''
-New-Lnk 'Claude 检查面板' 'claude-panel.ps1' '-WindowStyle Hidden '
+New-Lnk 'Claude 安全启动' 'claude-panel.ps1' '-WindowStyle Hidden '
+# 旧版本安装过的「Claude 检查面板」快捷方式（指向本文件夹的）一并清理
+$old = Join-Path $desk 'Claude 检查面板.lnk'
+if ((Test-Path $old) -and ($ws.CreateShortcut($old).Arguments.Contains($dir))) { Remove-Item $old -Force }
 Write-Host ''
-Write-Host '安装完成。建议先双击「Claude 检查面板」点「只检查」，确认环境没问题再启动 Claude。' -ForegroundColor Cyan
+Write-Host '安装完成。双击桌面上的「Claude 安全启动」打开检查面板：可以「只检查」，也可以「检查并启动」。' -ForegroundColor Cyan
