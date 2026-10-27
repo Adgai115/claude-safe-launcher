@@ -762,7 +762,15 @@ $crId = '20000101T000000021-crp1'
 $crPath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $crId)
 $crJson = '{"id":"' + $crId + '","ts":"2000-01-01T00:00:00Z","testMode":true,"entries":[{"name":"CSL_TEST_ANTHROPIC_CR_OK","existed":true,"before":"cr-orig","kind":"String"},{"name":"","existed":true,"before":"x","kind":"String"}]}'
 [IO.File]::WriteAllText($crPath, $crJson, (New-Object System.Text.UTF8Encoding($false)))
-$crHash = (Get-FileHash -LiteralPath $crPath -Algorithm SHA256).Hash
+# Get-FileHash is a script-module function on Windows PowerShell 5.1 and can fail to
+# autoload mid-suite; hash via .NET directly so the test does not depend on module loading.
+function Get-CslTestSha256([string]$Path) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try { $bytes = [System.IO.File]::ReadAllBytes($Path); return ([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '') }
+  finally { $sha.Dispose() }
+}
+$crHash = Get-CslTestSha256 $crPath
+Assert-True ($crHash -match '^[0-9A-F]{64}$') 'corrupt backup sha256 computed'
 $storeC = New-MemStore
 $prevKeepC = $script:CslEnvBackupKeep
 $script:CslEnvBackupKeep = 3
@@ -777,7 +785,7 @@ try {
 $crLeft = @(Get-ChildItem -LiteralPath (Get-CslEnvBackupDir) -Filter 'envfix-*.json' -File).Count
 Assert-True ($crLeft -le 7) ("prune ran during corrupt-backup flood ($crLeft files left)")
 Assert-True (Test-Path -LiteralPath $crPath) 'corrupt backup survived prune'
-Assert-Eq $(if (Test-Path -LiteralPath $crPath) { (Get-FileHash -LiteralPath $crPath -Algorithm SHA256).Hash } else { '' }) $crHash 'corrupt backup content unchanged'
+Assert-Eq $(if (Test-Path -LiteralPath $crPath) { Get-CslTestSha256 $crPath } else { '' }) $crHash 'corrupt backup content unchanged'
 $crItem = @(Get-CslEnvFixList | Where-Object { $_.corrupt })
 Assert-True ($crItem.Count -eq 1 -and [string]$crItem[0].path -eq $crPath) '-ListFixes marks it corrupt with file path'
 Clear-TestBackups
