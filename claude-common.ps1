@@ -96,6 +96,25 @@ function Find-NpmGlobalDir {
   return ''
 }
 
+# v3.3.0: one-click env fix switches from preflight.json
+#   envFixEnabled (default true): false turns off -FixEnv / panel「修复」 (undo and list keep working)
+#   envFixKeep (default empty): variable names (wildcards allowed) the fix must keep
+function Get-CslEnvFixSettings($Cfg) {
+  $enabled = $true
+  $keep = @()
+  if ($Cfg) {
+    if ($Cfg.PSObject.Properties['envFixEnabled'] -and $null -ne $Cfg.envFixEnabled) {
+      $v = $Cfg.envFixEnabled
+      if ($v -is [bool]) { $enabled = $v }
+      elseif ([string]$v -match '^(?i:false|0|no|off)$') { $enabled = $false }
+    }
+    if ($Cfg.PSObject.Properties['envFixKeep'] -and $null -ne $Cfg.envFixKeep) {
+      $keep = @(@($Cfg.envFixKeep) | Where-Object { $null -ne $_ } | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+    }
+  }
+  return @{ enabled = [bool]$enabled; keep = @($keep) }
+}
+
 function Load-Config {
   # 留空的项会自动检测，或在第一次运行时自动记住
   $defaults = [ordered]@{
@@ -119,6 +138,8 @@ function Load-Config {
     monitorKillOnChange = $false
     npmGlobalDir        = ''
     fixVarPatterns      = @()
+    envFixEnabled       = $true
+    envFixKeep          = @()
   }
   $cfg = $null
   if (Test-Path $script:CfgPath) { try { $cfg = Get-Content $script:CfgPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $cfg = $null } }

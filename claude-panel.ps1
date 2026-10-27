@@ -181,20 +181,25 @@ while (-not $quit) {
         } else {
           $patterns = Get-CslFixVarPatterns -Cfg $cfg -FixVarPattern $null
         }
+        $efs = Get-CslEnvFixSettings $cfg
         try {
+          if (-not $efs.enabled -and ($action -eq 'plan' -or $action -eq 'apply')) {
+            Send $ctx (ConvertTo-Json @{ ok = $false; disabled = $true; error = '一键修复已在 preflight.json 关闭（envFixEnabled=false）' } -Compress)
+            break
+          }
           switch ($action) {
             'list' {
               $list = @(Get-CslEnvFixList)
               Send $ctx (ConvertTo-Json @{ ok = $true; items = $list } -Depth 6 -Compress)
             }
             'plan' {
-              $fix = Invoke-CslEnvFix -Patterns $patterns -TestMode:$testMode -DryRun
+              $fix = Invoke-CslEnvFix -Patterns $patterns -TestMode:$testMode -DryRun -Keep @($efs.keep)
               Send $ctx (ConvertTo-Json @{
                 ok = [bool]$fix.ok; error = $fix.error; plan = @($fix.plan); hint = '新开的终端才会生效'
               } -Depth 6 -Compress)
             }
             'apply' {
-              $fix = Invoke-CslEnvFix -Patterns $patterns -TestMode:$testMode
+              $fix = Invoke-CslEnvFix -Patterns $patterns -TestMode:$testMode -Keep @($efs.keep)
               Send $ctx (ConvertTo-Json @{
                 ok = [bool]$fix.ok; error = $fix.error; id = $fix.id; plan = @($fix.plan); applied = @($fix.applied); hint = $(if ($fix.hint) { $fix.hint } else { '新开的终端才会生效' }); exitCode = $fix.exitCode
               } -Depth 6 -Compress)

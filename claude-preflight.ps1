@@ -6,6 +6,7 @@
   [switch]$TestMode,
   [switch]$DryRun,
   [switch]$FixEnv,
+  [switch]$Yes,
   [switch]$UndoFix,
   [string]$UndoId,
   [switch]$ListFixes,
@@ -22,8 +23,9 @@
   -NoLaunch : 只检查，不启动/不切换 Claude，也不启动后台监控（测试用）
   -Relearn  : 忘掉记住的出口 IP / 节点 / 时区，按当前环境重新记住
   -FixVarPattern <通配符...> : 限定要检测/修复的用户级变量名（默认 ANTHROPIC_* 列表）
-  -FixEnv   : 一键清除匹配的用户级中转变量（显式指定=同意；可与 -NoPause 同用）
-  -DryRun   : 只列出将要修改的项（脱敏），不写系统、不写备份
+  -FixEnv   : 一键清除匹配的用户级中转变量；先列出变量名和动作（不显示值）并问 y/N，回答 y 才修改（v3.3.0 起）
+  -Yes      : 配合 -FixEnv 跳过 y/N 确认，直接修复（脚本/无人值守用）
+  -DryRun   : 只列出将要修改的变量名和动作，不写系统、不写备份
   -UndoFix [-UndoId <id>] : 撤销一次修复（默认最近一次）；冲突时 -NoPause 跳过并返回非 0
   -ListFixes : 列出可撤销操作（脱敏）
   -TestMode : 仅允许操作 CSL_TEST_ 前缀变量；测试请配合 -FixVarPattern 'CSL_TEST_ANTHROPIC_*'
@@ -44,6 +46,7 @@ $script:DoUndoFix = [bool]$UndoFix
 $script:UndoFixId = $(if ($UndoId) { $UndoId } else { $null })
 
 $script:FixPatterns = Get-CslFixVarPatterns -Cfg $cfg -FixVarPattern $FixVarPattern
+$script:EnvFixSettings = Get-CslEnvFixSettings $cfg
 
 # 撤销冲突提示：跳过 $null / 空值（PS 5.1 下 @($null) 会产生一个 $null 元素）
 function Get-CslUndoConflictMessages($Conflicts) {
@@ -83,7 +86,7 @@ if ($script:DoUndoFix) {
     Write-Host ("  [信息] already undone（{0}）" -f $undo.id) -ForegroundColor Gray
   }
   if ($undo.restored) {
-    foreach ($r in $undo.restored) { Write-Host ("  [修复] 已恢复 {0} = {1}" -f $r.name, $r.valueMasked) -ForegroundColor Yellow }
+    foreach ($r in $undo.restored) { Write-Host ("  [修复] 已恢复 {0}" -f $r.name) -ForegroundColor Yellow }
   }
   Write-CslUndoConflicts $undo.conflicts
   if (-not $undo.ok -and $undo.error) { Write-Host ("  [失败] {0}" -f $undo.error) -ForegroundColor Red }
@@ -92,33 +95,56 @@ if ($script:DoUndoFix) {
   exit $(if ($null -ne $undo.exitCode) { $undo.exitCode } else { 1 })
 }
 
+# 确认名单 / 预览：只显示变量名和动作，不显示值（含打码值）
+function Write-CslEnvFixPlan($Plan) {
+  foreach ($row in @($Plan)) {
+    if ($null -eq $row) { continue }
+    switch ([string]$row.action) {
+      'skip-admin' { Write-Host ("  [提示] {0} 仅 Machine 级存在：需要管理员手动处理" -f $row.name) -ForegroundColor DarkGray }
+      'keep'       { Write-Host ("  [信息] 保留 User {0}（envFixKeep）" -f $row.name) -ForegroundColor Gray }
+      default      { Write-Host ("  [信息] 将清除 User {0}" -f $row.name) -ForegroundColor Gray }
+    }
+  }
+}
+
 if ($FixEnv) {
   Write-Host '一键修复用户级中转环境变量…' -ForegroundColor Cyan
+  $pauseExit = { param($code) if (-not $NoPause) { try { Read-Host '按回车退出' | Out-Null } catch {} }; exit $code }
+  if (-not $script:EnvFixSettings.enabled) {
+    Write-Host '  [信息] 一键修复已在 preflight.json 关闭（envFixEnabled=false），未做任何修改' -ForegroundColor Gray
+    & $pauseExit 1
+  }
+  $keep = @($script:EnvFixSettings.keep)
   if ($DryRun) { Write-Host '  [信息] DryRun：只预览，不修改' -ForegroundColor Gray }
-  $fix = Invoke-CslEnvFix -Patterns $script:FixPatterns -TestMode:$TestMode -DryRun:$DryRun -FailAtIndex $FailAtIndex
+  $preview = Invoke-CslEnvFix -Patterns $script:FixPatterns -TestMode:$TestMode -DryRun -Keep $keep
+  if (-not $preview.ok) {
+    Write-Host ("  [失败] {0}" -f $preview.error) -ForegroundColor Red
+    & $pauseExit $(if ($null -ne $preview.exitCode) { $preview.exitCode } else { 1 })
+  }
+  Write-CslEnvFixPlan $preview.plan
+  if ($DryRun) { & $pauseExit 0 }
+  $removeCount = @(@($preview.plan) | Where-Object { $null -ne $_ -and $_.action -eq 'remove' }).Count
+  if ($removeCount -eq 0) {
+    Write-Host '  [信息] 没有可清除的用户级变量' -ForegroundColor Gray
+    & $pauseExit 0
+  }
+  # v3.3.0 起 -FixEnv 先确认；-NoPause 也会问（读不到输入 = 不同意）。脚本请加 -Yes
+  if (-not (Test-CslFixConfirmed -Yes:$Yes -ReadAnswer { Read-Host '  确认删除以上用户级变量？(y/N)' })) {
+    Write-Host '  [信息] 已取消，未做任何修改（无人值守请加 -Yes）' -ForegroundColor Gray
+    & $pauseExit 1
+  }
+  $fix = Invoke-CslEnvFix -Patterns $script:FixPatterns -TestMode:$TestMode -FailAtIndex $FailAtIndex -Keep $keep
   if (-not $fix.ok) {
     Write-Host ("  [失败] {0}" -f $fix.error) -ForegroundColor Red
-    if (-not $NoPause) { try { Read-Host '按回车退出' | Out-Null } catch {} }
-    exit $(if ($null -ne $fix.exitCode) { $fix.exitCode } else { 1 })
+    & $pauseExit $(if ($null -ne $fix.exitCode) { $fix.exitCode } else { 1 })
   }
-  foreach ($row in @($fix.plan)) {
-    if ($null -eq $row) { continue }
-    if ($row.action -eq 'skip-admin') {
-      Write-Host ("  [提示] {0} 仅 Machine 级存在：需要管理员手动处理" -f $row.name) -ForegroundColor DarkGray
-    } else {
-      Write-Host ("  [信息] 将清除 User {0} = {1}" -f $row.name, $row.valueMasked) -ForegroundColor Gray
-    }
+  foreach ($a in @($fix.applied)) {
+    if ($null -eq $a) { continue }
+    Write-Host ("  [修复] 已删除用户级 {0}" -f $a.name) -ForegroundColor Yellow
   }
-  if (-not $DryRun) {
-    foreach ($a in @($fix.applied)) {
-      if ($null -eq $a) { continue }
-      Write-Host ("  [修复] 已删除用户级 {0}（原 {1}）" -f $a.name, $a.valueMasked) -ForegroundColor Yellow
-    }
-    if ($fix.id) { Write-Host ("  [信息] 备份 id={0}（可用 -UndoFix 撤销）" -f $fix.id) -ForegroundColor Gray }
-    if ($fix.hint) { Write-Host ("  [信息] {0}" -f $fix.hint) -ForegroundColor Gray }
-  }
-  if (-not $NoPause) { try { Read-Host '按回车退出' | Out-Null } catch {} }
-  exit $(if ($null -ne $fix.exitCode) { $fix.exitCode } else { 0 })
+  if ($fix.id) { Write-Host ("  [信息] 备份 id={0}（可用 -UndoFix 撤销）" -f $fix.id) -ForegroundColor Gray }
+  if ($fix.hint) { Write-Host ("  [信息] {0}" -f $fix.hint) -ForegroundColor Gray }
+  & $pauseExit $(if ($null -ne $fix.exitCode) { $fix.exitCode } else { 0 })
 }
 
 
@@ -313,20 +339,28 @@ if (-not $targets.ok) {
       Say-Note ("{0} 仅 Machine 级存在：需要管理员手动处理" -f $m.Name)
     }
     # 交互修复：显式 -FixEnv 已在上方短路。此处仅在有 TTY 且非 NoPause 时询问。
-    # 纯 -NoPause 绝不自动修。
-    if ($userNames.Count -gt 0 -and -not $NoPause -and -not $FixEnv) {
+    # 纯 -NoPause 绝不自动修。envFixKeep 中的变量不进确认名单；envFixEnabled=false 不询问。
+    $keepNow = @($script:EnvFixSettings.keep)
+    $fixNames = @($userNames | Where-Object { $null -ne $_ -and -not ($keepNow.Count -gt 0 -and (Test-CslNameMatchesPatterns -Name $_ -Patterns $keepNow)) })
+    foreach ($kn in @($userNames | Where-Object { $null -ne $_ -and $fixNames -notcontains $_ })) {
+      Say-Info ("{0} 在 envFixKeep 中，一键修复会保留它" -f $kn)
+    }
+    if ($userNames.Count -gt 0 -and -not $script:EnvFixSettings.enabled) {
+      Say-Info '一键修复已在 preflight.json 关闭（envFixEnabled=false），请手动处理'
+    } elseif ($fixNames.Count -gt 0 -and -not $NoPause -and -not $FixEnv) {
+      foreach ($fn in $fixNames) { Say-Info ("将清除 User {0}" -f $fn) }
       $ans = ''
       try { $ans = Read-Host '  是否删除这些用户级变量？(y/N)' } catch {}
       if ($ans -match '^[yY]') {
-        $fix = Invoke-CslEnvFix -Patterns $script:FixPatterns -TestMode:$TestMode -FailAtIndex $FailAtIndex
+        $fix = Invoke-CslEnvFix -Patterns $script:FixPatterns -TestMode:$TestMode -FailAtIndex $FailAtIndex -Keep $keepNow
         if ($fix.ok) {
-          foreach ($a in @($fix.applied)) { if ($null -eq $a) { continue }; Say-Fix ("已删除用户级 {0}（原 {1}）" -f $a.name, $a.valueMasked) }
+          foreach ($a in @($fix.applied)) { if ($null -eq $a) { continue }; Say-Fix ("已删除用户级 {0}" -f $a.name) }
           if ($fix.id) { Say-Info ("备份 id={0}，可用 -UndoFix 撤销；新开的终端才会生效" -f $fix.id) }
         } else { Say-Fail $fix.error }
       } else {
         Say-Info '可在面板点「修复」，或 CLI: -FixEnv（加 -DryRun 可预览）'
       }
-    } elseif ($userNames.Count -gt 0 -and $NoPause) {
+    } elseif ($fixNames.Count -gt 0 -and $NoPause) {
       Say-Info 'NoPause 模式不自动修复；需要时请显式传 -FixEnv（或面板「修复」）'
     }
   }

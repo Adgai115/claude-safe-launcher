@@ -294,9 +294,11 @@ async function envFixApply(g){try{
   if(!planRes.ok){alert(planRes.error||'无法预览修复');return}
   const rows=(planRes.plan||[]).filter(p=>p.action==='remove');
   const skips=(planRes.plan||[]).filter(p=>p.action==='skip-admin');
-  if(!rows.length&&!skips.length){alert('没有可清除的用户级变量');return}
-  let msg='将删除以下用户级变量（值已脱敏）：\n';
-  rows.forEach(p=>{msg+='  · '+p.name+' = '+p.valueMasked+'\n'});
+  const keeps=(planRes.plan||[]).filter(p=>p.action==='keep');
+  if(!rows.length){alert('没有可清除的用户级变量'+(keeps.length?'（'+keeps.map(p=>p.name).join('、')+' 在 envFixKeep 中保留）':'')+(skips.length?'\n仅 Machine 级的变量需要管理员手动处理':''));return}
+  let msg='将执行以下操作（只列变量名，不显示值）：\n';
+  rows.forEach(p=>{msg+='  · 删除用户级 '+p.name+'\n'});
+  keeps.forEach(p=>{msg+='  · 保留 '+p.name+'（envFixKeep）\n'});
   skips.forEach(p=>{msg+='  · '+p.name+' 仅 Machine 级：需要管理员手动处理\n'});
   msg+='\n新开的终端才会生效。\n确认修复？';
   if(!confirm(msg))return;
@@ -371,7 +373,7 @@ async function envFixUndo(g){try{
     decisions=choice.decisions||{};
   } else {
     let msg='撤销修复 '+latest.id+(latest.ts?('（'+latest.ts+'）'):'')+'？\n';
-    (plan.pending||[]).forEach(v=>{msg+='  · '+v.name+': → '+v.valueMasked+'\n'});
+    (plan.pending||[]).forEach(v=>{msg+='  · 恢复 '+v.name+'\n'});
     msg+='\n新开的终端才会生效。';
     if(!confirm(msg))return;
   }

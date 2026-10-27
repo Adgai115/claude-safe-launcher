@@ -698,7 +698,7 @@ foreach ($srcName in @('claude-envfix.ps1', 'claude-preflight.ps1')) {
     if (-not $ok) { $guardMissing += ("{0}:{1}" -f $srcName, $lp.Extent.StartLineNumber) }
   }
 }
-Assert-True ($guardTotal -ge 9) ("found foreach @(`$x.prop) loops ($guardTotal)")
+Assert-True ($guardTotal -ge 8) ("found foreach @(`$x.prop) loops ($guardTotal)")
 Assert-Eq ($guardMissing -join ',') '' 'every such loop skips $null first'
 $nlDir = Get-CslEnvBackupDir
 $storeNl = New-MemStore
@@ -711,6 +711,76 @@ $nlJson.entries = @($null) + @($nlJson.entries)
 $uncBefore3 = $script:Uncaught
 $uNl = Invoke-CslEnvUndo -Id $fNl.id -NoPause -TestMode -Store $storeNl
 Assert-True ($uNl.ok -and ((& $storeNl.GetUserEntry 'CSL_TEST_ANTHROPIC_NULLENT').Value -eq 'nullent-orig') -and ($script:Uncaught -eq $uncBefore3)) 'undo with a null element in entries restores, no error'
+
+Write-Host '== v3.3.0 envFixEnabled / envFixKeep settings ==' -ForegroundColor Cyan
+$dflt = Get-CslEnvFixSettings ([pscustomobject]@{ monitorIntervalMin = 5 })
+Assert-True ($dflt.enabled -eq $true -and @($dflt.keep).Count -eq 0) 'missing keys: enabled=true, keep empty'
+$dflt2 = Get-CslEnvFixSettings $null
+Assert-True ($dflt2.enabled -eq $true -and @($dflt2.keep).Count -eq 0) 'null cfg: enabled=true, keep empty'
+$off = Get-CslEnvFixSettings ([pscustomobject]@{ envFixEnabled = $false; envFixKeep = @('CSL_TEST_ANTHROPIC_BASE_URL', $null, '  ') })
+Assert-True ($off.enabled -eq $false) 'envFixEnabled=false is honored'
+Assert-Eq (@($off.keep) -join ',') 'CSL_TEST_ANTHROPIC_BASE_URL' 'envFixKeep drops null/blank entries'
+$offStr = Get-CslEnvFixSettings ([pscustomobject]@{ envFixEnabled = 'false'; envFixKeep = 'CSL_TEST_ANTHROPIC_MODEL' })
+Assert-True ($offStr.enabled -eq $false -and (@($offStr.keep) -join ',') -eq 'CSL_TEST_ANTHROPIC_MODEL') 'string false / single-string keep accepted'
+$commonText = [IO.File]::ReadAllText((Join-Path $repoDir 'claude-common.ps1'))
+Assert-True ($commonText -match 'envFixEnabled\s*=\s*\$true' -and $commonText -match 'envFixKeep\s*=\s*@\(\)') 'Load-Config defaults: envFixEnabled=$true, envFixKeep=@()'
+
+$storeK = New-MemStore
+& $storeK.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_BASE_URL' -Value 'https://keep.example'
+& $storeK.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_AUTH_TOKEN' -Value 'sk-keeptest-123456'
+$pK = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_*') -TestMode -DryRun -Store $storeK -Keep @('CSL_TEST_ANTHROPIC_BASE_URL')
+$pKeep = @(@($pK.plan) | Where-Object { $_.action -eq 'keep' } | ForEach-Object { $_.name })
+$pRem = @(@($pK.plan) | Where-Object { $_.action -eq 'remove' } | ForEach-Object { $_.name })
+Assert-Eq ($pKeep -join ',') 'CSL_TEST_ANTHROPIC_BASE_URL' 'plan: kept name has action keep'
+Assert-Eq ($pRem -join ',') 'CSL_TEST_ANTHROPIC_AUTH_TOKEN' 'plan: only non-kept name is removed'
+$fK = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_*') -TestMode -Store $storeK -Keep @('CSL_TEST_ANTHROPIC_BASE*')
+Assert-True ($fK.ok -and ((& $storeK.GetUserEntry 'CSL_TEST_ANTHROPIC_BASE_URL').Value -eq 'https://keep.example')) 'apply: envFixKeep (wildcard) variable kept'
+Assert-True ($null -eq (& $storeK.GetUserEntry 'CSL_TEST_ANTHROPIC_AUTH_TOKEN')) 'apply: non-kept variable removed'
+$kBak = Get-Content -LiteralPath (Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $fK.id)) -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-Eq ((@($kBak.entries) | Where-Object { $null -ne $_ } | ForEach-Object { $_.name }) -join ',') 'CSL_TEST_ANTHROPIC_AUTH_TOKEN' 'backup holds only the removed variable'
+$storeK2 = New-MemStore
+& $storeK2.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_BASE_URL' -Value 'https://keep.example'
+$fK2 = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_*') -TestMode -Store $storeK2 -Keep @('CSL_TEST_ANTHROPIC_BASE_URL')
+Assert-True ($fK2.ok -and $null -eq $fK2.id -and ((& $storeK2.GetUserEntry 'CSL_TEST_ANTHROPIC_BASE_URL').Value -eq 'https://keep.example')) 'all kept: no change, no backup'
+Clear-TestBackups
+
+Write-Host '== v3.3.0 confirm list: names and actions only; -FixEnv asks y/N ==' -ForegroundColor Cyan
+$storeV = New-MemStore
+& $storeV.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_AUTH_TOKEN' -Value 'sk-secretvalue-987654'
+$pV = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_*') -TestMode -DryRun -Store $storeV
+$planJson = ConvertTo-Json @($pV.plan) -Depth 6 -Compress
+Assert-True (-not ($planJson -match 'secretvalue|9876|valueMasked')) 'plan rows carry no value (plain or masked)'
+Assert-True ($null -eq (@($pV.plan)[0].PSObject.Properties['valueMasked'])) 'plan row has no valueMasked field'
+Assert-True (Test-CslFixConfirmed -Yes -ReadAnswer { throw 'must not ask' }) '-Yes skips the question'
+Assert-True (Test-CslFixConfirmed -ReadAnswer { 'y' }) 'answer y agrees'
+Assert-True (Test-CslFixConfirmed -ReadAnswer { ' Y ' }) 'answer Y agrees'
+Assert-True (-not (Test-CslFixConfirmed -ReadAnswer { 'n' })) 'answer n refuses'
+Assert-True (-not (Test-CslFixConfirmed -ReadAnswer { '' })) 'empty answer refuses'
+Assert-True (-not (Test-CslFixConfirmed -ReadAnswer { $null })) 'EOF/null refuses'
+Assert-True (-not (Test-CslFixConfirmed -ReadAnswer { throw 'no console' })) 'read error refuses'
+Assert-True (-not (Test-CslFixConfirmed)) 'no reader and no -Yes refuses'
+$pfPath = Join-Path $repoDir 'claude-preflight.ps1'
+foreach ($srcName in @('claude-preflight.ps1', 'claude-envfix.ps1', 'claude-common.ps1', 'claude-panel.ps1')) {
+  $pe = $null
+  [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoDir $srcName), [ref]$null, [ref]$pe)
+  Assert-Eq (@($pe).Count) 0 ("$srcName parses with no syntax errors")
+}
+$pfAst = [System.Management.Automation.Language.Parser]::ParseFile($pfPath, [ref]$null, [ref]$null)
+$pfParams = @($pfAst.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+Assert-True ($pfParams -contains 'Yes') 'preflight has -Yes switch'
+$pfText = [IO.File]::ReadAllText($pfPath)
+Assert-True ($pfText -match 'Test-CslFixConfirmed -Yes:\$Yes') 'preflight -FixEnv goes through Test-CslFixConfirmed'
+Assert-True (-not ($pfText -match 'valueMasked')) 'preflight prints no masked values'
+$panelText = [IO.File]::ReadAllText((Join-Path $repoDir 'claude-panel.html'))
+Assert-True (-not ($panelText -match 'valueMasked')) 'panel confirm boxes show no values'
+$fnAst = $pfAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Write-CslEnvFixPlan' }, $true)
+Assert-True ($null -ne $fnAst) 'preflight defines Write-CslEnvFixPlan'
+if ($fnAst) {
+  Invoke-Expression $fnAst.Extent.Text
+  $planOut = @(Write-CslEnvFixPlan $pV.plan 6>&1 | ForEach-Object { [string]$_ })
+  Assert-True ((@($planOut | Where-Object { $_ -match '将清除 User (\S+)$' }).Count -eq 1)) 'plan line reads 将清除 User NAME'
+  Assert-True (-not (($planOut -join "`n") -match 'secretvalue|9876|\*')) 'plan output has no value'
+}
 
 Remove-Item -LiteralPath $script:Root -Recurse -Force -ErrorAction SilentlyContinue
 

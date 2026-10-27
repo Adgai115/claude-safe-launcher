@@ -476,6 +476,18 @@ function Get-CslEnvFixList {
   return $out
 }
 
+# v3.3.0: -FixEnv confirmation. -Yes skips the question; otherwise only an answer starting with y/Y agrees.
+# Empty input, EOF, $null, or an exception while reading all mean "no change".
+function Test-CslFixConfirmed {
+  param([switch]$Yes, [scriptblock]$ReadAnswer)
+  if ($Yes) { return $true }
+  if (-not $ReadAnswer) { return $false }
+  $ans = $null
+  try { $ans = & $ReadAnswer } catch { return $false }
+  if ($null -eq $ans) { return $false }
+  return ([string]$ans -match '^\s*[yY]')
+}
+
 function Invoke-CslEnvFix {
   param(
     [string[]]$Patterns,
@@ -483,9 +495,11 @@ function Invoke-CslEnvFix {
     [switch]$DryRun,
     [int]$FailAtIndex = 0,
     $Store,
-    [switch]$PassThru
+    [switch]$PassThru,
+    [string[]]$Keep
   )
   if (-not $Store) { $Store = Get-CslDefaultEnvStore }
+  $keepPatterns = @(@($Keep) | Where-Object { $null -ne $_ -and ([string]$_).Trim() } | ForEach-Object { ([string]$_).Trim() })
 
   $failIdx = 0
   if ($FailAtIndex -gt 0) {
@@ -505,14 +519,27 @@ function Invoke-CslEnvFix {
       return @{ ok = $false; error = "变量名未通过 TestMode 守卫: $($u.Name)"; exitCode = 2 }
     }
   }
-  $plan = @()
+  # v3.3.0: envFixKeep names stay; plan rows carry names and actions only (no values, not even masked)
+  $toFix = @()
+  $kept = @()
   foreach ($u in $found.user) {
+    if ($keepPatterns.Count -gt 0 -and (Test-CslNameMatchesPatterns -Name $u.Name -Patterns $keepPatterns)) { $kept += $u } else { $toFix += $u }
+  }
+  $plan = @()
+  foreach ($u in $toFix) {
     $plan += [pscustomobject]@{
       name = $u.Name
       scope = 'User'
       action = 'remove'
-      valueMasked = Protect-Secret $u.Value
       kind = $u.Kind
+    }
+  }
+  foreach ($u in $kept) {
+    $plan += [pscustomobject]@{
+      name = $u.Name
+      scope = 'User'
+      action = 'keep'
+      note = '按 envFixKeep 保留'
     }
   }
   foreach ($m in $found.machineOnly) {
@@ -520,20 +547,19 @@ function Invoke-CslEnvFix {
       name = $m.Name
       scope = 'Machine'
       action = 'skip-admin'
-      valueMasked = ''
       note = '需要管理员手动处理'
     }
   }
   if ($DryRun) {
     return @{ ok = $true; dryRun = $true; plan = $plan; applied = @(); id = $null; exitCode = 0; hint = 'DryRun：未修改系统' }
   }
-  if ($found.user.Count -eq 0) {
+  if ($toFix.Count -eq 0) {
     return @{ ok = $true; dryRun = $false; plan = $plan; applied = @(); id = $null; message = '没有可清除的用户级变量'; exitCode = 0; hint = '' }
   }
 
   $earliest = Get-CslEarliestMap
   $entries = @()
-  foreach ($u in $found.user) {
+  foreach ($u in $toFix) {
     $ex0 = $true
     $bf0 = $u.Value
     $kd0 = $u.Kind

@@ -130,8 +130,9 @@ sudo systemsetup -settimezone America/New_York
 | `-Force` | `--force` | 即使检查有失败项也启动 |
 | `-Relearn` | `--relearn` | 忘掉记住的 IP、节点和时区，按当前环境重新记住 |
 | `-FixVarPattern <通配符…>` | （暂无） | 限定要检测/修复的**用户级**变量名；默认等同当前第 9 组列表 |
-| `-FixEnv` | （暂无） | 一键清除匹配的用户级中转变量（**显式指定=同意**，可与 `-NoPause` 同用） |
-| `-DryRun` | （暂无） | 只列出将修改项（脱敏），不写系统、不写备份；配合 `-FixEnv` |
+| `-FixEnv` | （暂无） | 一键清除匹配的用户级中转变量；先列出变量名和动作（不显示值）并问 y/N，回答 y 才修改，`-NoPause` 下也会问（v3.3.0 起） |
+| `-Yes` | （暂无） | 配合 `-FixEnv` 跳过 y/N 确认，直接修复（脚本/无人值守用） |
+| `-DryRun` | （暂无） | 只列出将修改的变量名和动作，不写系统、不写备份；配合 `-FixEnv` |
 | `-UndoFix [-UndoId <id>]` | （暂无） | 撤销一次修复（默认最近一次）；冲突时配合 `-NoPause` 跳过该变量并返回非 0；被跳过的变量处理好冲突后可用同一 `-UndoId` 再撤销（v3.3.0 起逐项记录撤销状态） |
 | `-ListFixes` | （暂无） | 列出可撤销操作（值已脱敏） |
 | `-TestMode` | （暂无） | 仅允许操作 `CSL_TEST_` 前缀变量；测试请配合 `-FixVarPattern 'CSL_TEST_ANTHROPIC_*'` |
@@ -144,17 +145,20 @@ sudo systemsetup -settimezone America/New_York
 只动**用户级**（`[Environment]::… 'User'` / `HKCU\Environment`）。Machine 级仅提示「需要管理员手动处理」，不会提权。
 
 ```powershell
-# 预览（脱敏）
+# 预览（只列变量名和动作）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -FixEnv -DryRun
 
-# 正式清除默认 ANTHROPIC_* 列表（会写 backups\ 并可 -UndoFix）
+# 正式清除默认 ANTHROPIC_* 列表（先问 y/N；会写 backups\ 并可 -UndoFix）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -FixEnv
 
+# 无人值守：跳过确认
+powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -FixEnv -Yes
+
 # 测试（只用 CSL_TEST_ 前缀，不会碰真变量）
-powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -TestMode -FixVarPattern 'CSL_TEST_ANTHROPIC_*' -FixEnv
+powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -TestMode -FixVarPattern 'CSL_TEST_ANTHROPIC_*' -FixEnv -Yes
 
 # 验证整单回滚（仅 TestMode；第 2 个变量变更时失败，系统应恢复原样且不留备份）
-powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -TestMode -FixVarPattern 'CSL_TEST_ANTHROPIC_*' -FixEnv -FailAtIndex 2
+powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -TestMode -FixVarPattern 'CSL_TEST_ANTHROPIC_*' -FixEnv -Yes -FailAtIndex 2
 
 # 列出 / 撤销
 powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoPause -ListFixes
@@ -198,6 +202,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLa
 | `monitorIntervalMin` | 后台监控间隔（分钟），默认 5 |
 | `monitorKillOnChange` | IP 变化时是否自动关闭 Claude，默认 `false` |
 | `fixVarPatterns` | （Windows）用户级中转变量名通配符数组；空则用内置 `ANTHROPIC_*` 默认列表。非 TestMode 下禁止含 `CSL_TEST_` |
+| `envFixEnabled` | （Windows）默认 `true`；设为 `false` 时 `-FixEnv` 与面板「修复」不做任何修改（撤销、列表照常） |
+| `envFixKeep` | （Windows）默认 `[]`；一键修复时保留的变量名（可用通配符），确认名单里显示为「保留」 |
 
 
 ## 面板 API 长期安全规则
