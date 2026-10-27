@@ -21,3 +21,6 @@ mac/monitor.spawn.log
 # Python
 __pycache__/
 *.py[cod]
+
+# 环境变量修复备份（含原始值，勿提交）
+backups/

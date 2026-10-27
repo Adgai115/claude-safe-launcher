@@ -161,7 +161,7 @@ body[data-theme=western]{--muted:#4c5567;--title-font:Georgia,"Microsoft YaHei U
 <div class="deco" id="deco"></div>
 <div class="app">
   <header>
-    <div class="brand"><div class="logo" id="logo">✦</div><div><h1 id="title">Claude 安全启动 <span class="ver">v3.1.0</span></h1><p class="sub" id="sub"></p></div></div>
+    <div class="brand"><div class="logo" id="logo">✦</div><div><h1 id="title"><span id="titleText">Claude 安全启动</span> <span class="ver">v3.2.0</span> <span id="testModeBadge" style="display:none;margin-left:8px;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:700;vertical-align:middle;background:#1a5f7a;color:#fff;border:1px solid #0d3d4d">测试模式</span></h1><p class="sub" id="sub"></p></div></div>
     <div class="themes" id="themes"></div>
   </header>
   <section class="hero">
@@ -195,6 +195,12 @@ const T={
 const CN=['壹','贰','叁','肆','伍','陆','柒','捌','玖','拾','拾壹','拾贰','拾叁','拾肆'];
 const LV={'通过':'pass','警告':'warn','失败':'fail','修复':'fix','信息':'info','提示':'note'};
 const RANK={fail:4,warn:3,fix:2,pass:1,info:0,note:0};
+const CSL_TOKEN='__CSL_TOKEN__';
+const CSL_TESTMODE=('__CSL_TESTMODE__'==='1');
+if(CSL_TESTMODE){const b=document.getElementById('testModeBadge');if(b)b.style.display='inline-block';}
+function apiHeaders(isPost){const h={'X-CSL-Token':CSL_TOKEN};if(isPost)h['Content-Type']='application/json';return h}
+async function api(method,url,body){const opt={method,headers:apiHeaders(method==='POST')};if(body!==undefined)opt.body=JSON.stringify(body);const r=await fetch(url,opt);let j=null;try{j=await r.json()}catch(e){j={ok:false,error:'bad response '+r.status}}if(r.status===403){j=j||{};j.ok=false;j.error=j.error||'forbidden';}return j}
+
 const CST={pass:'通过',warn:'警告',fail:'失败',fix:'已修复'};
 const $=id=>document.getElementById(id);
 let theme='__THEME__'; if(!T[theme]) theme='anime';
@@ -207,9 +213,110 @@ function setState(){$('state').textContent=T[theme].s[st.phase]; $('ring').class
 function setScore(s){const bar=$('bar');if(s==null){$('score').textContent='--';bar.style.strokeDashoffset=326.7;return}
  $('score').textContent=s;bar.style.strokeDashoffset=326.7*(1-s/100);bar.style.stroke=s>=90?'var(--pass)':s>=70?'var(--warn)':'var(--fail)'}
 function addCard(g){const el=document.createElement('div');el.className='card';
- el.innerHTML=`<h3><span class="idx">${idxLabel(g.n)}</span><span>${esc(g.name)}</span><span class="cst"></span></h3>`;g.el=el;$('groups').appendChild(el);g.rows.forEach(r=>addRow(g,r));cardStatus(g)}
+ el.innerHTML=`<h3><span class="idx">${idxLabel(g.n)}</span><span>${esc(g.name)}</span><span class="cst"></span></h3><div class="card-actions" hidden></div>`;g.el=el;$('groups').appendChild(el);g.rows.forEach(r=>addRow(g,r));cardStatus(g)}
 function addRow(g,r){const d=document.createElement('div');d.className='row '+r.cls;d.innerHTML=`<span class="tag">${r.lvl}</span><span class="txt">${esc(r.text)}</span>`;d.title=r.text;g.el.appendChild(d)}
-function cardStatus(g){let w='info';g.rows.forEach(r=>{if(RANK[r.cls]>RANK[w])w=r.cls});const c=g.el.querySelector('.cst');c.className='cst '+w;c.textContent=CST[w]||'信息';c.style.display=CST[w]?'':'none';g.el.classList.toggle('r-fail',w==='fail');g.el.classList.toggle('r-warn',w==='warn')}
+function isEnvGroup(g){return /环境变量/.test(g.name||'')}
+function cardStatus(g){let w='info';g.rows.forEach(r=>{if(RANK[r.cls]>RANK[w])w=r.cls});const c=g.el.querySelector('.cst');c.className='cst '+w;c.textContent=CST[w]||'信息';c.style.display=CST[w]?'':'none';g.el.classList.toggle('r-fail',w==='fail');g.el.classList.toggle('r-warn',w==='warn');
+ if(isEnvGroup(g)){updateEnvActions(g,w)}}
+function updateEnvActions(g,w){const box=g.el.querySelector('.card-actions');if(!box)return;
+ const hasUserFail=g.rows.some(r=>r.cls==='fail'&&/用户级/.test(r.text));
+ box.innerHTML='';
+ if(hasUserFail){const b=document.createElement('button');b.className='btn primary btn-sm';b.textContent='修复';b.onclick=()=>envFixApply(g);box.appendChild(b)}
+ const u=document.createElement('button');u.className='btn btn-sm';u.textContent='撤销上次修复';u.onclick=()=>envFixUndo(g);box.appendChild(u);
+ box.hidden=false}
+async function envFixApply(g){try{
+  const planRes=await api('POST','/api/envfix',{action:'plan'});
+  if(!planRes.ok){alert(planRes.error||'无法预览修复');return}
+  const rows=(planRes.plan||[]).filter(p=>p.action==='remove');
+  const skips=(planRes.plan||[]).filter(p=>p.action==='skip-admin');
+  if(!rows.length&&!skips.length){alert('没有可清除的用户级变量');return}
+  let msg='将删除以下用户级变量（值已脱敏）：\n';
+  rows.forEach(p=>{msg+='  · '+p.name+' = '+p.valueMasked+'\n'});
+  skips.forEach(p=>{msg+='  · '+p.name+' 仅 Machine 级：需要管理员手动处理\n'});
+  msg+='\n新开的终端才会生效。\n确认修复？';
+  if(!confirm(msg))return;
+  const r=await api('POST','/api/envfix',{action:'apply'});
+  if(!r.ok){alert(r.error||'修复失败');return}
+  alert('已修复'+(r.id?('（备份 '+r.id+'）'):'')+'。'+(r.hint||'新开的终端才会生效')+'\n将自动重新检查。');
+  run(false,false);
+ }catch(e){alert('修复请求失败: '+e)}}
+function undoConflictDialog(conflicts){
+  return new Promise(resolve=>{
+    const wrap=document.createElement('div');
+    wrap.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;padding:12px';
+    const box=document.createElement('div');
+    box.style.cssText='background:var(--panel,#fff);color:var(--text,#222);border:1px solid var(--line,#ccc);border-radius:8px;max-width:560px;width:100%;max-height:78vh;display:flex;flex-direction:column;padding:14px 16px;font-family:"Microsoft YaHei UI","Microsoft YaHei",sans-serif;font-size:13px';
+    const head=document.createElement('div');
+    head.innerHTML='<div style="font-weight:700;font-size:15px;margin-bottom:4px">撤销冲突</div><div style="color:var(--muted,#666);margin-bottom:8px;font-size:12px">每项默认跳过。可逐项改选覆盖，或用全部按钮。确认后才会改系统；取消不改。</div>';
+    const list=document.createElement('div');
+    list.style.cssText='flex:1;overflow:auto;min-height:0;margin-bottom:10px;border-top:1px solid var(--line,#ddd)';
+    const radios=[];
+    conflicts.forEach((c,idx)=>{
+      const row=document.createElement('div');
+      row.style.cssText='padding:6px 0;border-bottom:1px dashed var(--line,#ddd);display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap';
+      const info=document.createElement('div');
+      info.style.cssText='flex:1;min-width:180px;line-height:1.45';
+      info.innerHTML='<b>'+esc(c.name||'')+'</b><br><span style="color:var(--muted,#666)">当前='+esc(c.currentMasked||'')+'　修复后应为='+esc(c.expectedMasked||'')+'　撤销将恢复为='+esc(c.restoreMasked||'')+'</span>';
+      const ctl=document.createElement('div');
+      ctl.style.cssText='flex:none;display:flex;gap:8px;align-items:center;font-size:12px';
+      const g='csl-ud-'+idx;
+      const mk=(val,label,checked)=>{
+        const lab=document.createElement('label');
+        lab.style.cssText='cursor:pointer;display:inline-flex;align-items:center;gap:3px;user-select:none';
+        const inp=document.createElement('input');
+        inp.type='radio';inp.name=g;inp.value=val;inp.checked=!!checked;
+        lab.appendChild(inp);lab.appendChild(document.createTextNode(label));
+        ctl.appendChild(lab);return inp;
+      };
+      const rSkip=mk('skip','跳过',true);
+      const rOver=mk('overwrite','覆盖',false);
+      radios.push({name:c.name, get:()=>rOver.checked?'overwrite':'skip', set:(v)=>{if(v==='overwrite')rOver.checked=true;else rSkip.checked=true}});
+      row.appendChild(info);row.appendChild(ctl);list.appendChild(row);
+    });
+    const foot=document.createElement('div');
+    foot.style.cssText='display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;align-items:center';
+    const mkBtn=(txt,primary,fn)=>{const b=document.createElement('button');b.type='button';b.className='btn'+(primary?' primary':'');b.textContent=txt;b.onclick=fn;foot.appendChild(b);return b};
+    mkBtn('全部跳过',false,()=>radios.forEach(r=>r.set('skip')));
+    mkBtn('全部覆盖',false,()=>radios.forEach(r=>r.set('overwrite')));
+    mkBtn('取消',false,()=>{wrap.remove();resolve({cancel:true})});
+    mkBtn('确认',true,()=>{
+      const decisions={};
+      radios.forEach(r=>{decisions[r.name]=r.get()});
+      wrap.remove();
+      resolve({cancel:false, defaultConflictDecision:'skip', decisions});
+    });
+    box.appendChild(head);box.appendChild(list);box.appendChild(foot);
+    wrap.appendChild(box);document.body.appendChild(wrap);
+  });
+}
+async function envFixUndo(g){try{
+  const list=await api('POST','/api/envfix',{action:'list'});
+  const items=(list.items||[]).filter(i=>!i.undone);
+  if(!items.length){alert('没有可撤销的修复');return}
+  const latest=items[0];
+  const plan=await api('POST','/api/envfix',{action:'undo-plan',id:latest.id});
+  if(!plan.ok){alert(plan.error||'无法预览撤销');return}
+  let defaultConflictDecision='skip';
+  let decisions={};
+  const confs=plan.conflicts||[];
+  if(confs.length){
+    const choice=await undoConflictDialog(confs);
+    if(!choice||choice.cancel)return; // 取消=不改系统
+    defaultConflictDecision=choice.defaultConflictDecision||'skip';
+    decisions=choice.decisions||{};
+  } else {
+    let msg='撤销修复 '+latest.id+(latest.ts?('（'+latest.ts+'）'):'')+'？\n';
+    (plan.pending||[]).forEach(v=>{msg+='  · '+v.name+': → '+v.valueMasked+'\n'});
+    msg+='\n新开的终端才会生效。';
+    if(!confirm(msg))return;
+  }
+  const r=await api('POST','/api/envfix',{action:'undo-apply',id:latest.id,defaultConflictDecision,decisions});
+  if(!r.ok && !(r.skipped&&r.skipped.length)){alert(r.error||'撤销失败');return}
+  let done='已撤销。';
+  if(r.skipped&&r.skipped.length) done='已撤销（跳过冲突 '+r.skipped.length+' 项，exitCode='+(r.exitCode||3)+'）。';
+  alert(done+(r.hint||'新开的终端才会生效'));
+  run(false,false);
+ }catch(e){alert('撤销请求失败: '+e)}}
 function handle(line){line=line.replace(/^\uFEFF/,'').replace(/\s+$/,'');if(!line)return;let m;
  if(m=line.match(/^== (?:(\d+)\.\s*)?(.+)$/)){const g={n:st.groups.length+1,name:m[2],rows:[]};st.groups.push(g);st.cur=g;addCard(g);g.el.scrollIntoView({block:'nearest'});return}
  if(m=line.match(/^\s+\[(通过|信息|修复|提示|警告|失败)\]\s*(.*)$/)){const r={lvl:m[1],cls:LV[m[1]],text:m[2]};
@@ -224,24 +331,24 @@ function finish(){busy=false;setBusy(false);st.phase=st.cnt.fail?'fail':st.cnt.w
 function setBusy(b){$('bCheck').disabled=b;$('bLaunch').disabled=b;$('bLearn').disabled=b}
 function parseIce(cand){const c=cand&&cand.candidate;if(!c)return null;const p=c.split(' ');if(p.length<8)return null;const ip=p[4];const ti=p.indexOf('typ');if(ti<0)return null;return{ip,typ:p[ti+1]}}
 function gatherWebRTC(timeoutMs){return new Promise(resolve=>{const out={srflx:[],host:[],ipv6:[]};let done=false;const fin=()=>{if(done)return;done=true;try{pc.close()}catch(e){}out.srflx=[...new Set(out.srflx)];out.host=[...new Set(out.host)];out.ipv6=[...new Set(out.ipv6)];resolve(out)};const to=setTimeout(fin,timeoutMs||4000);let pc;try{pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun.cloudflare.com:3478'}]});pc.createDataChannel('csl');pc.onicecandidate=e=>{if(!e.candidate){clearTimeout(to);fin();return}const x=parseIce(e.candidate);if(!x||!x.ip)return;const v6=x.ip.includes(':')&&!x.ip.includes('.');if(x.typ==='srflx'||x.typ==='relay'){if(v6)out.ipv6.push(x.ip);else out.srflx.push(x.ip)}else if(x.typ==='host')out.host.push(x.ip)};pc.createOffer().then(o=>pc.setLocalDescription(o)).catch(()=>{clearTimeout(to);fin()})}catch(e){clearTimeout(to);fin()}})}
-async function collectBrowser(){const out={ts:new Date().toISOString(),webrtc:{srflx:[],host:[],ipv6:[]},timezone:'',tzOffsetMin:new Date().getTimezoneOffset(),language:navigator.language||'',languages:[...(navigator.languages||[])],webdriver:!!navigator.webdriver};try{out.timezone=Intl.DateTimeFormat().resolvedOptions().timeZone||''}catch(e){}try{out.webrtc=await gatherWebRTC(4000)}catch(e){}try{await fetch('/api/browser',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(out)})}catch(e){}return out}
+async function collectBrowser(){const out={ts:new Date().toISOString(),webrtc:{srflx:[],host:[],ipv6:[]},timezone:'',tzOffsetMin:new Date().getTimezoneOffset(),language:navigator.language||'',languages:[...(navigator.languages||[])],webdriver:!!navigator.webdriver};try{out.timezone=Intl.DateTimeFormat().resolvedOptions().timeZone||''}catch(e){}try{out.webrtc=await gatherWebRTC(4000)}catch(e){}try{await api('POST','/api/browser',out)}catch(e){}return out}
 async function run(launch,relearn){if(busy)return;
- if(launch){try{const r=await(await fetch('/api/claude')).json();if(r.running&&!confirm('Claude 已经在运行。继续只会检查并把它切到前台，不会重启它。继续吗？'))return}catch(e){}}
+ if(launch){try{const r=await api('GET','/api/claude');if(r.running&&!confirm('Claude 已经在运行。继续只会检查并把它切到前台，不会重启它。继续吗？'))return}catch(e){}}
  busy=true;setBusy(true);reset();st.phase='run';setState();setScore(100);$('hint').textContent='正在采集浏览器环境（WebRTC）…';
  await collectBrowser();
  $('hint').textContent=launch?'检查通过后会启动 Claude':'只检查，不会启动或打扰 Claude';
- await fetch('/api/run?launch='+(launch?1:0)+'&relearn='+(relearn?1:0),{method:'POST'});next=0;poll()}
-async function poll(){try{const r=await(await fetch('/api/poll?from='+next)).json();if(typeof r.next==='number'){(r.lines||[]).forEach(handle);next=r.next;if(r.done){finish();return}}}catch(e){}setTimeout(poll,350)}
+ await api('POST','/api/run?launch='+(launch?1:0)+'&relearn='+(relearn?1:0),{});next=0;poll()}
+async function poll(){try{const r=await api('GET','/api/poll?from='+next);if(typeof r.next==='number'){(r.lines||[]).forEach(handle);next=r.next;if(r.done){finish();return}}}catch(e){}setTimeout(poll,350)}
 function particles(){const d=$('deco');d.querySelectorAll('.p').forEach(e=>e.remove());const ps=T[theme].p;if(!ps.length)return;
  for(let i=0;i<14;i++){const s=document.createElement('span');s.className='p';s.textContent=ps[i%ps.length];
   s.style.left=Math.random()*100+'%';s.style.fontSize=(14+Math.random()*18)+'px';s.style.animationDuration=(14+Math.random()*16)+'s';s.style.animationDelay=(-Math.random()*25)+'s';
   if(theme==='chinese'){s.style.color=i%2?'rgba(178,34,34,.35)':'rgba(43,33,24,.18)'}if(theme==='mech'){s.style.color='rgba(0,214,168,.18)'}d.appendChild(s)}}
-function applyTheme(t,save){theme=t;document.body.dataset.theme=t;const th=T[t];$('title').textContent=th.title;$('sub').textContent=th.sub;$('logo').textContent=th.logo;document.title=th.title;
+function applyTheme(t,save){theme=t;document.body.dataset.theme=t;const th=T[t];$('titleText').textContent=th.title;$('sub').textContent=th.sub;$('logo').textContent=th.logo;document.title=th.title;
  [...$('themes').children].forEach(b=>b.classList.toggle('on',b.dataset.t===t));particles();setState();
  const m=$('groups');m.classList.add('noanim');m.innerHTML='';st.groups.forEach(addCard);setTimeout(()=>m.classList.remove('noanim'),50);
- if(save)fetch('/api/theme?t='+t,{method:'POST'}).catch(()=>{})}
+ if(save)api('POST','/api/theme?t='+t,{}).catch(()=>{})}
 for(const k in T){const b=document.createElement('button');b.textContent=T[k].name;b.dataset.t=k;b.onclick=()=>applyTheme(k,true);$('themes').appendChild(b)}
-$('bCheck').onclick=()=>run(false);$('bLaunch').onclick=()=>run(true);$('bLearn').onclick=()=>{if(confirm('把当前的出口 IP、Clash 节点和时区记为正确环境？以后发生变化会提醒并自动切回。'))run(false,true)};{const bl=$('bLog');if(bl)bl.onclick=()=>fetch('/api/log',{method:'POST'});}
-setInterval(()=>fetch('/api/ping').catch(()=>{}),5000);
+$('bCheck').onclick=()=>run(false);$('bLaunch').onclick=()=>run(true);$('bLearn').onclick=()=>{if(confirm('把当前的出口 IP、Clash 节点和时区记为正确环境？以后发生变化会提醒并自动切回。'))run(false,true)};{const bl=$('bLog');if(bl)bl.onclick=()=>api('POST','/api/log',{});}
+setInterval(()=>api('GET','/api/ping').catch(()=>{}),5000);
 reset();applyTheme(theme,false);run(false);
 </script></body></html>

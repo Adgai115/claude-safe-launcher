@@ -6,7 +6,7 @@ $script:Root      = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:CfgPath   = Join-Path $script:Root 'preflight.json'
 $script:LogPath   = Join-Path $script:Root 'preflight.log'
 $script:Utf8NoBom = New-Object Text.UTF8Encoding($false)
-$script:VergeDir  = Join-Path $env:APPDATA 'io.github.clash-verge-rev.clash-verge-rev'
+if ($env:APPDATA) { $script:VergeDir = Join-Path $env:APPDATA 'io.github.clash-verge-rev.clash-verge-rev' } else { $script:VergeDir = $null }
 
 # IANA 时区 → Windows 时区（常用地区）
 $script:TzMap = @{
@@ -118,6 +118,7 @@ function Load-Config {
     monitorIntervalMin  = 5
     monitorKillOnChange = $false
     npmGlobalDir        = ''
+    fixVarPatterns      = @()
   }
   $cfg = $null
   if (Test-Path $script:CfgPath) { try { $cfg = Get-Content $script:CfgPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $cfg = $null } }
@@ -162,6 +163,45 @@ function Write-Log([string]$line) {
   $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'
   try { [IO.File]::AppendAllText($script:LogPath, "$($stamp) | $($line)`r`n", $script:Utf8NoBom) } catch {}
 }
+
+
+# 脱敏显示：永不打印完整密钥。后续可扩展 USERPROFILE 路径、完整 URL 等规则。
+# -Kind: Auto (默认) | Secret | Path | Url
+function Mask-Value {
+  param(
+    [AllowNull()][string]$Value,
+    [ValidateSet('Auto','Secret','Path','Url')][string]$Kind = 'Auto'
+  )
+  if ($null -eq $Value -or $Value -eq '') { return '(空)' }
+  $v = [string]$Value
+  # 预留：Path / Url 规则（v3.3+）；当前 Auto 与 Secret 同路径，先做前缀掩码
+  if ($Kind -eq 'Path' -or ($Kind -eq 'Auto' -and $v -match '(?i)^[A-Za-z]:\\|^/')) {
+    # placeholder: collapse user profile prefix when present
+    try {
+      $up = [string]$env:USERPROFILE
+      if ($up -and $v.StartsWith($up, [StringComparison]::OrdinalIgnoreCase)) {
+        $v = '%USERPROFILE%' + $v.Substring($up.Length)
+        return $v
+      }
+    } catch {}
+  }
+  if ($Kind -eq 'Url' -or ($Kind -eq 'Auto' -and $v -match '(?i)^https?://')) {
+    # placeholder: keep scheme+host, mask path/query for future; for now treat as secret-ish
+    try {
+      $uri = [uri]$v
+      if ($uri.Host) {
+        $tail = if ($uri.PathAndQuery -and $uri.PathAndQuery -ne '/') { '/****' } else { '' }
+        return ($uri.Scheme + '://' + $uri.Host + $tail)
+      }
+    } catch {}
+  }
+  # Secret / default: first 4 chars + ****
+  if ($v.Length -le 4) { return ($v.Substring(0,1) + '****') }
+  return ($v.Substring(0,4) + '****')
+}
+# 别名：供面板/日志/修复共用
+function Protect-Secret([AllowNull()][string]$Value) { Mask-Value -Value $Value -Kind Secret }
+
 
 function Get-TunAdapter {
   Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
@@ -219,4 +259,137 @@ function Ctl-SelectNode($cfg, [string]$group, [string]$node) {
   if (-not $group -or -not $node) { return $false }
   $body = '{"name":' + (ConvertTo-Json $node) + '}'
   return (Invoke-Ctl $cfg 'PUT' ('/proxies/' + [uri]::EscapeDataString($group)) $body).ok
+}
+
+# ----- Panel API security (CSRF / DNS rebinding) -----
+# Long-term rules: loopback-only bind; Host allowlist; Origin required on POST;
+# application/json POSTs; per-launch X-CSL-Token on every /api request; never log the token.
+
+function New-CslSessionToken {
+  $bytes = New-Object byte[] 32
+  $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+  try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+  # hex: 64 chars, URL/header safe
+  return ([BitConverter]::ToString($bytes) -replace '-','').ToLowerInvariant()
+}
+
+function Test-CslSecureEqual {
+  param([AllowNull()][string]$A, [AllowNull()][string]$B)
+  if ($null -eq $A) { $A = '' }
+  if ($null -eq $B) { $B = '' }
+  $ba = [Text.Encoding]::UTF8.GetBytes($A)
+  $bb = [Text.Encoding]::UTF8.GetBytes($B)
+  $diff = $ba.Length -bxor $bb.Length
+  $n = [Math]::Min($ba.Length, $bb.Length)
+  for ($i = 0; $i -lt $n; $i++) { $diff = $diff -bor ($ba[$i] -bxor $bb[$i]) }
+  # pad remaining length into timing without short-circuit on content
+  if ($ba.Length -ne $bb.Length) {
+    $longer = if ($ba.Length -gt $bb.Length) { $ba } else { $bb }
+    for ($i = $n; $i -lt $longer.Length; $i++) { $diff = $diff -bor $longer[$i] -bor 1 }
+  }
+  return ($diff -eq 0)
+}
+
+function Test-CslPanelHostAllowed {
+  param([string]$HostHeader, [int]$Port = 47831)
+  if (-not $HostHeader) { return $false }
+  $h = $HostHeader.Trim()
+  $allowed = @(
+    ("localhost:{0}" -f $Port),
+    ("127.0.0.1:{0}" -f $Port)
+  )
+  foreach ($a in $allowed) {
+    if ([string]::Equals($h, $a, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  }
+  return $false
+}
+
+function Test-CslPanelOriginAllowed {
+  param([AllowNull()][string]$Origin, [int]$Port = 47831)
+  if (-not $Origin) { return $false }
+  $o = $Origin.Trim().TrimEnd('/')
+  $allowed = @(
+    ("http://localhost:{0}" -f $Port),
+    ("http://127.0.0.1:{0}" -f $Port)
+  )
+  foreach ($a in $allowed) {
+    if ([string]::Equals($o, $a, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  }
+  return $false
+}
+
+function Test-CslPanelContentTypeJson {
+  param([AllowNull()][string]$ContentType)
+  if (-not $ContentType) { return $false }
+  $ct = $ContentType.Trim()
+  if ($ct -match '^\s*application/json(\s*;.*)?$') { return $true }
+  return $false
+}
+
+<#
+.SYNOPSIS
+  Validate a panel /api request. Returns @{ ok; status; error }.
+  - Page GET "/" is not validated here (caller skips).
+  - All /api requests need Host allowlist + X-CSL-Token (constant-time).
+  - POST additionally: Origin required+allowlisted; Content-Type application/json.
+  - Never emits Access-Control-* ; OPTIONS should be rejected by caller.
+#>
+function Test-CslPanelApiRequest {
+  param(
+    [string]$Method,
+    [string]$HostHeader,
+    [AllowNull()][string]$Origin,
+    [AllowNull()][string]$ContentType,
+    [AllowNull()][string]$TokenHeader,
+    [string]$ExpectedToken,
+    [int]$Port = 47831,
+    [switch]$IsApiPath
+  )
+  if (-not $IsApiPath) {
+    return @{ ok = $true; status = 200; error = $null }
+  }
+  if (-not (Test-CslPanelHostAllowed -HostHeader $HostHeader -Port $Port)) {
+    return @{ ok = $false; status = 403; error = 'forbidden host' }
+  }
+  if (-not (Test-CslSecureEqual -A $TokenHeader -B $ExpectedToken)) {
+    return @{ ok = $false; status = 403; error = 'forbidden token' }
+  }
+  $m = [string]$Method
+  if ($m -eq 'OPTIONS') {
+    return @{ ok = $false; status = 403; error = 'forbidden method' }
+  }
+  if ($m -eq 'POST') {
+    if (-not $Origin) {
+      return @{ ok = $false; status = 403; error = 'forbidden origin' }
+    }
+    if (-not (Test-CslPanelOriginAllowed -Origin $Origin -Port $Port)) {
+      return @{ ok = $false; status = 403; error = 'forbidden origin' }
+    }
+    if (-not (Test-CslPanelContentTypeJson -ContentType $ContentType)) {
+      return @{ ok = $false; status = 403; error = 'forbidden content-type' }
+    }
+  }
+  return @{ ok = $true; status = 200; error = $null }
+}
+
+
+function Test-CslUndoDecisionsValid {
+  param(
+    [hashtable]$Decisions,
+    [string[]]$AllowedNames
+  )
+  if ($null -eq $Decisions) { return @{ ok = $true; error = $null } }
+  $allow = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  foreach ($n in @($AllowedNames)) { if ($n) { [void]$allow.Add([string]$n) } }
+  foreach ($key in @($Decisions.Keys)) {
+    $name = [string]$key
+    if (-not $allow.Contains($name)) {
+      return @{ ok = $false; error = "unknown decision name: $name" }
+    }
+    $v = ([string]$Decisions[$key]).ToLowerInvariant()
+    if ($v -ne 'skip' -and $v -ne 'overwrite') {
+      return @{ ok = $false; error = "invalid decision for ${name}: $v" }
+    }
+  }
+  return @{ ok = $true; error = $null }
 }

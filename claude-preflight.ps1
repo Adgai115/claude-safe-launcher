@@ -1,18 +1,119 @@
-﻿param([switch]$Force, [switch]$NoPause, [switch]$NoLaunch, [switch]$Relearn)
+﻿param(
+  [switch]$Force,
+  [switch]$NoPause,
+  [switch]$NoLaunch,
+  [switch]$Relearn,
+  [switch]$TestMode,
+  [switch]$DryRun,
+  [switch]$FixEnv,
+  [switch]$UndoFix,
+  [string]$UndoId,
+  [switch]$ListFixes,
+  [string[]]$FixVarPattern,
+  [int]$FailAtIndex = 0
+)
 <#
-  Claude 桌面版 启动前检查 + 自动设置（v3.1.0）
-  用法: powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 [-Force] [-NoPause] [-NoLaunch]
+  Claude 桌面版 启动前检查 + 自动设置（v3.2.0）
+  用法: powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 [选项]
   -Force    : 即使有「必须修」项也启动 Claude
-  -NoPause  : 结束时不等待按键
+  -NoPause  : 结束时不等待按键；单独使用时不提示也不自动修复
   -NoLaunch : 只检查，不启动/不切换 Claude，也不启动后台监控（测试用）
   -Relearn  : 忘掉记住的出口 IP / 节点 / 时区，按当前环境重新记住
-  配置文件  : 同目录 preflight.json（controllerSecret 为敏感信息，不会被打印）
-  依赖      : 同目录 claude-common.ps1、claude-monitor.ps1
+  -FixVarPattern <通配符...> : 限定要检测/修复的用户级变量名（默认 ANTHROPIC_* 列表）
+  -FixEnv   : 一键清除匹配的用户级中转变量（显式指定=同意；可与 -NoPause 同用）
+  -DryRun   : 只列出将要修改的项（脱敏），不写系统、不写备份
+  -UndoFix [-UndoId <id>] : 撤销一次修复（默认最近一次）；冲突时 -NoPause 跳过并返回非 0
+  -ListFixes : 列出可撤销操作（脱敏）
+  -TestMode : 仅允许操作 CSL_TEST_ 前缀变量；测试请配合 -FixVarPattern 'CSL_TEST_ANTHROPIC_*'
+  -FailAtIndex <n> : （仅 -TestMode）使第 n 个变量变更抛错，用于验证整单回滚；非 TestMode 警告并忽略
+  配置文件  : 同目录 preflight.json（可用 fixVarPatterns；controllerSecret 不会被打印）
+  依赖      : 同目录 claude-common.ps1、claude-envfix.ps1、claude-monitor.ps1
 #>
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-common.ps1')
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-envfix.ps1')
 try { $Host.UI.RawUI.WindowTitle = 'Claude 安全启动 - 启动前检查' } catch {}
 $cfg = Load-Config
 if ($Relearn) { Save-Learned $cfg @{ expectedIp = ''; expectedLoc = ''; expectedNode = ''; timezone = ''; expectedTzIana = '' } }
+
+$script:DoUndoFix = [bool]$UndoFix
+$script:UndoFixId = $(if ($UndoId) { $UndoId } else { $null })
+
+$script:FixPatterns = Get-CslFixVarPatterns -Cfg $cfg -FixVarPattern $FixVarPattern
+
+# 撤销冲突提示：跳过 $null / 空值（PS 5.1 下 @($null) 会产生一个 $null 元素）
+function Get-CslUndoConflictMessages($Conflicts) {
+  $out = @()
+  foreach ($c in @($Conflicts)) {
+    if ($null -eq $c) { continue }
+    $msg = if ($c -is [string]) { $c } elseif ($c -is [System.Collections.IDictionary]) { if ($c.Contains('message') -and $c['message']) { [string]$c['message'] } else { [string]$c['name'] } } elseif ($c.PSObject.Properties['message']) { [string]$c.message } else { [string]$c }
+    if ([string]::IsNullOrWhiteSpace($msg)) { continue }
+    $out += $msg
+  }
+  return $out
+}
+function Write-CslUndoConflicts($Conflicts) {
+  foreach ($m in @(Get-CslUndoConflictMessages $Conflicts)) { Write-Host ("  [警告] {0}" -f $m) -ForegroundColor Yellow }
+}
+
+# ----- CLI：列出 / 撤销 / 仅修复（可在完整检查前短路） -----
+if ($ListFixes) {
+  Write-Host '可撤销的环境变量修复（值已脱敏）:' -ForegroundColor Cyan
+  $list = @(Get-CslEnvFixList)
+  if ($list.Count -eq 0) { Write-Host '  （无）' -ForegroundColor DarkGray }
+  foreach ($it in $list) {
+    $st = $(if ($it.undone) { '已撤销' } else { '可撤销' })
+    Write-Host ("  [{0}] {1}  {2}" -f $it.id, $it.ts, $st)
+    foreach ($v in $it.vars) {
+      Write-Host ("    - {0}: before={1} after={2}" -f $v.name, $v.beforeMasked, $v.after)
+    }
+  }
+  if (-not $NoPause) { try { Read-Host '按回车退出' | Out-Null } catch {} }
+  exit 0
+}
+
+if ($script:DoUndoFix) {
+  Write-Host '撤销环境变量修复…' -ForegroundColor Cyan
+  $undo = Invoke-CslEnvUndo -Id $script:UndoFixId -NoPause:$NoPause -TestMode:$TestMode -FailAtIndex $FailAtIndex
+  if ($undo.alreadyUndone) {
+    Write-Host ("  [信息] already undone（{0}）" -f $undo.id) -ForegroundColor Gray
+  }
+  if ($undo.restored) {
+    foreach ($r in $undo.restored) { Write-Host ("  [修复] 已恢复 {0} = {1}" -f $r.name, $r.valueMasked) -ForegroundColor Yellow }
+  }
+  Write-CslUndoConflicts $undo.conflicts
+  if (-not $undo.ok -and $undo.error) { Write-Host ("  [失败] {0}" -f $undo.error) -ForegroundColor Red }
+  if ($undo.hint) { Write-Host ("  [信息] {0}" -f $undo.hint) -ForegroundColor Gray }
+  if (-not $NoPause) { try { Read-Host '按回车退出' | Out-Null } catch {} }
+  exit $(if ($null -ne $undo.exitCode) { $undo.exitCode } else { 1 })
+}
+
+if ($FixEnv) {
+  Write-Host '一键修复用户级中转环境变量…' -ForegroundColor Cyan
+  if ($DryRun) { Write-Host '  [信息] DryRun：只预览，不修改' -ForegroundColor Gray }
+  $fix = Invoke-CslEnvFix -Patterns $script:FixPatterns -TestMode:$TestMode -DryRun:$DryRun -FailAtIndex $FailAtIndex
+  if (-not $fix.ok) {
+    Write-Host ("  [失败] {0}" -f $fix.error) -ForegroundColor Red
+    if (-not $NoPause) { try { Read-Host '按回车退出' | Out-Null } catch {} }
+    exit $(if ($null -ne $fix.exitCode) { $fix.exitCode } else { 1 })
+  }
+  foreach ($row in @($fix.plan)) {
+    if ($row.action -eq 'skip-admin') {
+      Write-Host ("  [提示] {0} 仅 Machine 级存在：需要管理员手动处理" -f $row.name) -ForegroundColor DarkGray
+    } else {
+      Write-Host ("  [信息] 将清除 User {0} = {1}" -f $row.name, $row.valueMasked) -ForegroundColor Gray
+    }
+  }
+  if (-not $DryRun) {
+    foreach ($a in @($fix.applied)) {
+      Write-Host ("  [修复] 已删除用户级 {0}（原 {1}）" -f $a.name, $a.valueMasked) -ForegroundColor Yellow
+    }
+    if ($fix.id) { Write-Host ("  [信息] 备份 id={0}（可用 -UndoFix 撤销）" -f $fix.id) -ForegroundColor Gray }
+    if ($fix.hint) { Write-Host ("  [信息] {0}" -f $fix.hint) -ForegroundColor Gray }
+  }
+  if (-not $NoPause) { try { Read-Host '按回车退出' | Out-Null } catch {} }
+  exit $(if ($null -ne $fix.exitCode) { $fix.exitCode } else { 0 })
+}
+
 
 # ---------- 输出与评分 ----------
 # FAIL = 必须修（默认扣 25）  WARN = 建议修（默认扣 8）  NOTE = 不用管（0 分）
@@ -27,7 +128,7 @@ function Say-Warn($t, $w = 8)  { Write-Host "  [警告] $($t)" -ForegroundColor 
 function Say-Fail($t, $w = 25) { Write-Host "  [失败] $($t)" -ForegroundColor Red; Add-Item 'FAIL' $t $w }
 
 Write-Host '==============================================' -ForegroundColor Cyan
-Write-Host '   Claude 桌面版 启动前检查 v3.1.0' -ForegroundColor Cyan
+Write-Host '   Claude 桌面版 启动前检查 v3.2.0' -ForegroundColor Cyan
 if ($Relearn) { Write-Host '   [重新学习] 将按当前环境重新记住出口 IP / 节点 / 时区' -ForegroundColor Cyan }
 Write-Host ("   " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + $(if ($NoLaunch) { '   [NoLaunch 测试模式]' } else { '' })) -ForegroundColor Cyan
 Write-Host '==============================================' -ForegroundColor Cyan
@@ -186,23 +287,44 @@ else { Say-Warn "HTTP $($code)（非预期状态码）" 5 }
 
 # ---------- 9. 环境变量 ----------
 Say-Head '9. 环境变量'
-$envBad = @('ANTHROPIC_BASE_URL','ANTHROPIC_AUTH_TOKEN','ANTHROPIC_API_KEY','ANTHROPIC_MODEL','ANTHROPIC_SMALL_FAST_MODEL')
-$found = @()
-foreach ($n in $envBad) {
-  if ([Environment]::GetEnvironmentVariable($n,'User') -or [Environment]::GetEnvironmentVariable($n,'Machine') -or [Environment]::GetEnvironmentVariable($n,'Process')) { $found += $n }
-}
-if ($found.Count -eq 0) { Say-Pass '没有 ANTHROPIC_BASE_URL / AUTH_TOKEN / API_KEY 等第三方中转变量' }
-else {
-  Say-Fail ("发现变量: " + ($found -join ', ') + "（会让 Claude Code 走第三方接口）")
-  $ans = ''
-  if (-not $NoPause) { try { $ans = Read-Host '  是否删除这些用户级变量？(y/N)' } catch {} }
-  if ($ans -match '^[yY]') {
-    foreach ($n in $found) { Remove-ItemProperty -Path 'HKCU:\Environment' -Name $n -ErrorAction SilentlyContinue; Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
-    Say-Fix '已删除用户级变量（已打开的终端需重开才生效）'
+# 检测与修复共用同一模式源（-FixVarPattern / preflight.json fixVarPatterns / 默认列表）
+# 只读用户级注册表 / [Environment]::GetEnvironmentVariable(n,'User')，不把进程环境当真相
+$targets = Find-CslRelayEnvTargets -Patterns $script:FixPatterns -TestMode:$TestMode
+if (-not $targets.ok) {
+  Say-Fail $targets.error
+} else {
+  $userNames = @($targets.user | ForEach-Object { $_.Name })
+  $machNames = @($targets.machineOnly | ForEach-Object { $_.Name })
+  if ($userNames.Count -eq 0 -and $machNames.Count -eq 0) {
+    Say-Pass '没有匹配的第三方中转环境变量（用户级）'
+  } else {
+    foreach ($u in $targets.user) {
+      Say-Fail ("用户级 {0}={1}（会让 Claude Code 走第三方接口）" -f $u.Name, (Protect-Secret $u.Value))
+    }
+    foreach ($m in $targets.machineOnly) {
+      Say-Note ("{0} 仅 Machine 级存在：需要管理员手动处理" -f $m.Name)
+    }
+    # 交互修复：显式 -FixEnv 已在上方短路。此处仅在有 TTY 且非 NoPause 时询问。
+    # 纯 -NoPause 绝不自动修。
+    if ($userNames.Count -gt 0 -and -not $NoPause -and -not $FixEnv) {
+      $ans = ''
+      try { $ans = Read-Host '  是否删除这些用户级变量？(y/N)' } catch {}
+      if ($ans -match '^[yY]') {
+        $fix = Invoke-CslEnvFix -Patterns $script:FixPatterns -TestMode:$TestMode -FailAtIndex $FailAtIndex
+        if ($fix.ok) {
+          foreach ($a in @($fix.applied)) { Say-Fix ("已删除用户级 {0}（原 {1}）" -f $a.name, $a.valueMasked) }
+          if ($fix.id) { Say-Info ("备份 id={0}，可用 -UndoFix 撤销；新开的终端才会生效" -f $fix.id) }
+        } else { Say-Fail $fix.error }
+      } else {
+        Say-Info '可在面板点「修复」，或 CLI: -FixEnv（加 -DryRun 可预览）'
+      }
+    } elseif ($userNames.Count -gt 0 -and $NoPause) {
+      Say-Info 'NoPause 模式不自动修复；需要时请显式传 -FixEnv（或面板「修复」）'
+    }
   }
 }
 $hp = [Environment]::GetEnvironmentVariable('HTTPS_PROXY','User'); if (-not $hp) { $hp = $env:HTTPS_PROXY }
-if ($hp) { Say-Pass "HTTPS_PROXY=$($hp)" } else { Say-Warn "未设置 HTTPS_PROXY（建议 $($cfg.proxyUrl)）" 5 }
+if ($hp) { Say-Pass ("HTTPS_PROXY={0}" -f (Mask-Value -Value $hp -Kind Url)) } else { Say-Warn "未设置 HTTPS_PROXY（建议 $($cfg.proxyUrl)）" 5 }
 
 # ---------- 10. 残留配置扫描（只报告，不删除，不显示值） ----------
 Say-Head '10. 第三方接口残留扫描'
