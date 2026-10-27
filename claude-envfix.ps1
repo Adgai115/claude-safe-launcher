@@ -257,38 +257,42 @@ function Get-CslEarliestMap {
   return $map
 }
 
+function Get-CslEnvFixIdTime([string]$Id) {
+  # Parse the timestamp part of a fix id. Returns UTC datetime or $null.
+  # New ids: yyyyMMddTHHmmssfff-xxxx. Old ids: yyyyMMddTHHmmss-xxxx (treated as that second + 999ms).
+  if ([string]::IsNullOrEmpty($Id)) { return $null }
+  $ci = [Globalization.CultureInfo]::InvariantCulture
+  $st = [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+  $dt = [datetime]::MinValue
+  if ($Id -match '^(\d{8}T\d{9})(-|$)') {
+    if ([datetime]::TryParseExact($Matches[1], 'yyyyMMddTHHmmssfff', $ci, $st, [ref]$dt)) { return $dt }
+  } elseif ($Id -match '^(\d{8}T\d{6})(-|$)') {
+    if ([datetime]::TryParseExact($Matches[1], 'yyyyMMddTHHmmss', $ci, $st, [ref]$dt)) { return $dt.AddMilliseconds(999) }
+  }
+  return $null
+}
+
 function New-CslEnvFixId {
-  # Monotonic UTC id: yyyyMMddTHHmmssfff + 4 hex. Per-dir guard bumps ms if prefix exists.
-  # Old ids (yyyyMMddTHHmmss-xxxx) sort before new ones in the same second ('-' < digit).
+  # Monotonic UTC id: yyyyMMddTHHmmssfff + '-' + 4 hex.
+  # Time part = later of (now, newest existing id + 1ms), so ids keep increasing even if the clock goes back.
+  param([Nullable[datetime]]$NowUtc)
   $dir = Get-CslEnvBackupDir
-  $utc = [datetime]::UtcNow
-  for ($i = 0; $i -lt 5000; $i++) {
-    $base = $utc.ToString('yyyyMMddTHHmmssfff')
-    $prefixHit = @(Get-ChildItem -LiteralPath $dir -Filter ("envfix-{0}*.json" -f $base) -File -ErrorAction SilentlyContinue)
-    $needBump = ($prefixHit.Count -gt 0)
-    if (-not $needBump) {
-      foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter 'envfix-*.json' -File -ErrorAction SilentlyContinue)) {
-        $nid = $f.BaseName
-        if ($nid.StartsWith('envfix-')) { $nid = $nid.Substring(8) }
-        if ($nid -match '^(\d{8}T\d{6})(\d{3})?') {
-          $ep = $Matches[1]
-          if ($Matches[2]) { $ep = $ep + $Matches[2] }
-          if ($ep.Length -eq 15) {
-            if ($ep.CompareTo($base.Substring(0, 15)) -gt 0) { $needBump = $true; break }
-          } else {
-            if ($ep.CompareTo($base) -ge 0) { $needBump = $true; break }
-          }
-        }
-      }
-    }
-    if (-not $needBump) {
-      $r = -join ((48..57 + 97..102) | Get-Random -Count 4 | ForEach-Object { [char]$_ })
-      return "$base-$r"
-    }
-    $utc = $utc.AddMilliseconds(1)
+  $now = $(if ($NowUtc) { ([datetime]$NowUtc).ToUniversalTime() } else { [datetime]::UtcNow })
+  $prefix = 'envfix-'
+  $maxT = $null
+  foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter 'envfix-*.json' -File -ErrorAction SilentlyContinue)) {
+    $nid = $f.BaseName
+    if ($nid.StartsWith($prefix)) { $nid = $nid.Substring($prefix.Length) }
+    $t = Get-CslEnvFixIdTime $nid
+    if ($null -ne $t -and ($null -eq $maxT -or $t -gt $maxT)) { $maxT = $t }
+  }
+  $useT = $now
+  if ($null -ne $maxT) {
+    $next = $maxT.AddMilliseconds(1)
+    if ($next -gt $useT) { $useT = $next }
   }
   $r = -join ((48..57 + 97..102) | Get-Random -Count 4 | ForEach-Object { [char]$_ })
-  return "$($utc.ToString('yyyyMMddTHHmmssfff'))-$r"
+  return "$($useT.ToString('yyyyMMddTHHmmssfff', [Globalization.CultureInfo]::InvariantCulture))-$r"
 }
 
 function Write-CslEnvBackup($obj) {

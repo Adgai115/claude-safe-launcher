@@ -374,6 +374,30 @@ Assert-Eq $uLatest.id $fB.id 'same-sec undid B (latest)'
 Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_B').Value 'vb-orig' 'same-sec B restored'
 Assert-True ($null -eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_A')) 'same-sec A still deleted'
 
+Write-Host '== Fix id: later existing id / clock rollback ==' -ForegroundColor Cyan
+$idDir = Get-CslEnvBackupDir
+$seedIds = @('20991231T235959900-aaaa')
+foreach ($sid in $seedIds) {
+  [IO.File]::WriteAllText((Join-Path $idDir ("envfix-{0}.json" -f $sid)), '{"id":"' + $sid + '","ts":"2099-12-31T23:59:59Z","testMode":true,"undone":true,"entries":[]}', [Text.UTF8Encoding]::new($false))
+}
+try {
+  # existing id later than now: new id must sort after it
+  $idLater = New-CslEnvFixId
+  Assert-True ($idLater.CompareTo('20991231T235959900-aaaa') -gt 0) 'id after later existing id'
+  Assert-True ($idLater.StartsWith('20991231T235959901-')) 'id = existing max + 1ms'
+  # clock rollback > 5s: pretend now is 10s before the newest id
+  $idBack = New-CslEnvFixId -NowUtc ([datetime]::new(2099,12,31,23,59,49,900,[DateTimeKind]::Utc))
+  Assert-True ($idBack.CompareTo('20991231T235959900-aaaa') -gt 0) 'clock rollback 10s: id still after max'
+  # chained: write it, next rollback id must be after it too
+  [IO.File]::WriteAllText((Join-Path $idDir ("envfix-{0}.json" -f $idBack)), '{"id":"' + $idBack + '","ts":"2099-12-31T23:59:59Z","testMode":true,"undone":true,"entries":[]}', [Text.UTF8Encoding]::new($false))
+  $idBack2 = New-CslEnvFixId -NowUtc ([datetime]::new(2099,12,31,23,59,40,0,[DateTimeKind]::Utc))
+  Assert-True ($idBack2.CompareTo($idBack) -gt 0) 'clock rollback chained: strictly increasing'
+  # old-format id (second precision) is treated as end of that second
+  Assert-Eq ((Get-CslEnvFixIdTime '20990101T000000-abcd').Millisecond) 999 'old id parsed as +999ms'
+} finally {
+  foreach ($f in @(Get-ChildItem -LiteralPath $idDir -Filter 'envfix-2099123*.json' -File -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $f.FullName -Force }
+}
+
 Write-Host '== TestMode undo rejects non CSL_TEST_ names ==' -ForegroundColor Cyan
 $store = New-MemStore
 $fakeId = '20990101T000000001-fade'
