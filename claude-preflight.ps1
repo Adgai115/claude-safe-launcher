@@ -1,6 +1,6 @@
 ﻿param([switch]$Force, [switch]$NoPause, [switch]$NoLaunch, [switch]$Relearn)
 <#
-  Claude 桌面版 启动前检查 + 自动设置（v3 通用版）
+  Claude 桌面版 启动前检查 + 自动设置（v3.1.0）
   用法: powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 [-Force] [-NoPause] [-NoLaunch]
   -Force    : 即使有「必须修」项也启动 Claude
   -NoPause  : 结束时不等待按键
@@ -27,7 +27,7 @@ function Say-Warn($t, $w = 8)  { Write-Host "  [警告] $($t)" -ForegroundColor 
 function Say-Fail($t, $w = 25) { Write-Host "  [失败] $($t)" -ForegroundColor Red; Add-Item 'FAIL' $t $w }
 
 Write-Host '==============================================' -ForegroundColor Cyan
-Write-Host '   Claude 桌面版 启动前检查 v3（通用版）' -ForegroundColor Cyan
+Write-Host '   Claude 桌面版 启动前检查 v3.1.0' -ForegroundColor Cyan
 if ($Relearn) { Write-Host '   [重新学习] 将按当前环境重新记住出口 IP / 节点 / 时区' -ForegroundColor Cyan }
 Write-Host ("   " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + $(if ($NoLaunch) { '   [NoLaunch 测试模式]' } else { '' })) -ForegroundColor Cyan
 Write-Host '==============================================' -ForegroundColor Cyan

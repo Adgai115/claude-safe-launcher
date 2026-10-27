@@ -12,6 +12,7 @@ header{display:flex;align-items:center;justify-content:space-between;gap:16px;pa
 .brand{display:flex;align-items:center;gap:14px;min-width:0}
 .logo{width:42px;height:42px;flex:none;display:grid;place-items:center;font-size:22px;border-radius:var(--radius);background:var(--accent);color:var(--on-accent);box-shadow:var(--shadow);font-family:var(--title-font)}
 h1{font-family:var(--title-font);font-size:22px;letter-spacing:var(--title-ls,0);white-space:nowrap}
+.ver{font-family:ui-monospace,Consolas,monospace;font-size:11px;font-weight:500;color:var(--muted);margin-left:6px;letter-spacing:0;vertical-align:middle}
 .sub{color:var(--muted);font-size:13px;margin-top:3px}
 .themes{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:420px}
 .themes button{font-family:"Microsoft YaHei UI","PingFang SC","Hiragino Sans GB",sans-serif;font-size:12px;padding:6px 12px;border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--text);cursor:pointer;transition:all .2s}
@@ -160,7 +161,7 @@ body[data-theme=western]{--muted:#4c5567;--title-font:Georgia,"Microsoft YaHei U
 <div class="deco" id="deco"></div>
 <div class="app">
   <header>
-    <div class="brand"><div class="logo" id="logo">✦</div><div><h1 id="title">Claude 安全启动</h1><p class="sub" id="sub"></p></div></div>
+    <div class="brand"><div class="logo" id="logo">✦</div><div><h1 id="title">Claude 安全启动 <span class="ver">v3.1.0</span></h1><p class="sub" id="sub"></p></div></div>
     <div class="themes" id="themes"></div>
   </header>
   <section class="hero">
