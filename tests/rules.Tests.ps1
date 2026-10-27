@@ -4,6 +4,15 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 . (Join-Path $root 'claude-rules.ps1')
+# Restore Stop after dot-sourcing so non-terminating errors also hit the trap
+$ErrorActionPreference = 'Stop'
+# Any uncaught error counts as a failure
+$script:Uncaught = 0
+trap {
+  $script:Uncaught++
+  Write-Host ("  FAIL  uncaught error: {0} (line {1})" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber) -ForegroundColor Red
+  continue
+}
 
 $script:Fail = 0
 function Assert-True($cond, $msg) {
@@ -143,9 +152,9 @@ Assert-Eq $r6.score 100 'no policy group → 0'
 Assert-True $r6.canLaunchSafely 'info override safe'
 
 Write-Host ''
-if ($script:Fail -gt 0) {
-  Write-Host "FAILED: $($script:Fail) assertion(s)" -ForegroundColor Red
+if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {
+  Write-Host "FAILED: $($script:Fail) assertion(s), $($script:Uncaught) uncaught error(s)" -ForegroundColor Red
   exit 1
 }
-Write-Host 'All rules tests passed.' -ForegroundColor Green
+Write-Host 'ALL PASSED' -ForegroundColor Green
 exit 0
