@@ -353,7 +353,7 @@ function undoConflictDialog(conflicts){
       row.style.cssText='padding:6px 0;border-bottom:1px dashed var(--line,#ddd);display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap';
       const info=document.createElement('div');
       info.style.cssText='flex:1;min-width:180px;line-height:1.45';
-      info.innerHTML='<b>'+esc(c.name||'')+'</b><br><span style="color:var(--muted,#666)">当前='+esc(c.currentMasked||'')+'　修复后应为='+esc(c.expectedMasked||'')+'　撤销将恢复为='+esc(c.restoreMasked||'')+'</span>';
+      info.innerHTML='<b>'+esc(c.name||'')+'</b><br><span style="color:var(--muted,#666)">当前值与修复后不一致</span>';
       const ctl=document.createElement('div');
       ctl.style.cssText='flex:none;display:flex;gap:8px;align-items:center;font-size:12px';
       const g='csl-ud-'+idx;

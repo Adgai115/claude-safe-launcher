@@ -465,11 +465,10 @@ function Get-CslEnvFixList {
     }
     $j = $rd.data
     $vars = @($j.entries | Where-Object { $null -ne $_ } | ForEach-Object {
-      $mask = if ($_.existed) { Protect-Secret ([string]$_.before) } else { '(不存在)' }
+      # v3.3.0: names and actions only, no values (not even masked)
       [pscustomobject]@{
         name = $_.name
-        beforeMasked = $mask
-        after = $(if ($null -eq $_.after) { '(删除)' } else { Protect-Secret ([string]$_.after) })
+        action = $(if ($null -eq $_.after) { '已删除' } else { '已修改' })
         kind = $(if ($_.kind) { $_.kind } else { 'String' })
         undone = (Test-CslEntryUndone $j $_)
       }
@@ -613,7 +612,7 @@ function Invoke-CslEnvFix {
       }
       & $Store.SetUserEntry -Name $e.name -Value $null
       $doneNames += $e.name
-      $applied += [pscustomobject]@{ name = $e.name; valueMasked = Protect-Secret $e.before; action = 'removed'; kind = $e.kind }
+      $applied += [pscustomobject]@{ name = $e.name; action = 'removed'; kind = $e.kind }
     }
     Broadcast-CslEnvironmentChange
   } catch {
@@ -774,10 +773,8 @@ function Invoke-CslEnvUndo {
       elseif ([string]$curEntry.Value -ne [string]$expectAfter) { $conflict = $true }
     }
 
-    $curShow = if ($curAbsent) { '(不存在)' } else { Protect-Secret $curEntry.Value }
-    $expShow = if ($expectAbsent) { '(删除)' } else { Protect-Secret ([string]$expectAfter) }
-    $restoreShow = if (-not $wantExisted) { '(不存在)' } else { Protect-Secret ([string]$wantVal) }
-    $conflictMsg = "冲突: $name 当前值与修复后不一致（当前=$curShow，修复后应为=$expShow，撤销将恢复为=$restoreShow）"
+    # v3.3.0: conflict text carries the name only, never a value (not even masked)
+    $conflictMsg = "冲突: $name 当前值与修复后不一致"
 
     if ($conflict) {
       $decision = $DefaultConflictDecision
@@ -786,7 +783,7 @@ function Invoke-CslEnvUndo {
       if ($ConflictDecisions -and $ConflictDecisions.ContainsKey($name)) {
         $decision = [string]$ConflictDecisions[$name]
       } elseif ($OnConflict) {
-        $decision = [string](& $OnConflict $name $curShow $expShow)
+        $decision = [string](& $OnConflict $name)
       } elseif ($ForceSkipConflicts) {
         $decision = 'skip'
       } elseif ($NoPause) {
@@ -803,16 +800,13 @@ function Invoke-CslEnvUndo {
       if ($decision -eq 'abort') {
         return @{
           ok = $false; error = '用户中止撤销'
-          conflicts = @($conflicts + @{ name = $name; currentMasked = $curShow; expectedMasked = $expShow; restoreMasked = $restoreShow; message = $conflictMsg })
+          conflicts = @($conflicts + @{ name = $name; message = ($conflictMsg + '，已中止撤销') })
           exitCode = 1; partial = $restored; dryRun = [bool]$DryRun
         }
       }
       $conflicts += @{
         name = $name
-        currentMasked = $curShow
-        expectedMasked = $expShow
-        restoreMasked = $restoreShow
-        message = $conflictMsg
+        message = $(if ($decision -eq 'overwrite') { $conflictMsg + '，已按选择覆盖' } else { $conflictMsg + '，已跳过' })
         decision = $decision
       }
       if ($decision -eq 'overwrite') {
@@ -842,7 +836,7 @@ function Invoke-CslEnvUndo {
         $pending | ForEach-Object {
           [pscustomobject]@{
             name = $_.name
-            valueMasked = $(if ($_.wantExisted) { Protect-Secret $_.wantVal } else { '(删除)' })
+            action = $(if ($_.wantExisted) { '恢复' } else { '删除' })
             kind = $_.wantKind
             conflict = [bool]$_.conflict
           }
@@ -875,7 +869,7 @@ function Invoke-CslEnvUndo {
       $done += $p.name
       $restored += [pscustomobject]@{
         name = $p.name
-        valueMasked = $(if ($p.wantExisted) { Protect-Secret $p.wantVal } else { '(删除)' })
+        action = $(if ($p.wantExisted) { '已恢复' } else { '已删除' })
         kind = $p.wantKind
       }
     }

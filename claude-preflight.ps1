@@ -63,18 +63,23 @@ function Write-CslUndoConflicts($Conflicts) {
   foreach ($m in @(Get-CslUndoConflictMessages $Conflicts)) { Write-Host ("  [警告] {0}" -f $m) -ForegroundColor Yellow }
 }
 
-# ----- CLI：列出 / 撤销 / 仅修复（可在完整检查前短路） -----
-if ($ListFixes) {
-  Write-Host '可撤销的环境变量修复（值已脱敏）:' -ForegroundColor Cyan
-  $list = @(Get-CslEnvFixList)
+# -ListFixes 输出：只列变量名和动作/状态，不出现任何值（打码也不行）
+function Write-CslEnvFixList($List) {
+  Write-Host '可撤销的环境变量修复（只列变量名和动作）:' -ForegroundColor Cyan
+  $list = @($List | Where-Object { $null -ne $_ })
   if ($list.Count -eq 0) { Write-Host '  （无）' -ForegroundColor DarkGray }
   foreach ($it in $list) {
     $st = $(if ($it.corrupt) { "损坏（不会自动清理）: $($it.path)" } elseif ($it.undone) { '已撤销' } elseif ($it.partiallyUndone) { '部分已撤销（其余可撤销）' } else { '可撤销' })
     Write-Host ("  [{0}] {1}  {2}" -f $it.id, $it.ts, $st)
     foreach ($v in $it.vars) {
-      Write-Host ("    - {0}: before={1} after={2}{3}" -f $v.name, $v.beforeMasked, $v.after, $(if ($it.partiallyUndone -and $v.undone) { '（已撤销）' } else { '' }))
+      Write-Host ("    - {0}: {1}（{2}）" -f $v.name, $v.action, $(if ($it.undone -or $v.undone) { '已撤销' } else { '可撤销' }))
     }
   }
+}
+
+# ----- CLI：列出 / 撤销 / 仅修复（可在完整检查前短路） -----
+if ($ListFixes) {
+  Write-CslEnvFixList @(Get-CslEnvFixList)
   if (-not $NoPause) { try { Read-Host '按回车退出' | Out-Null } catch {} }
   exit 0
 }

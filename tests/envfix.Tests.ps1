@@ -648,6 +648,42 @@ $printedOne = @(Write-CslUndoConflicts @($null, 'x') 6>&1 | ForEach-Object { [st
 Assert-Eq ($printedOne -join '|') '  [警告] x' 'one real conflict printed once'
 Assert-Eq $Error.Count $errBefore 'conflict print raised no error'
 
+Write-Host '== -ListFixes / undo conflict / undo results show names and actions only (no values, not even masked) ==' -ForegroundColor Cyan
+$lfAst = $pfAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Write-CslEnvFixList' }, $true)
+Assert-Eq @($lfAst).Count 1 'preflight Write-CslEnvFixList found'
+foreach ($fnAst in $lfAst) { . ([scriptblock]::Create($fnAst.Extent.Text)) }
+$leakVals = @('leakval-ABCD12345', 'https://leak-host.example/v1', 'tampered-WXYZ67890', 'leakval', 'ABCD', '12345', 'leak-host', 'WXYZ', '67890')
+function Test-CslNoValueLeak([string]$Text) {
+  if ($Text -match '\*') { return $false }
+  foreach ($lv in $leakVals) { if ($Text.Contains($lv)) { return $false } }
+  return $true
+}
+Clear-TestBackups
+$stLk = New-MemStore
+& $stLk.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_API_KEY' -Value 'leakval-ABCD12345'
+& $stLk.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_BASE_URL' -Value 'https://leak-host.example/v1'
+$fLk = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_*') -TestMode -Store $stLk
+Assert-True $fLk.ok 'leak check: fix ok'
+Assert-True (Test-CslNoValueLeak ($fLk | ConvertTo-Json -Depth 8)) 'fix result carries no value (plain or masked)'
+$lsTxt0 = (@(Write-CslEnvFixList @(Get-CslEnvFixList) 6>&1 | ForEach-Object { [string]$_ }) -join "`n")
+Assert-True (Test-CslNoValueLeak $lsTxt0) '-ListFixes output has no value (plain or masked)'
+Assert-True ($lsTxt0.Contains('    - CSL_TEST_ANTHROPIC_API_KEY: 已删除（可撤销）')) '-ListFixes line is name: action (status)'
+Assert-True (Test-CslNoValueLeak (@(Get-CslEnvFixList) | ConvertTo-Json -Depth 8)) 'fix list data carries no value (plain or masked)'
+& $stLk.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_API_KEY' -Value 'tampered-WXYZ67890'
+$pLk = Invoke-CslEnvUndo -Id $fLk.id -DryRun -Store $stLk -DefaultConflictDecision skip
+Assert-True (Test-CslNoValueLeak ($pLk | ConvertTo-Json -Depth 8)) 'undo dry-run plan and conflicts carry no value (plain or masked)'
+$uLk = Invoke-CslEnvUndo -Id $fLk.id -Store $stLk -DefaultConflictDecision skip
+$cwTxt = (@(Write-CslUndoConflicts $uLk.conflicts 6>&1 | ForEach-Object { [string]$_ }) -join "`n")
+Assert-Eq $cwTxt '  [警告] 冲突: CSL_TEST_ANTHROPIC_API_KEY 当前值与修复后不一致，已跳过' 'undo conflict warning is name only, then skipped'
+Assert-True (Test-CslNoValueLeak ($uLk | ConvertTo-Json -Depth 8)) 'undo result (restored/conflicts/skipped) carries no value (plain or masked)'
+$lsTxt1 = (@(Write-CslEnvFixList @(Get-CslEnvFixList) 6>&1 | ForEach-Object { [string]$_ }) -join "`n")
+Assert-True ((Test-CslNoValueLeak $lsTxt1) -and $lsTxt1.Contains('部分已撤销（其余可撤销）') -and $lsTxt1.Contains('    - CSL_TEST_ANTHROPIC_API_KEY: 已删除（可撤销）') -and $lsTxt1.Contains('    - CSL_TEST_ANTHROPIC_BASE_URL: 已删除（已撤销）')) '-ListFixes after partial undo: names and status only'
+$uOv = Invoke-CslEnvUndo -Id $fLk.id -Store $stLk -DefaultConflictDecision overwrite
+Assert-True ((Test-CslNoValueLeak ($uOv | ConvertTo-Json -Depth 8)) -and (@($uOv.conflicts | Where-Object { $null -ne $_ } | ForEach-Object { $_.message }) -join '|') -eq '冲突: CSL_TEST_ANTHROPIC_API_KEY 当前值与修复后不一致，已按选择覆盖') 'overwrite conflict message is name only'
+$lkPanel = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'claude-panel.html'))
+Assert-True ($lkPanel.Length -gt 1000 -and $lkPanel.Contains('当前值与修复后不一致') -and -not ($lkPanel -match 'currentMasked|expectedMasked|restoreMasked|beforeMasked|valueMasked|当前=|修复后应为=|撤销将恢复为=')) 'panel undo dialog and lists render no values (plain or masked)'
+Clear-TestBackups
+
 Write-Host '== Backup without entries treated as corrupt ==' -ForegroundColor Cyan
 $uncBefore2 = $script:Uncaught
 $neDir = Get-CslEnvBackupDir
