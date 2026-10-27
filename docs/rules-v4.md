@@ -12,6 +12,8 @@
 
 历史别名「失败 / 警告 / 信息」仅作展示映射，不再作为规则主键。
 
+运行结果 `status` 另含 **`error`**（检查未能完成：超时/配置不可读）：扣分恒 0；任一 `must_fix` 为 `error` 则 `verdict=blocked`。详见 `docs/preflight-json-schema.md`（FROZEN candidate v1）。
+
 ## 分类与条数（32）
 
 产品裁定后：`api.anthropic.com` 连通归入 **代理与网络**（`category=proxy-net`，稳定 id 仍为 `exit.api_anthropic`）。
@@ -61,7 +63,8 @@ score = max(0, 100 − Σ 本次生效的 refDeduction)
 | `checks` / `expected` | 查什么 / 期望 |
 | `severity` | `must_fix` \| `should_fix` \| `info` |
 | `refDeduction` | 参考扣分（失败时） |
-| `fixable` / `fixType` | 是否可修；`none` / `manual` / `confirm+backup+undo` |
+| `fixType` / `fixId` | `none` \| `confirm` \| `manual`；`confirm` 时 `fixId` 非空（面板只看 fixId） |
+| `containsIp` | `current`/`expected` 可能含出口或 WebRTC IP |
 | `recheckWin` / `recheckMac` | 修复后复检命令（可为 null） |
 | `platforms` | `win` / `mac` |
 | `masking` / `notes` | 脱敏约定与备注 |

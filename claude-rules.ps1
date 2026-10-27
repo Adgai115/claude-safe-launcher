@@ -34,7 +34,6 @@ function Get-CslRuleById {
   return $null
 }
 
-
 function Get-CslPsProp {
   param($Object, [string]$Name)
   if ($null -eq $Object) { return $null }
@@ -43,20 +42,44 @@ function Get-CslPsProp {
   return $p.Value
 }
 
+function Resolve-CslFixType {
+  param($Rule, $Result)
+  $ov = Get-CslPsProp $Result 'fixTypeOverride'
+  if ($null -ne $ov -and [string]$ov -ne '') { return [string]$ov }
+  if ($Rule) {
+    $ft = Get-CslPsProp $Rule 'fixType'
+    if ($null -ne $ft -and [string]$ft -ne '') { return [string]$ft }
+  }
+  return 'none'
+}
+
+function Resolve-CslFixId {
+  param($Rule, $Result, [string]$FixType)
+  $ov = Get-CslPsProp $Result 'fixIdOverride'
+  if ($null -ne $ov -and [string]$ov -ne '') { return [string]$ov }
+  if ($FixType -ne 'confirm') { return $null }
+  if ($Rule) {
+    $fid = Get-CslPsProp $Rule 'fixId'
+    if ($null -ne $fid -and [string]$fid -ne '') { return [string]$fid }
+  }
+  return $null
+}
+
 <#
 .SYNOPSIS
   Single scoring entry used by CLI and panel.
 
 .PARAMETER Results
   Array of hashtables / PSCustomObjects:
-    id, status (passed|failed|info|skipped), [severityOverride], [refDeductionOverride],
-    current, expected, recheck, [masked]
+    id, status (passed|failed|error|info|skipped), [severityOverride], [refDeductionOverride],
+    current, expected, recheck, [masked], [fixTypeOverride], [fixIdOverride]
 
   status=failed applies rule refDeduction (unless override / cap / hint-only).
+  status=error → 0 deduction; if severity is must_fix, blocks canLaunchSafely.
   status=info|passed|skipped → 0 deduction for that row.
 
 .OUTPUTS
-  PSCustomObject with score, canLaunchSafely, summary, checks (enriched), browserCap
+  PSCustomObject with score, canLaunchSafely, summary (incl. error), checks (enriched), browserCap
 #>
 function Get-CslRulesScore {
   param(
@@ -77,6 +100,8 @@ function Get-CslRulesScore {
   $shouldFailed = 0
   $infoCount = 0
   $passedCount = 0
+  $errorCount = 0
+  $mustError = 0
 
   foreach ($r in @($Results)) {
     $id = [string]$r.id
@@ -104,11 +129,18 @@ function Get-CslRulesScore {
     $recIn = Get-CslPsProp $r 'recheck'
     $recheckWin = $(if ($rule) { Get-CslPsProp $rule 'recheckWin' } else { $null })
     $recheck = $(if ($null -ne $recIn) { [string]$recIn } elseif ($null -ne $recheckWin) { [string]$recheckWin } else { '' })
-    $fixable = $false
-    if ($rule) {
-      $fv = Get-CslPsProp $rule 'fixable'
-      if ($null -ne $fv) { $fixable = [bool]$fv }
+
+    $fixType = Resolve-CslFixType -Rule $rule -Result $r
+    $fixId = Resolve-CslFixId -Rule $rule -Result $r -FixType $fixType
+
+    $containsIp = $false
+    $cipOv = Get-CslPsProp $r 'containsIpOverride'
+    if ($null -ne $cipOv) { $containsIp = [bool]$cipOv }
+    elseif ($rule) {
+      $cip = Get-CslPsProp $rule 'containsIp'
+      if ($null -ne $cip) { $containsIp = [bool]$cip }
     }
+
     $masked = $true
     $maskIn = Get-CslPsProp $r 'masked'
     if ($null -ne $maskIn) { $masked = [bool]$maskIn }
@@ -122,7 +154,9 @@ function Get-CslRulesScore {
       current              = $current
       expected             = $expected
       recheck              = $recheck
-      fixable              = $fixable
+      fixType              = $fixType
+      fixId                = $fixId
+      containsIp           = [bool]$containsIp
       masked               = $masked
       refDeductionRule     = $ref
       refDeductionApplied  = 0
@@ -131,10 +165,19 @@ function Get-CslRulesScore {
 
     if ($status -eq 'passed') {
       $passedCount++
+      $enriched.Add([pscustomobject]$row) | Out-Null
+    } elseif ($status -eq 'error') {
+      # Incomplete check: never deduct; must_fix error still blocks launch
+      $errorCount++
+      if ($sev -eq 'must_fix') { $mustError++ }
+      $row.refDeductionApplied = 0
+      $enriched.Add([pscustomobject]$row) | Out-Null
     } elseif ($status -eq 'skipped') {
       $infoCount++
+      $enriched.Add([pscustomobject]$row) | Out-Null
     } elseif ($status -eq 'info') {
       $infoCount++
+      $enriched.Add([pscustomobject]$row) | Out-Null
     } elseif ($status -eq 'failed') {
       if ($sev -eq 'must_fix') { $mustFailed++ }
       elseif ($sev -eq 'should_fix') { $shouldFailed++ }
@@ -159,7 +202,6 @@ function Get-CslRulesScore {
   foreach ($s in $staticWarnPending) { $staticBefore += [int]$s.refDeductionRule }
   $staticAfter = [Math]::Min($staticBefore, $cap)
   $remaining = $staticAfter
-  # Apply cap in catalog order (already list order): full until remainder runs out; excess → info/0
   foreach ($s in $staticWarnPending) {
     $want = [int]$s.refDeductionRule
     if ($remaining -ge $want) {
@@ -171,7 +213,6 @@ function Get-CslRulesScore {
     } else {
       $s.refDeductionApplied = 0
       $s.severity = 'info'
-      # demoted from should_fix failed → still counted in shouldFailed above; adjust
       if ($shouldFailed -gt 0) { $shouldFailed--; $infoCount++ }
     }
     $enriched.Add($s) | Out-Null
@@ -180,7 +221,7 @@ function Get-CslRulesScore {
   $sumDeduction = 0
   foreach ($e in $enriched) { $sumDeduction += [int]$e.refDeductionApplied }
   $score = [Math]::Max(0, 100 - $sumDeduction)
-  $canLaunch = ($mustFailed -eq 0)
+  $canLaunch = (($mustFailed -eq 0) -and ($mustError -eq 0))
 
   return [pscustomobject]@{
     schemaVersion    = 1
@@ -193,6 +234,7 @@ function Get-CslRulesScore {
       should_fix_failed = $shouldFailed
       info             = $infoCount
       passed           = $passedCount
+      error            = $errorCount
     }
     checks           = @($enriched.ToArray())
     browserCap       = [pscustomobject]@{

@@ -62,8 +62,6 @@
       "expected": "进程存在",
       "severity": "must_fix",
       "refDeduction": 25,
-      "fixable": true,
-      "fixType": "confirm+backup+undo",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -71,7 +69,10 @@
         "mac"
       ],
       "masking": "不打印路径中的用户名以外的敏感项",
-      "notes": "v4 禁止静默 Start-Process；现状=静默启动"
+      "notes": "v4 禁止静默 Start-Process；现状=静默启动",
+      "fixType": "confirm",
+      "fixId": "clash.start",
+      "containsIp": false
     },
     {
       "id": "net.mihomo_core",
@@ -81,8 +82,6 @@
       "expected": "在跑",
       "severity": "must_fix",
       "refDeduction": 25,
-      "fixable": false,
-      "fixType": "none",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -90,7 +89,10 @@
         "mac"
       ],
       "masking": "",
-      "notes": "随 Clash 启动"
+      "notes": "随 Clash 启动",
+      "fixType": "none",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "net.tun",
@@ -100,8 +102,6 @@
       "expected": "TUN 已开启（按 Clash 配置与路由判定）",
       "severity": "must_fix",
       "refDeduction": 25,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -109,7 +109,10 @@
         "mac"
       ],
       "masking": "",
-      "notes": "v4 统一文案；Mac has_utun 误报从规则上消除"
+      "notes": "v4 统一文案；Mac has_utun 误报从规则上消除",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "net.controller",
@@ -119,8 +122,6 @@
       "expected": "可达",
       "severity": "should_fix",
       "refDeduction": 10,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -128,7 +129,10 @@
         "mac"
       ],
       "masking": "永不打印 controllerSecret / Clash secret",
-      "notes": ""
+      "notes": "",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "net.node_lock",
@@ -138,8 +142,6 @@
       "expected": "一致（有策略组时）",
       "severity": "must_fix",
       "refDeduction": 25,
-      "fixable": true,
-      "fixType": "confirm+backup+undo",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -147,7 +149,10 @@
         "mac"
       ],
       "masking": "节点名/域名掩码",
-      "notes": "无策略组：severity=info、refDeduction=0、无修复按钮（运行时覆盖）"
+      "notes": "无策略组：severity=info、refDeduction=0、无修复按钮（运行时覆盖）",
+      "fixType": "confirm",
+      "fixId": "proxy.node-lock",
+      "containsIp": false
     },
     {
       "id": "net.dns_fakeip",
@@ -157,8 +162,6 @@
       "expected": "fake-ip",
       "severity": "should_fix",
       "refDeduction": 10,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -166,7 +169,10 @@
         "mac"
       ],
       "masking": "",
-      "notes": "解析失败时参考扣分 5（运行时）"
+      "notes": "解析失败时参考扣分 5（运行时）",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "net.ipv6_leak",
@@ -176,8 +182,6 @@
       "expected": "无 IPv6 出口",
       "severity": "must_fix",
       "refDeduction": 25,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -185,7 +189,10 @@
         "mac"
       ],
       "masking": "IP 保留+警告行",
-      "notes": ""
+      "notes": "",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": true
     },
     {
       "id": "net.browser_webrtc_chromium",
@@ -195,15 +202,16 @@
       "expected": "disable_non_proxied_udp",
       "severity": "should_fix",
       "refDeduction": 5,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
         "win"
       ],
       "masking": "",
-      "notes": "计入浏览器静态 cap20；Mac 代码待对齐；标签「浏览器 · 配置目录名」"
+      "notes": "计入浏览器静态 cap20；Mac 代码待对齐；标签「浏览器 · 配置目录名」",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "net.browser_webrtc_firefox",
@@ -213,15 +221,16 @@
       "expected": "false",
       "severity": "should_fix",
       "refDeduction": 5,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
         "win"
       ],
       "masking": "",
-      "notes": "计入浏览器静态 cap20"
+      "notes": "计入浏览器静态 cap20",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "exit.api_anthropic",
@@ -231,8 +240,6 @@
       "expected": "经代理可达（非地区封锁）",
       "severity": "must_fix",
       "refDeduction": 25,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -240,7 +247,10 @@
         "mac"
       ],
       "masking": "",
-      "notes": "产品裁定归代理与网络；其它状态建议修扣 5"
+      "notes": "产品裁定归代理与网络；其它状态建议修扣 5",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "exit.local_ip",
@@ -250,8 +260,6 @@
       "expected": "能测到",
       "severity": "should_fix",
       "refDeduction": 5,
-      "fixable": false,
-      "fixType": "none",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -259,7 +267,10 @@
         "mac"
       ],
       "masking": "IP 保留+警告",
-      "notes": "成功时为仅提示不扣分"
+      "notes": "成功时为仅提示不扣分",
+      "fixType": "none",
+      "fixId": null,
+      "containsIp": true
     },
     {
       "id": "exit.edge_trace",
@@ -269,8 +280,6 @@
       "expected": "claude.ai 可达",
       "severity": "must_fix",
       "refDeduction": 25,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -278,7 +287,10 @@
         "mac"
       ],
       "masking": "",
-      "notes": ""
+      "notes": "",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "exit.blocked_region",
@@ -288,8 +300,6 @@
       "expected": "不在列表",
       "severity": "must_fix",
       "refDeduction": 25,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -297,7 +307,10 @@
         "mac"
       ],
       "masking": "",
-      "notes": ""
+      "notes": "",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "exit.three_way_ip",
@@ -307,8 +320,6 @@
       "expected": "一致",
       "severity": "must_fix",
       "refDeduction": 25,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -316,7 +327,10 @@
         "mac"
       ],
       "masking": "IP 保留+警告",
-      "notes": "首次记住期望出口需确认框（v4）"
+      "notes": "首次记住期望出口需确认框（v4）",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": true
     },
     {
       "id": "exit.webrtc_srflx",
@@ -326,15 +340,16 @@
       "expected": "一致或无 srflx",
       "severity": "must_fix",
       "refDeduction": 25,
-      "fixable": false,
-      "fixType": "none",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
         "win"
       ],
       "masking": "IP 保留+警告",
-      "notes": "无快照/过期=仅提示不扣分"
+      "notes": "无快照/过期=仅提示不扣分",
+      "fixType": "none",
+      "fixId": null,
+      "containsIp": true
     },
     {
       "id": "exit.webrtc_ipv6",
@@ -344,15 +359,16 @@
       "expected": "无",
       "severity": "should_fix",
       "refDeduction": 8,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
         "win"
       ],
       "masking": "IP 保留+警告",
-      "notes": ""
+      "notes": "",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": true
     },
     {
       "id": "exit.ip_risk_proxycheck",
@@ -362,8 +378,6 @@
       "expected": "仅作参考提示",
       "severity": "info",
       "refDeduction": 0,
-      "fixable": false,
-      "fixType": "none",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -371,7 +385,10 @@
         "mac"
       ],
       "masking": "IP 保留+警告",
-      "notes": "v4 仅提示不扣分；依赖第三方"
+      "notes": "v4 仅提示不扣分；依赖第三方",
+      "fixType": "none",
+      "fixId": null,
+      "containsIp": true
     },
     {
       "id": "exit.ip_risk_ipapi",
@@ -381,8 +398,6 @@
       "expected": "仅作参考提示",
       "severity": "info",
       "refDeduction": 0,
-      "fixable": false,
-      "fixType": "none",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -390,7 +405,10 @@
         "mac"
       ],
       "masking": "IP 保留+警告",
-      "notes": "v4 仅提示不扣分"
+      "notes": "v4 仅提示不扣分",
+      "fixType": "none",
+      "fixId": null,
+      "containsIp": true
     },
     {
       "id": "locale.system_tz",
@@ -400,8 +418,6 @@
       "expected": "一致",
       "severity": "must_fix",
       "refDeduction": 25,
-      "fixable": true,
-      "fixType": "confirm+backup+undo",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -409,7 +425,10 @@
         "mac"
       ],
       "masking": "",
-      "notes": "v4 禁止静默 tzutil"
+      "notes": "v4 禁止静默 tzutil",
+      "fixType": "confirm",
+      "fixId": "locale.timezone",
+      "containsIp": false
     },
     {
       "id": "locale.tz_auto",
@@ -419,8 +438,6 @@
       "expected": "已关",
       "severity": "should_fix",
       "refDeduction": 5,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -428,7 +445,10 @@
         "mac"
       ],
       "masking": "",
-      "notes": "Mac 无权限时常仅提示"
+      "notes": "Mac 无权限时常仅提示",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "locale.system_lang",
@@ -438,8 +458,6 @@
       "expected": "zh*=仅提示；其它通过",
       "severity": "info",
       "refDeduction": 0,
-      "fixable": false,
-      "fixType": "none",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -447,7 +465,10 @@
         "mac"
       ],
       "masking": "",
-      "notes": ""
+      "notes": "",
+      "fixType": "none",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "locale.browser_lang_static",
@@ -457,15 +478,16 @@
       "expected": "与出口地区一致或 en*",
       "severity": "should_fix",
       "refDeduction": 0,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
         "win"
       ],
       "masking": "",
-      "notes": "不符→建议修、扣 0"
+      "notes": "不符→建议修、扣 0",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "locale.browser_tz_live",
@@ -475,15 +497,16 @@
       "expected": "一致",
       "severity": "should_fix",
       "refDeduction": 8,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
         "win"
       ],
       "masking": "",
-      "notes": ""
+      "notes": "",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "locale.browser_lang_live",
@@ -493,15 +516,16 @@
       "expected": "与出口地区一致或 en*",
       "severity": "should_fix",
       "refDeduction": 0,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
         "win"
       ],
       "masking": "",
-      "notes": "不符→建议修、扣 0"
+      "notes": "不符→建议修、扣 0",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "cfg.env_relay_user",
@@ -511,15 +535,16 @@
       "expected": "用户级不存在",
       "severity": "must_fix",
       "refDeduction": 25,
-      "fixable": true,
-      "fixType": "confirm+backup+undo",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
         "win"
       ],
       "masking": "密钥前4+****；路径→%USERPROFILE%",
-      "notes": "fixable: win；Mac v4 只给手动删除提示"
+      "notes": "fixable: win；Mac v4 只给手动删除提示",
+      "fixType": "confirm",
+      "fixId": "envfix.user-anthropic",
+      "containsIp": false
     },
     {
       "id": "cfg.env_relay_machine",
@@ -529,15 +554,16 @@
       "expected": "无（或用户知悉）",
       "severity": "info",
       "refDeduction": 0,
-      "fixable": false,
-      "fixType": "none",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": null,
       "platforms": [
         "win"
       ],
       "masking": "密钥前4+****",
-      "notes": "需管理员，不提权"
+      "notes": "需管理员，不提权",
+      "fixType": "none",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "cfg.https_proxy",
@@ -547,8 +573,6 @@
       "expected": "TUN 模式下可不设（仅提示）",
       "severity": "info",
       "refDeduction": 0,
-      "fixable": false,
-      "fixType": "none",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -556,7 +580,10 @@
         "mac"
       ],
       "masking": "URL 掩码",
-      "notes": "v4 仅提示不扣分"
+      "notes": "v4 仅提示不扣分",
+      "fixType": "none",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "cfg.residue_claude",
@@ -566,8 +593,6 @@
       "expected": "无残留",
       "severity": "should_fix",
       "refDeduction": 6,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -575,7 +600,10 @@
         "mac"
       ],
       "masking": "路径→%USERPROFILE%",
-      "notes": "只报不删"
+      "notes": "只报不删",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "cfg.residue_scripts",
@@ -585,8 +613,6 @@
       "expected": "无",
       "severity": "should_fix",
       "refDeduction": 4,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -594,7 +620,10 @@
         "mac"
       ],
       "masking": "路径→%USERPROFILE%",
-      "notes": ""
+      "notes": "",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "cfg.claude_desktop",
@@ -604,8 +633,6 @@
       "expected": "可选（仅 CLI 不算问题）",
       "severity": "info",
       "refDeduction": 0,
-      "fixable": false,
-      "fixType": "none",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -613,7 +640,10 @@
         "mac"
       ],
       "masking": "",
-      "notes": "v4 仅提示"
+      "notes": "v4 仅提示",
+      "fixType": "none",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "cfg.claude_cli",
@@ -623,8 +653,6 @@
       "expected": "可选",
       "severity": "info",
       "refDeduction": 0,
-      "fixable": false,
-      "fixType": "none",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
@@ -632,7 +660,10 @@
         "mac"
       ],
       "masking": "",
-      "notes": "未找到仅提示"
+      "notes": "未找到仅提示",
+      "fixType": "none",
+      "fixId": null,
+      "containsIp": false
     },
     {
       "id": "auto.webdriver",
@@ -642,15 +673,28 @@
       "expected": "非 true",
       "severity": "should_fix",
       "refDeduction": 5,
-      "fixable": false,
-      "fixType": "manual",
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "recheckMac": "python3 mac/claude_preflight.py --no-launch --no-pause",
       "platforms": [
         "win"
       ],
       "masking": "",
-      "notes": ""
+      "notes": "",
+      "fixType": "manual",
+      "fixId": null,
+      "containsIp": false
     }
-  ]
+  ],
+  "statusEnum": {
+    "passed": "通过",
+    "failed": "未达预期",
+    "error": "检查未能完成（超时/配置不可读等）",
+    "info": "仅提示",
+    "skipped": "跳过"
+  },
+  "fixTypeEnum": {
+    "none": "无自动修复",
+    "confirm": "确认框 + 备份 + 可撤销",
+    "manual": "仅手动指引"
+  }
 }
