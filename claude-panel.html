@@ -161,7 +161,7 @@ body[data-theme=western]{--muted:#4c5567;--title-font:Georgia,"Microsoft YaHei U
 <div class="deco" id="deco"></div>
 <div class="app">
   <header>
-    <div class="brand"><div class="logo" id="logo">✦</div><div><h1 id="title">Claude 安全启动 <span class="ver">v3.2.0</span> <span id="testModeBadge" style="display:none;margin-left:8px;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:700;vertical-align:middle;background:#1a5f7a;color:#fff;border:1px solid #0d3d4d">测试模式</span></h1><p class="sub" id="sub"></p></div></div>
+    <div class="brand"><div class="logo" id="logo">✦</div><div><h1 id="title"><span id="titleText">Claude 安全启动</span> <span class="ver">v3.2.0</span> <span id="testModeBadge" style="display:none;margin-left:8px;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:700;vertical-align:middle;background:#1a5f7a;color:#fff;border:1px solid #0d3d4d">测试模式</span></h1><p class="sub" id="sub"></p></div></div>
     <div class="themes" id="themes"></div>
   </header>
   <section class="hero">
@@ -343,7 +343,7 @@ function particles(){const d=$('deco');d.querySelectorAll('.p').forEach(e=>e.rem
  for(let i=0;i<14;i++){const s=document.createElement('span');s.className='p';s.textContent=ps[i%ps.length];
   s.style.left=Math.random()*100+'%';s.style.fontSize=(14+Math.random()*18)+'px';s.style.animationDuration=(14+Math.random()*16)+'s';s.style.animationDelay=(-Math.random()*25)+'s';
   if(theme==='chinese'){s.style.color=i%2?'rgba(178,34,34,.35)':'rgba(43,33,24,.18)'}if(theme==='mech'){s.style.color='rgba(0,214,168,.18)'}d.appendChild(s)}}
-function applyTheme(t,save){theme=t;document.body.dataset.theme=t;const th=T[t];$('title').textContent=th.title;$('sub').textContent=th.sub;$('logo').textContent=th.logo;document.title=th.title;
+function applyTheme(t,save){theme=t;document.body.dataset.theme=t;const th=T[t];$('titleText').textContent=th.title;$('sub').textContent=th.sub;$('logo').textContent=th.logo;document.title=th.title;
  [...$('themes').children].forEach(b=>b.classList.toggle('on',b.dataset.t===t));particles();setState();
  const m=$('groups');m.classList.add('noanim');m.innerHTML='';st.groups.forEach(addCard);setTimeout(()=>m.classList.remove('noanim'),50);
  if(save)api('POST','/api/theme?t='+t,{}).catch(()=>{})}
