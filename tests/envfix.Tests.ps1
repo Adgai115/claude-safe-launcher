@@ -680,6 +680,67 @@ Assert-Eq (& $rec.GetUserEntry 'CSL_TEST_ANTHROPIC_REC_A').Value 'rec-a' 'record
 Assert-True ((-not $uRecMissing.ok) -and (-not $uRecNull.ok)) 'recording undo of entries-less backups refused'
 Remove-Item -LiteralPath $recMissing, $recNull -Force -ErrorAction SilentlyContinue
 
+Write-Host '== Backup entry with missing/empty name: whole backup corrupt, no store call ==' -ForegroundColor Cyan
+$enDir = Get-CslEnvBackupDir
+$enCases = @(
+  @{ id = '20000101T000000011-enm1'; entry = '{"existed":true,"before":"x1","kind":"String"}'; label = 'name missing' },
+  @{ id = '20000101T000000012-ene1'; entry = '{"name":"","existed":true,"before":"x2","kind":"String"}'; label = 'name empty' },
+  @{ id = '20000101T000000013-enw1'; entry = '{"name":"   ","existed":true,"before":"x3","kind":"String"}'; label = 'name blank' },
+  @{ id = '20000101T000000014-enx1'; entry = '{"name":null,"existed":true,"before":"x4","kind":"String"}'; label = 'name null' }
+)
+$recE = New-RecordingStore
+& $recE.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_EN_OK' -Value 'en-now'
+foreach ($c in $enCases) {
+  $json = '{"id":"' + $c.id + '","ts":"2000-01-01T00:00:00Z","testMode":true,"entries":[{"name":"CSL_TEST_ANTHROPIC_EN_OK","existed":true,"before":"en-orig","kind":"String","after":null},' + $c.entry + ']}'
+  [IO.File]::WriteAllText((Join-Path $enDir ("envfix-{0}.json" -f $c.id)), $json, (New-Object System.Text.UTF8Encoding($false)))
+  $recE.Calls.Clear()
+  $uE = Invoke-CslEnvUndo -Id $c.id -NoPause -TestMode -Store $recE
+  Assert-True ((-not $uE.ok) -and ([string]$uE.error -match '缺少变量名')) ("$($c.label): undo refused as corrupt with clear message")
+  Assert-Eq (& $recE.GetUserEntry 'CSL_TEST_ANTHROPIC_EN_OK').Value 'en-now' ("$($c.label): valid entry in same backup not touched")
+  Assert-Eq @($recE.Calls | Where-Object { [string]::IsNullOrWhiteSpace(([string]$_).Split(':', 2)[1]) }).Count 0 ("$($c.label): no store call with empty name")
+  Remove-Item -LiteralPath (Join-Path $enDir ("envfix-{0}.json" -f $c.id)) -Force -ErrorAction SilentlyContinue
+}
+$enList = '{"id":"20000101T000000015-enl1","ts":"2000-01-01T00:00:00Z","entries":[{"name":"","before":"x"}]}'
+[IO.File]::WriteAllText((Join-Path $enDir 'envfix-20000101T000000015-enl1.json'), $enList, (New-Object System.Text.UTF8Encoding($false)))
+$lst = @(Get-CslEnvFixList | Where-Object { $_.id -eq 'envfix-20000101T000000015-enl1' -or $_.id -eq '20000101T000000015-enl1' })
+Assert-True ($lst.Count -eq 1 -and [bool]$lst[0].corrupt) '-ListFixes shows empty-name backup as corrupt'
+Clear-TestBackups
+
+Write-Host '== Partially undone backup is never pruned ==' -ForegroundColor Cyan
+$storeP = New-MemStore
+& $storeP.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PART_A' -Value 'part-a-orig'
+& $storeP.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PART_B' -Value 'part-b-orig'
+$fP = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_PART_*') -TestMode -Store $storeP
+& $storeP.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PART_B' -Value 'part-b-tampered'
+$uP = Invoke-CslEnvUndo -Id $fP.id -NoPause -TestMode -Store $storeP
+$partPath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $fP.id)
+$pItem = @(Get-CslEnvFixList | Where-Object { $_.id -eq $fP.id })
+Assert-True ($pItem.Count -eq 1 -and [bool]$pItem[0].partiallyUndone -and -not [bool]$pItem[0].undone) 'backup is partially undone before flood'
+$prevKeepP = $script:CslEnvBackupKeep
+$script:CslEnvBackupKeep = 3
+try {
+  for ($i = 0; $i -lt 12; $i++) {
+    $n = "CSL_TEST_ANTHROPIC_PFLOOD_$i"
+    & $storeP.SetUserEntry -Name $n -Value ("p$i")
+    [void](Invoke-CslEnvFix -Patterns @($n) -TestMode -Store $storeP)
+    $u2 = Invoke-CslEnvUndo -Id (@(Get-CslEnvFixList)[0].id) -NoPause -TestMode -Store $storeP
+  }
+  for ($i = 12; $i -lt 20; $i++) {
+    $n = "CSL_TEST_ANTHROPIC_PFLOOD_$i"
+    & $storeP.SetUserEntry -Name $n -Value ("p$i")
+    [void](Invoke-CslEnvFix -Patterns @($n) -TestMode -Store $storeP)
+  }
+} finally {
+  $script:CslEnvBackupKeep = $prevKeepP
+}
+$remaining = @(Get-ChildItem -LiteralPath (Get-CslEnvBackupDir) -Filter 'envfix-*.json' -File).Count
+Assert-True ($remaining -lt 30) ("prune actually ran during flood ($remaining files left)")
+Assert-True (Test-Path -LiteralPath $partPath) 'partially undone backup survived prune (undoable and fully-undone floods)'
+& $storeP.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PART_B' -Value $null
+$uP2 = Invoke-CslEnvUndo -Id $fP.id -NoPause -TestMode -Store $storeP
+Assert-True ($uP2.ok -and (& $storeP.GetUserEntry 'CSL_TEST_ANTHROPIC_PART_B').Value -eq 'part-b-orig') 'skipped entry still undoable after prune'
+Clear-TestBackups
+
 Write-Host '== foreach over @($x.prop) skips $null explicitly ==' -ForegroundColor Cyan
 $guardMissing = @()
 $guardTotal = 0

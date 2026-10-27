@@ -254,6 +254,13 @@ function Read-CslEnvBackupFile {
     if (-not $j.PSObject.Properties['entries'] -or $null -eq $j.entries) {
       return @{ ok = $false; error = "备份文件损坏或无法解析: $Path" }
     }
+    # v3.3.0: 条目缺 name 或 name 为空/空白 = 整份备份按损坏处理（绝不以空变量名调用存储）；null 元素仍按第 7 项跳过
+    foreach ($e in @($j.entries)) {
+      if ($null -eq $e) { continue }
+      if (-not $e.PSObject.Properties['name'] -or [string]::IsNullOrWhiteSpace([string]$e.name)) {
+        return @{ ok = $false; error = "备份文件损坏（有条目缺少变量名）: $Path" }
+      }
+    }
     return @{ ok = $true; data = $j; path = $Path }
   } catch {
     return @{ ok = $false; error = "备份文件损坏或无法解析: $Path ($_)" }
