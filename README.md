@@ -126,9 +126,36 @@ sudo systemsetup -settimezone America/New_York
 | Windows | macOS | 作用 |
 | --- | --- | --- |
 | `-NoLaunch` | `--no-launch` | 只检查，不启动 Claude，也不开启后台监控 |
-| `-NoPause` | `--no-pause` | 结束后不等待按键 |
+| `-NoPause` | `--no-pause` | 结束后不等待按键；**单独使用时不会提示也不会自动修复**环境变量 |
 | `-Force` | `--force` | 即使检查有失败项也启动 |
 | `-Relearn` | `--relearn` | 忘掉记住的 IP、节点和时区，按当前环境重新记住 |
+| `-FixVarPattern <通配符…>` | （暂无） | 限定要检测/修复的**用户级**变量名；默认等同当前第 9 组列表 |
+| `-FixEnv` | （暂无） | 一键清除匹配的用户级中转变量（**显式指定=同意**，可与 `-NoPause` 同用） |
+| `-DryRun` | （暂无） | 只列出将修改项（脱敏），不写系统、不写备份；配合 `-FixEnv` |
+| `-UndoFix [-UndoId <id>]` | （暂无） | 撤销一次修复（默认最近一次）；冲突时配合 `-NoPause` 跳过该变量并返回非 0 |
+| `-ListFixes` | （暂无） | 列出可撤销操作（值已脱敏） |
+| `-TestMode` | （暂无） | 仅允许操作 `CSL_TEST_` 前缀变量；测试请配合 `-FixVarPattern 'CSL_TEST_ANTHROPIC_*'` |
+
+### 环境变量一键修复（Windows）
+
+只动**用户级**（`[Environment]::… 'User'` / `HKCU\Environment`）。Machine 级仅提示「需要管理员手动处理」，不会提权。
+
+```powershell
+# 预览（脱敏）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -FixEnv -DryRun
+
+# 正式清除默认 ANTHROPIC_* 列表（会写 backups\ 并可 -UndoFix）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -FixEnv
+
+# 测试（只用 CSL_TEST_ 前缀，不会碰真变量）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoLaunch -NoPause -TestMode -FixVarPattern 'CSL_TEST_ANTHROPIC_*' -FixEnv
+
+# 列出 / 撤销
+powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoPause -ListFixes
+powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoPause -UndoFix
+```
+
+修复后请**新开终端**再看环境变量；面板第 9 组也有「修复 / 撤销上次修复」按钮。
 
 ## 配置文件 preflight.json
 
@@ -148,12 +175,14 @@ sudo systemsetup -settimezone America/New_York
 | `warnRisk` / `failRisk` | IP 风险分的警告和失败阈值，默认 33 / 66 |
 | `monitorIntervalMin` | 后台监控间隔（分钟），默认 5 |
 | `monitorKillOnChange` | IP 变化时是否自动关闭 Claude，默认 `false` |
+| `fixVarPatterns` | （Windows）用户级中转变量名通配符数组；空则用内置 `ANTHROPIC_*` 默认列表。非 TestMode 下禁止含 `CSL_TEST_` |
 
 ## 目录结构
 
 ```text
-├── claude-common.ps1 / claude-preflight.ps1 / claude-monitor.ps1 / claude-panel.ps1   # Windows
+├── claude-common.ps1 / claude-preflight.ps1 / claude-envfix.ps1 / claude-monitor.ps1 / claude-panel.ps1   # Windows
 ├── claude-panel.html / install.cmd / install.ps1
+├── backups/            # 本地修复备份（gitignore，含原始值）
 ├── mac/
 │   ├── claude_common.py / claude_preflight.py / claude_monitor.py / claude_panel.py  # macOS
 │   ├── claude-panel.html   # 与根目录面板共用同一套 UI
@@ -166,7 +195,7 @@ sudo systemsetup -settimezone America/New_York
 
 - 所有检查都在本机运行。为测量出口 IP 和风险分，会访问 ipinfo.io、proxycheck.io、ip-api.com，以及 claude.ai / api.anthropic.com 的公开 trace 地址。
 - 检查面板在做「浏览器环境」实时检查时，会从本机向 Google（`stun.l.google.com`）和 Cloudflare（`stun.cloudflare.com`）的 **STUN** 服务器发起短暂连接，仅用于收集 WebRTC 公网候选地址；不会上传其它浏览器数据。
-- `preflight.json`、`browser-check.json`、日志和面板配置只保存在本地，并已在 `.gitignore` 中排除，请不要上传。
+- `preflight.json`、`browser-check.json`、`backups/`（环境变量修复备份，含原始值）、日志和面板配置只保存在本地，并已在 `.gitignore` 中排除，请不要上传。
 - 脚本不会打印或保存 Clash 外部控制密钥；也不会修改你的浏览器配置（Preferences 只读扫描）。
 
 ## 许可证

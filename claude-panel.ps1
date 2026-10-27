@@ -2,6 +2,8 @@
 $dir = $PSScriptRoot
 $pre = Join-Path $dir 'claude-preflight.ps1'
 $htmlPath = Join-Path $dir 'claude-panel.html'
+. (Join-Path $dir 'claude-common.ps1')
+. (Join-Path $dir 'claude-envfix.ps1')
 $stateFile = Join-Path $dir 'panel.json'
 $logFile = Join-Path $dir 'preflight.log'
 $srvLog = Join-Path $dir 'panel-server.log'
@@ -105,6 +107,66 @@ while (-not $quit) {
           }
         }
         Send $ctx '{"ok":true}'
+      }
+      '/api/envfix' {
+        # plan | apply | undo | list — 与 CLI 同源；值一律脱敏
+        $action = [string]$q['action']
+        $bodyObj = $null
+        if ($ctx.Request.HttpMethod -eq 'POST') {
+          $len = [int]$ctx.Request.ContentLength64
+          if ($len -gt 0 -and $len -lt 100000) {
+            $buf = New-Object byte[] $len
+            $read = 0
+            while ($read -lt $len) { $n = $ctx.Request.InputStream.Read($buf, $read, $len - $read); if ($n -le 0) { break }; $read += $n }
+            try { $bodyObj = [Text.Encoding]::UTF8.GetString($buf, 0, $read) | ConvertFrom-Json } catch { $bodyObj = $null }
+          }
+          if ($bodyObj -and $bodyObj.action) { $action = [string]$bodyObj.action }
+        }
+        if (-not $action) { $action = 'plan' }
+        $cfg = Load-Config
+        $testMode = $false
+        if ($bodyObj -and $bodyObj.PSObject.Properties['testMode'] -and $bodyObj.testMode) { $testMode = [bool]$bodyObj.testMode }
+        if ([string]$q['testMode'] -eq '1') { $testMode = $true }
+        $pats = $null
+        if ($bodyObj -and $bodyObj.PSObject.Properties['patterns'] -and $bodyObj.patterns) { $pats = @($bodyObj.patterns) }
+        $patterns = Get-CslFixVarPatterns -Cfg $cfg -FixVarPattern $pats
+        try {
+          switch ($action) {
+            'list' {
+              $list = @(Get-CslEnvFixList)
+              Send $ctx (ConvertTo-Json @{ ok = $true; items = $list } -Depth 6 -Compress)
+            }
+            'plan' {
+              $fix = Invoke-CslEnvFix -Patterns $patterns -TestMode:$testMode -DryRun
+              Send $ctx (ConvertTo-Json @{
+                ok = [bool]$fix.ok; error = $fix.error; plan = @($fix.plan); hint = '新开的终端才会生效'
+              } -Depth 6 -Compress)
+            }
+            'apply' {
+              $fix = Invoke-CslEnvFix -Patterns $patterns -TestMode:$testMode
+              Send $ctx (ConvertTo-Json @{
+                ok = [bool]$fix.ok; error = $fix.error; id = $fix.id; plan = @($fix.plan); applied = @($fix.applied); hint = $(if ($fix.hint) { $fix.hint } else { '新开的终端才会生效' }); exitCode = $fix.exitCode
+              } -Depth 6 -Compress)
+            }
+            'undo' {
+              $id = $null
+              if ($bodyObj -and $bodyObj.id) { $id = [string]$bodyObj.id }
+              if ([string]$q['id']) { $id = [string]$q['id'] }
+              $undo = Invoke-CslEnvUndo -Id $id -NoPause -ForceSkipConflicts
+              Send $ctx (ConvertTo-Json @{
+                ok = [bool]$undo.ok; error = $undo.error; id = $undo.id; restored = @($undo.restored); skipped = @($undo.skipped); conflicts = @($undo.conflicts); hint = $(if ($undo.hint) { $undo.hint } else { '新开的终端才会生效' }); exitCode = $undo.exitCode
+              } -Depth 6 -Compress)
+            }
+            default {
+              $ctx.Response.StatusCode = 400
+              Send $ctx '{"ok":false,"error":"unknown action"}'
+            }
+          }
+        } catch {
+          SLog ("envfix error: " + $_)
+          $ctx.Response.StatusCode = 500
+          Send $ctx (ConvertTo-Json @{ ok = $false; error = [string]$_ } -Compress)
+        }
       }
       default { $ctx.Response.StatusCode = 404; Send $ctx '{}' }
     }

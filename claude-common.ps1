@@ -6,7 +6,7 @@ $script:Root      = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script:CfgPath   = Join-Path $script:Root 'preflight.json'
 $script:LogPath   = Join-Path $script:Root 'preflight.log'
 $script:Utf8NoBom = New-Object Text.UTF8Encoding($false)
-$script:VergeDir  = Join-Path $env:APPDATA 'io.github.clash-verge-rev.clash-verge-rev'
+if ($env:APPDATA) { $script:VergeDir = Join-Path $env:APPDATA 'io.github.clash-verge-rev.clash-verge-rev' } else { $script:VergeDir = $null }
 
 # IANA 时区 → Windows 时区（常用地区）
 $script:TzMap = @{
@@ -118,6 +118,7 @@ function Load-Config {
     monitorIntervalMin  = 5
     monitorKillOnChange = $false
     npmGlobalDir        = ''
+    fixVarPatterns      = @()
   }
   $cfg = $null
   if (Test-Path $script:CfgPath) { try { $cfg = Get-Content $script:CfgPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $cfg = $null } }
@@ -162,6 +163,45 @@ function Write-Log([string]$line) {
   $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'
   try { [IO.File]::AppendAllText($script:LogPath, "$($stamp) | $($line)`r`n", $script:Utf8NoBom) } catch {}
 }
+
+
+# 脱敏显示：永不打印完整密钥。后续可扩展 USERPROFILE 路径、完整 URL 等规则。
+# -Kind: Auto (默认) | Secret | Path | Url
+function Mask-Value {
+  param(
+    [AllowNull()][string]$Value,
+    [ValidateSet('Auto','Secret','Path','Url')][string]$Kind = 'Auto'
+  )
+  if ($null -eq $Value -or $Value -eq '') { return '(空)' }
+  $v = [string]$Value
+  # 预留：Path / Url 规则（v3.3+）；当前 Auto 与 Secret 同路径，先做前缀掩码
+  if ($Kind -eq 'Path' -or ($Kind -eq 'Auto' -and $v -match '(?i)^[A-Za-z]:\\|^/')) {
+    # placeholder: collapse user profile prefix when present
+    try {
+      $up = [string]$env:USERPROFILE
+      if ($up -and $v.StartsWith($up, [StringComparison]::OrdinalIgnoreCase)) {
+        $v = '%USERPROFILE%' + $v.Substring($up.Length)
+        return $v
+      }
+    } catch {}
+  }
+  if ($Kind -eq 'Url' -or ($Kind -eq 'Auto' -and $v -match '(?i)^https?://')) {
+    # placeholder: keep scheme+host, mask path/query for future; for now treat as secret-ish
+    try {
+      $uri = [uri]$v
+      if ($uri.Host) {
+        $tail = if ($uri.PathAndQuery -and $uri.PathAndQuery -ne '/') { '/****' } else { '' }
+        return ($uri.Scheme + '://' + $uri.Host + $tail)
+      }
+    } catch {}
+  }
+  # Secret / default: first 4 chars + ****
+  if ($v.Length -le 4) { return ($v.Substring(0,1) + '****') }
+  return ($v.Substring(0,4) + '****')
+}
+# 别名：供面板/日志/修复共用
+function Protect-Secret([AllowNull()][string]$Value) { Mask-Value -Value $Value -Kind Secret }
+
 
 function Get-TunAdapter {
   Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
