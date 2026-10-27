@@ -405,7 +405,7 @@ if (-not (Test-Path -LiteralPath $bcPath)) {
         try { $ts = [datetime]::Parse([string]$bc.ts, $null, [Globalization.DateTimeStyles]::AssumeUniversal).ToUniversalTime() } catch {}
       }
     }
-    if (-not $ts -or (([datetime]::UtcNow) - $ts).TotalMinutes -gt 3) {
+    if (-not $ts -or [math]::Abs((([datetime]::UtcNow) - $ts).TotalMinutes) -gt 3) {
       Say-Info 'browser-check.json 超过 3 分钟或无时间戳，视为过期；请从面板重新检查（不扣分）'
     } else {
       Say-Info ("实时快照 " + $ts.ToUniversalTime().ToString('HH:mm:ss') + ' UTC')
