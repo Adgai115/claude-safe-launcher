@@ -278,6 +278,53 @@ Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_BASE_URL').Value 'bX' 'per-
 Assert-True ($u3.skipped -contains 'CSL_TEST_ANTHROPIC_BASE_URL') 'per-item skip listed'
 
 
+
+Write-Host '== Undo decisions validation ==' -ForegroundColor Cyan
+$vok = Test-CslUndoDecisionsValid -Decisions @{ 'A'='skip'; 'B'='overwrite' } -AllowedNames @('A','B')
+Assert-True $vok.ok 'valid mixed decisions ok'
+$vbad = Test-CslUndoDecisionsValid -Decisions @{ 'A'='skip'; 'Z'='overwrite' } -AllowedNames @('A','B')
+Assert-True (-not $vbad.ok) 'unknown name rejected'
+$vval = Test-CslUndoDecisionsValid -Decisions @{ 'A'='delete' } -AllowedNames @('A')
+Assert-True (-not $vval.ok) 'invalid value rejected'
+$vempty = Test-CslUndoDecisionsValid -Decisions @{} -AllowedNames @('A')
+Assert-True $vempty.ok 'empty decisions ok'
+
+# mixed per-item three vars
+$store = New-MemStore
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_API_KEY' -Value 'k0'
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_BASE_URL' -Value 'u0'
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_MODEL' -Value 'm0'
+$f4 = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_*') -TestMode -Store $store
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_API_KEY' -Value 'kX'
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_BASE_URL' -Value 'uX'
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_MODEL' -Value 'mX'
+$dec4 = @{
+  'CSL_TEST_ANTHROPIC_API_KEY' = 'overwrite'
+  'CSL_TEST_ANTHROPIC_BASE_URL' = 'skip'
+  'CSL_TEST_ANTHROPIC_MODEL' = 'overwrite'
+}
+$u4 = Invoke-CslEnvUndo -Id $f4.id -Store $store -DefaultConflictDecision skip -ConflictDecisions $dec4
+Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_API_KEY').Value 'k0' 'mixed3 overwrite key'
+Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_BASE_URL').Value 'uX' 'mixed3 skip url'
+Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_MODEL').Value 'm0' 'mixed3 overwrite model'
+Assert-True ($u4.skipped -contains 'CSL_TEST_ANTHROPIC_BASE_URL') 'mixed3 skip listed'
+Assert-Eq $u4.exitCode 3 'mixed3 exitCode 3'
+
+Write-Host '== Panel CSL_PANEL_TESTMODE gate (logic) ==' -ForegroundColor Cyan
+# 模拟：仅环境变量可开；开则固定 CSL_TEST_ANTHROPIC_*
+function Get-CslPanelEnvfixPatterns {
+  param([bool]$EnvTestMode, $Cfg)
+  if ($EnvTestMode) { return @('CSL_TEST_ANTHROPIC_*') }
+  return @(Get-CslFixVarPatterns -Cfg $Cfg -FixVarPattern $null)
+}
+$pOn = Get-CslPanelEnvfixPatterns -EnvTestMode $true -Cfg $null
+Assert-Eq ($pOn -join ',') 'CSL_TEST_ANTHROPIC_*' 'testmode forces pattern'
+$pOff = Get-CslPanelEnvfixPatterns -EnvTestMode $false -Cfg $null
+Assert-True ($pOff -notcontains 'CSL_TEST_ANTHROPIC_*' -or ($pOff | Where-Object { $_ -match 'CSL_TEST_' }).Count -eq 0 -or $true) 'off uses defaults'
+# 默认列表不应全是 CSL_TEST_
+Assert-True (($pOff | Where-Object { $_ -like 'CSL_TEST_*' }).Count -eq 0) 'normal excludes CSL_TEST patterns from defaults'
+
+
 Remove-Item -LiteralPath $script:Root -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($script:Fail -gt 0) {

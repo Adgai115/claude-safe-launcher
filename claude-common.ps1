@@ -371,3 +371,25 @@ function Test-CslPanelApiRequest {
   }
   return @{ ok = $true; status = 200; error = $null }
 }
+
+
+function Test-CslUndoDecisionsValid {
+  param(
+    [hashtable]$Decisions,
+    [string[]]$AllowedNames
+  )
+  if ($null -eq $Decisions) { return @{ ok = $true; error = $null } }
+  $allow = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  foreach ($n in @($AllowedNames)) { if ($n) { [void]$allow.Add([string]$n) } }
+  foreach ($key in @($Decisions.Keys)) {
+    $name = [string]$key
+    if (-not $allow.Contains($name)) {
+      return @{ ok = $false; error = "unknown decision name: $name" }
+    }
+    $v = ([string]$Decisions[$key]).ToLowerInvariant()
+    if ($v -ne 'skip' -and $v -ne 'overwrite') {
+      return @{ ok = $false; error = "invalid decision for ${name}: $v" }
+    }
+  }
+  return @{ ok = $true; error = $null }
+}

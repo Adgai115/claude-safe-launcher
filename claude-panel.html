@@ -161,7 +161,7 @@ body[data-theme=western]{--muted:#4c5567;--title-font:Georgia,"Microsoft YaHei U
 <div class="deco" id="deco"></div>
 <div class="app">
   <header>
-    <div class="brand"><div class="logo" id="logo">✦</div><div><h1 id="title">Claude 安全启动 <span class="ver">v3.2.0</span></h1><p class="sub" id="sub"></p></div></div>
+    <div class="brand"><div class="logo" id="logo">✦</div><div><h1 id="title">Claude 安全启动 <span class="ver">v3.2.0</span> <span id="testModeBadge" style="display:none;margin-left:8px;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:700;vertical-align:middle;background:#1a5f7a;color:#fff;border:1px solid #0d3d4d">测试模式</span></h1><p class="sub" id="sub"></p></div></div>
     <div class="themes" id="themes"></div>
   </header>
   <section class="hero">
@@ -197,6 +197,7 @@ const LV={'通过':'pass','警告':'warn','失败':'fail','修复':'fix','信息
 const RANK={fail:4,warn:3,fix:2,pass:1,info:0,note:0};
 const CSL_TOKEN='__CSL_TOKEN__';
 const CSL_TESTMODE=('__CSL_TESTMODE__'==='1');
+if(CSL_TESTMODE){const b=document.getElementById('testModeBadge');if(b)b.style.display='inline-block';}
 function apiHeaders(isPost){const h={'X-CSL-Token':CSL_TOKEN};if(isPost)h['Content-Type']='application/json';return h}
 async function api(method,url,body){const opt={method,headers:apiHeaders(method==='POST')};if(body!==undefined)opt.body=JSON.stringify(body);const r=await fetch(url,opt);let j=null;try{j=await r.json()}catch(e){j={ok:false,error:'bad response '+r.status}}if(r.status===403){j=j||{};j.ok=false;j.error=j.error||'forbidden';}return j}
 
@@ -242,17 +243,50 @@ async function envFixApply(g){try{
 function undoConflictDialog(conflicts){
   return new Promise(resolve=>{
     const wrap=document.createElement('div');
-    wrap.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px';
+    wrap.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;padding:12px';
     const box=document.createElement('div');
-    box.style.cssText='background:var(--panel,#fff);color:var(--text,#222);border:1px solid var(--line,#ccc);border-radius:8px;max-width:520px;width:100%;max-height:80vh;overflow:auto;padding:16px;font-family:Microsoft YaHei UI,sans-serif';
-    let html='<div style="font-weight:700;margin-bottom:8px">撤销冲突</div><div style="font-size:13px;margin-bottom:10px;color:var(--muted,#666)">当前值与修复后期望不一致（已脱敏）。默认跳过冲突项；也可全部覆盖。</div><div style="font-size:12px;margin-bottom:12px;max-height:40vh;overflow:auto">';
-    conflicts.forEach(c=>{html+='<div style="padding:4px 0;border-top:1px dashed var(--line,#ddd)">· <b>'+esc(c.name||'')+'</b><br>当前='+esc(c.currentMasked||'')+'　期望='+esc(c.expectedMasked||'')+'</div>'});
-    html+='</div><div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">';
-    html+='<button type="button" data-a="cancel" class="btn">取消</button>';
-    html+='<button type="button" data-a="skip" class="btn primary">全部跳过</button>';
-    html+='<button type="button" data-a="overwrite" class="btn">全部覆盖</button></div>';
-    box.innerHTML=html;wrap.appendChild(box);document.body.appendChild(wrap);
-    box.querySelectorAll('button').forEach(b=>b.onclick=()=>{const a=b.getAttribute('data-a');wrap.remove();resolve(a)});
+    box.style.cssText='background:var(--panel,#fff);color:var(--text,#222);border:1px solid var(--line,#ccc);border-radius:8px;max-width:560px;width:100%;max-height:78vh;display:flex;flex-direction:column;padding:14px 16px;font-family:"Microsoft YaHei UI","Microsoft YaHei",sans-serif;font-size:13px';
+    const head=document.createElement('div');
+    head.innerHTML='<div style="font-weight:700;font-size:15px;margin-bottom:4px">撤销冲突</div><div style="color:var(--muted,#666);margin-bottom:8px;font-size:12px">每项默认跳过。可逐项改选覆盖，或用全部按钮。确认后才会改系统；取消不改。</div>';
+    const list=document.createElement('div');
+    list.style.cssText='flex:1;overflow:auto;min-height:0;margin-bottom:10px;border-top:1px solid var(--line,#ddd)';
+    const radios=[];
+    conflicts.forEach((c,idx)=>{
+      const row=document.createElement('div');
+      row.style.cssText='padding:6px 0;border-bottom:1px dashed var(--line,#ddd);display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap';
+      const info=document.createElement('div');
+      info.style.cssText='flex:1;min-width:180px;line-height:1.45';
+      info.innerHTML='<b>'+esc(c.name||'')+'</b><br><span style="color:var(--muted,#666)">当前='+esc(c.currentMasked||'')+'　期望='+esc(c.expectedMasked||'')+'</span>';
+      const ctl=document.createElement('div');
+      ctl.style.cssText='flex:none;display:flex;gap:8px;align-items:center;font-size:12px';
+      const g='csl-ud-'+idx;
+      const mk=(val,label,checked)=>{
+        const lab=document.createElement('label');
+        lab.style.cssText='cursor:pointer;display:inline-flex;align-items:center;gap:3px;user-select:none';
+        const inp=document.createElement('input');
+        inp.type='radio';inp.name=g;inp.value=val;inp.checked=!!checked;
+        lab.appendChild(inp);lab.appendChild(document.createTextNode(label));
+        ctl.appendChild(lab);return inp;
+      };
+      const rSkip=mk('skip','跳过',true);
+      const rOver=mk('overwrite','覆盖',false);
+      radios.push({name:c.name, get:()=>rOver.checked?'overwrite':'skip', set:(v)=>{if(v==='overwrite')rOver.checked=true;else rSkip.checked=true}});
+      row.appendChild(info);row.appendChild(ctl);list.appendChild(row);
+    });
+    const foot=document.createElement('div');
+    foot.style.cssText='display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;align-items:center';
+    const mkBtn=(txt,primary,fn)=>{const b=document.createElement('button');b.type='button';b.className='btn'+(primary?' primary':'');b.textContent=txt;b.onclick=fn;foot.appendChild(b);return b};
+    mkBtn('全部跳过',false,()=>radios.forEach(r=>r.set('skip')));
+    mkBtn('全部覆盖',false,()=>radios.forEach(r=>r.set('overwrite')));
+    mkBtn('取消',false,()=>{wrap.remove();resolve({cancel:true})});
+    mkBtn('确认',true,()=>{
+      const decisions={};
+      radios.forEach(r=>{decisions[r.name]=r.get()});
+      wrap.remove();
+      resolve({cancel:false, defaultConflictDecision:'skip', decisions});
+    });
+    box.appendChild(head);box.appendChild(list);box.appendChild(foot);
+    wrap.appendChild(box);document.body.appendChild(wrap);
   });
 }
 async function envFixUndo(g){try{
@@ -263,18 +297,20 @@ async function envFixUndo(g){try{
   const plan=await api('POST','/api/envfix',{action:'undo-plan',id:latest.id});
   if(!plan.ok){alert(plan.error||'无法预览撤销');return}
   let defaultConflictDecision='skip';
+  let decisions={};
   const confs=plan.conflicts||[];
   if(confs.length){
     const choice=await undoConflictDialog(confs);
-    if(choice==='cancel')return; // 取消=不改系统
-    defaultConflictDecision=(choice==='overwrite')?'overwrite':'skip';
+    if(!choice||choice.cancel)return; // 取消=不改系统
+    defaultConflictDecision=choice.defaultConflictDecision||'skip';
+    decisions=choice.decisions||{};
   } else {
     let msg='撤销修复 '+latest.id+(latest.ts?('（'+latest.ts+'）'):'')+'？\n';
     (plan.pending||[]).forEach(v=>{msg+='  · '+v.name+': → '+v.valueMasked+'\n'});
     msg+='\n新开的终端才会生效。';
     if(!confirm(msg))return;
   }
-  const r=await api('POST','/api/envfix',{action:'undo-apply',id:latest.id,defaultConflictDecision,decisions:{}});
+  const r=await api('POST','/api/envfix',{action:'undo-apply',id:latest.id,defaultConflictDecision,decisions});
   if(!r.ok && !(r.skipped&&r.skipped.length)){alert(r.error||'撤销失败');return}
   let done='已撤销。';
   if(r.skipped&&r.skipped.length) done='已撤销（跳过冲突 '+r.skipped.length+' 项，exitCode='+(r.exitCode||3)+'）。';

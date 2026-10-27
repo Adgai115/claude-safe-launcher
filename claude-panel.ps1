@@ -16,7 +16,8 @@ $port = 47831
 $urlLoopback = "http://127.0.0.1:$port/"
 $urlLocalhost = "http://localhost:$port/"
 $openUrl = $urlLocalhost
-$script:CslPanelTestMode = [bool]$TestMode
+# CSL_PANEL_TESTMODE=1 仅由进程环境变量启用；请求体无法开关
+$script:CslPanelTestMode = ($env:CSL_PANEL_TESTMODE -eq '1')
 $script:CslPanelToken = New-CslSessionToken
 # 绝不把 token 写入日志
 
@@ -164,14 +165,14 @@ while (-not $quit) {
         $action = 'plan'
         if ($bodyObj -and $bodyObj.action) { $action = [string]$bodyObj.action }
         $cfg = Load-Config
-        # 生产模式：忽略请求体 patterns / testMode；仅当面板进程以 -TestMode 启动时允许
+        # CSL_PANEL_TESTMODE=1：强制 TestMode + 固定 CSL_TEST_ANTHROPIC_*；请求体 patterns/testMode 一律忽略
+        # 环境变量未设：与原先一致（忽略请求体 patterns/testMode，用配置/默认，排除 CSL_TEST_*）
         $testMode = [bool]$script:CslPanelTestMode
-        $pats = $null
         if ($script:CslPanelTestMode) {
-          if ($bodyObj -and $bodyObj.PSObject.Properties['testMode'] -and $bodyObj.testMode) { $testMode = $true }
-          if ($bodyObj -and $bodyObj.PSObject.Properties['patterns'] -and $bodyObj.patterns) { $pats = @($bodyObj.patterns) }
+          $patterns = @('CSL_TEST_ANTHROPIC_*')
+        } else {
+          $patterns = Get-CslFixVarPatterns -Cfg $cfg -FixVarPattern $null
         }
-        $patterns = Get-CslFixVarPatterns -Cfg $cfg -FixVarPattern $pats
         try {
           switch ($action) {
             'list' {
@@ -207,14 +208,32 @@ while (-not $quit) {
               if ($bodyObj -and $bodyObj.PSObject.Properties['defaultConflictDecision'] -and $bodyObj.defaultConflictDecision) {
                 $def = [string]$bodyObj.defaultConflictDecision
               }
-              if ($def -ne 'overwrite' -and $def -ne 'skip' -and $def -ne 'abort') { $def = 'skip' }
+              if ($def -ne 'overwrite' -and $def -ne 'skip') {
+                $ctx.Response.StatusCode = 400
+                Send $ctx '{"ok":false,"error":"invalid defaultConflictDecision"}'
+                break
+              }
               $dec = @{}
               if ($bodyObj -and $bodyObj.PSObject.Properties['decisions'] -and $bodyObj.decisions) {
                 $dobj = $bodyObj.decisions
-                if ($dobj -is [hashtable]) { $dec = $dobj }
-                else {
+                if ($dobj -is [hashtable]) {
+                  foreach ($k in @($dobj.Keys)) { $dec[[string]$k] = [string]$dobj[$k] }
+                } else {
                   foreach ($p in $dobj.PSObject.Properties) { $dec[$p.Name] = [string]$p.Value }
                 }
+              }
+              $planChk = Invoke-CslEnvUndo -Id $id -DryRun -DefaultConflictDecision skip
+              if (-not $planChk.ok) {
+                $ctx.Response.StatusCode = 400
+                Send $ctx (ConvertTo-Json @{ ok = $false; error = $planChk.error } -Compress)
+                break
+              }
+              $allowed = @($planChk.conflicts | ForEach-Object { [string]$_.name } | Where-Object { $_ })
+              $vdec = Test-CslUndoDecisionsValid -Decisions $dec -AllowedNames $allowed
+              if (-not $vdec.ok) {
+                $ctx.Response.StatusCode = 400
+                Send $ctx (ConvertTo-Json @{ ok = $false; error = $vdec.error } -Compress)
+                break
               }
               $undo = Invoke-CslEnvUndo -Id $id -DefaultConflictDecision $def -ConflictDecisions $dec
               Send $ctx (ConvertTo-Json @{
