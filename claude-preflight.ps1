@@ -10,7 +10,8 @@
   [string]$UndoId,
   [switch]$ListFixes,
   [string[]]$FixVarPattern,
-  [int]$FailAtIndex = 0
+  [int]$FailAtIndex = 0,
+  [switch]$Json
 )
 <#
   Claude 桌面版 启动前检查 + 自动设置（v3.2.0）
@@ -26,11 +27,13 @@
   -ListFixes : 列出可撤销操作（脱敏）
   -TestMode : 仅允许操作 CSL_TEST_ 前缀变量；测试请配合 -FixVarPattern 'CSL_TEST_ANTHROPIC_*'
   -FailAtIndex <n> : （仅 -TestMode）使第 n 个变量变更抛错，用于验证整单回滚；非 TestMode 警告并忽略
+  -Json     : 写出 preflight-result.json（UTF-8 无 BOM）并在末尾打印 CSL_JSON_PATH=…；评分走 claude-rules.ps1
   配置文件  : 同目录 preflight.json（可用 fixVarPatterns；controllerSecret 不会被打印）
-  依赖      : 同目录 claude-common.ps1、claude-envfix.ps1、claude-monitor.ps1
+  依赖      : 同目录 claude-common.ps1、claude-envfix.ps1、claude-rules.ps1、claude-monitor.ps1
 #>
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-common.ps1')
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-envfix.ps1')
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-rules.ps1')
 try { $Host.UI.RawUI.WindowTitle = 'Claude 安全启动 - 启动前检查' } catch {}
 $cfg = Load-Config
 if ($Relearn) { Save-Learned $cfg @{ expectedIp = ''; expectedLoc = ''; expectedNode = ''; timezone = ''; expectedTzIana = '' } }
@@ -116,7 +119,7 @@ function Say-Warn($t, $w = 8)  { Write-Host "  [警告] $($t)" -ForegroundColor 
 function Say-Fail($t, $w = 25) { Write-Host "  [失败] $($t)" -ForegroundColor Red; Add-Item 'FAIL' $t $w }
 
 Write-Host '==============================================' -ForegroundColor Cyan
-Write-Host '   Claude 桌面版 启动前检查 v3.2.0' -ForegroundColor Cyan
+Write-Host '   Claude 桌面版 启动前检查 v4.0.0' -ForegroundColor Cyan
 if ($Relearn) { Write-Host '   [重新学习] 将按当前环境重新记住出口 IP / 节点 / 时区' -ForegroundColor Cyan }
 Write-Host ("   " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + $(if ($NoLaunch) { '   [NoLaunch 测试模式]' } else { '' })) -ForegroundColor Cyan
 Write-Host '==============================================' -ForegroundColor Cyan
@@ -568,12 +571,45 @@ if (-not (Test-Path -LiteralPath $bcPath)) {
 }
 
 
-# ---------- 评分 ----------
+# ---------- 评分（单一入口：claude-rules.ps1） ----------
 $fails = @($script:Items | Where-Object Level -eq 'FAIL')
 $warns = @($script:Items | Where-Object Level -eq 'WARN')
 $notes = @($script:Items | Where-Object Level -eq 'NOTE')
-$lost = ($script:Items | Measure-Object -Property Weight -Sum).Sum; if (-not $lost) { $lost = 0 }
-$score = [Math]::Max(0, 100 - [int]$lost)
+
+# Map legacy Items → rules Results (weights already include Soft-BrowserWarn cap)
+$script:CslScoreMapped = New-Object System.Collections.ArrayList
+$ix = 0
+foreach ($it in @($script:Items)) {
+  $ix++
+  $sev = 'info'; $st = 'info'
+  if ($it.Level -eq 'FAIL') { $sev = 'must_fix'; $st = 'failed' }
+  elseif ($it.Level -eq 'WARN') { $sev = 'should_fix'; $st = 'failed' }
+  elseif ($it.Level -eq 'NOTE') { $sev = 'info'; $st = 'info' }
+  [void]$script:CslScoreMapped.Add([pscustomobject]@{
+    id                   = ('item.{0}' -f $ix)
+    status               = $st
+    severityOverride     = $sev
+    refDeductionOverride = [int]$it.Weight
+    current              = [string]$it.Text
+    expected             = ''
+    recheck              = 'powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause'
+    masked               = $true
+  })
+}
+
+$script:CslRulesCatalog = $null
+$script:CslScoreResult = $null
+try {
+  $script:CslRulesCatalog = Get-CslRulesCatalog
+  $script:CslScoreResult = Get-CslRulesScore -Catalog $script:CslRulesCatalog -Results $script:CslScoreMapped
+  $score = [int]$script:CslScoreResult.score
+} catch {
+  # Catalog missing → fall back to sum of weights (should not happen in a full checkout)
+  Write-Host ("  [提示] 规则评分模块不可用，回退权重求和: " + $_) -ForegroundColor DarkGray
+  $lost = ($script:Items | Measure-Object -Property Weight -Sum).Sum; if (-not $lost) { $lost = 0 }
+  $score = [Math]::Max(0, 100 - [int]$lost)
+}
+
 Write-Host ''
 Write-Host '==============================================' -ForegroundColor Cyan
 $sc = $(if ($fails.Count) { 'Red' } elseif ($score -ge 90) { 'Green' } else { 'Yellow' })
@@ -584,6 +620,19 @@ if ($notes.Count) { Write-Host "  【不用管】$($notes.Count) 项" -Foregroun
 if (-not ($fails.Count + $warns.Count + $notes.Count)) { Write-Host '  全部通过' -ForegroundColor Green }
 Write-Host '==============================================' -ForegroundColor Cyan
 $result = $(if ($fails.Count) { 'FAIL' } elseif ($warns.Count) { 'WARN' } else { 'PASS' })
+
+# Structured JSON (always written; -Json also prints path marker for machines/CI)
+try {
+  if ($script:CslScoreResult) {
+    $verdict = $(if ($fails.Count -eq 0) { 'ok' } elseif ($Force) { 'force' } else { 'blocked' })
+    $payload = New-CslPreflightResult -ScoreResult $script:CslScoreResult -Platform 'win' -Verdict $verdict
+    $outJson = Join-Path $script:Root 'preflight-result.json'
+    Write-CslPreflightResultJson -Result $payload -Path $outJson | Out-Null
+    if ($Json) { Write-Host ("CSL_JSON_PATH=" + $outJson) -ForegroundColor DarkGray }
+  }
+} catch {
+  if ($Json) { Write-Host ("CSL_JSON_ERROR=" + $_) -ForegroundColor Yellow }
+}
 
 # ---------- 启动 ----------
 $launched = 'no'

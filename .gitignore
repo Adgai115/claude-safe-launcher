@@ -1,6 +1,7 @@
 # 个人配置与运行产物（含出口 IP、节点等，不要提交）
 preflight.json
 browser-check.json
+preflight-result.json
 panel.json
 panel-edge/
 panel-chrome/

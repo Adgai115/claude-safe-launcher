@@ -1,6 +1,19 @@
 # 更新日志
 
+## Unreleased
+
+### v4.0.0（第一批 · 规则文件 + 结构化 JSON + 单一评分）
+
+- 新增 `rules/checks.json`：32 条检查的权威目录（`must_fix` / `should_fix` / `info`），含产品裁定（TUN=Clash `tun.enable`+路由、`api.anthropic`→`proxy-net`、HTTPS_PROXY/桌面版/IP 风险仅提示 0 分、Mac envfix 仅 win `fixable` 等）。
+- 新增 `docs/rules-v4.md`、`docs/preflight-json-schema.md`（JSON 键名 **DRAFT**，未产品冻结）。
+- 新增 `claude-rules.ps1`：`Get-CslRulesScore` / `New-CslPreflightResult` 为 CLI 与面板共用的**唯一**参考评分入口；`score = max(0,100−ΣrefDeduction)`，浏览器静态警告 cap 20；`canLaunchSafely` 仅看 must_fix。
+- `claude-preflight.ps1`：接入规则评分；新增 `-Json`；写出 `preflight-result.json`（含每条 `current` / `expected` / `recheck`，供后续 issue 导出读取）。不改 Mask-Value / Protect-Secret。
+- `claude-panel.html`：去掉本地 25/8 重算，分数只取自预检「一致性评分」行。
+- 新增 `tests/rules.Tests.ps1`。
+- **不在本批**：不改 `mac/`；不改 issue 导出（归 v3.3.0 / `feat/issue-export`）；不改静默 Start-Process / tzutil 行为（标在规则 notes，后续 PR）。
+
 ## v3.2.0（一期 · Windows）
+
 
 - 新增用户级中转环境变量一键修复 / 撤销：检查第 9 组与 CLI/面板共用同一模式源（默认 `ANTHROPIC_*` 列表，可用 `-FixVarPattern` 或 `preflight.json` 的 `fixVarPatterns`）。
 - CLI：`-FixEnv` / `-DryRun` / `-UndoFix [-UndoId <id>]` / `-ListFixes` / `-TestMode`；显式 `-FixEnv`/`-UndoFix` 视为同意，可与 `-NoPause` 同用；纯 `-NoPause` 绝不自动修。
