@@ -418,12 +418,12 @@ function handle(line){line=line.replace(/^\uFEFF/,'').replace(/\s+$/,'');if(!lin
  if(m=line.match(/^== (?:(\d+)\.\s*)?(.+)$/)){const g={n:st.groups.length+1,name:m[2],rows:[]};st.groups.push(g);st.cur=g;addCard(g);g.el.scrollIntoView({block:'nearest'});return}
  if(m=line.match(/^\s+\[(通过|信息|修复|提示|警告|失败)\]\s*(.*)$/)){const r={lvl:m[1],cls:LV[m[1]],text:m[2]};
   if(!st.cur){const g={n:st.groups.length+1,name:'其他',rows:[]};st.groups.push(g);st.cur=g;addCard(g)}
-  st.cur.rows.push(r);addRow(st.cur,r);cardStatus(st.cur);if(r.cls==='fail'||r.cls==='warn'){st.live=Math.max(0,st.live-(r.cls==='fail'?25:8));setScore(st.live);const sc=document.querySelector('.score');sc.classList.remove('drop');void sc.offsetWidth;sc.classList.add('drop')}if(st.cnt[r.cls]!=null){st.cnt[r.cls]++;count()}return}
- if(m=line.match(/一致性评分:\s*(\d+)/)){st.score=+m[1];return}
+  st.cur.rows.push(r);addRow(st.cur,r);cardStatus(st.cur);if(r.cls==='fail'||r.cls==='warn'){const sc=document.querySelector('.score');sc.classList.remove('drop');void sc.offsetWidth;sc.classList.add('drop')}if(st.cnt[r.cls]!=null){st.cnt[r.cls]++;count()}return}
+ if(m=line.match(/一致性评分:\s*(\d+)/)){st.score=+m[1];setScore(st.score);return}
  if(/正在启动 Claude|切换到前台|已启动后台监控|未启动 Claude|NoLaunch/.test(line)){st.events.push(line.trim());$('events').textContent=st.events.join('　·　')}
 }
 function finish(){busy=false;setBusy(false);fitAll();st.phase=st.cnt.fail?'fail':st.cnt.warn?'warn':'ok';setState();
- setScore(st.score!=null?st.score:Math.max(0,100-st.cnt.fail*25-st.cnt.warn*8));
+ setScore(st.score!=null?st.score:null); // score only from preflight 一致性评分 (claude-rules.ps1)
  $('hint').textContent='检查完成 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});
  const ca=$('bCopyAll');if(ca)ca.disabled=!(st.cnt.fail||st.cnt.warn)}
 function setBusy(b){$('bCheck').disabled=b;$('bLaunch').disabled=b;$('bLearn').disabled=b;const ca=$('bCopyAll');if(ca&&b)ca.disabled=true}
