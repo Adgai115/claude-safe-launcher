@@ -540,6 +540,23 @@ $printedOne = @(Write-CslUndoConflicts @($null, 'x') 6>&1 | ForEach-Object { [st
 Assert-Eq ($printedOne -join '|') '  [警告] x' 'one real conflict printed once'
 Assert-Eq $Error.Count $errBefore 'conflict print raised no error'
 
+Write-Host '== Backup without entries treated as corrupt ==' -ForegroundColor Cyan
+$uncBefore2 = $script:Uncaught
+$neDir = Get-CslEnvBackupDir
+$neMissing = Join-Path $neDir 'envfix-20000101T000000000-nent.json'
+$neNull = Join-Path $neDir 'envfix-20000101T000000001-nulx.json'
+[IO.File]::WriteAllText($neMissing, '{"id":"20000101T000000000-nent","ts":"2000-01-01T00:00:00Z"}', (New-Object System.Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText($neNull, '{"id":"20000101T000000001-nulx","ts":"2000-01-01T00:00:00Z","entries":null}', (New-Object System.Text.UTF8Encoding($false)))
+$rdMissing = Read-CslEnvBackupFile -Path $neMissing
+$rdNull = Read-CslEnvBackupFile -Path $neNull
+Assert-True ((-not $rdMissing.ok) -and ($rdMissing.error -like '备份文件损坏或无法解析*') -and (-not $rdNull.ok) -and ($rdNull.error -like '备份文件损坏或无法解析*')) 'backup missing/null entries read as corrupt'
+$storeNe = New-MemStore
+& $storeNe.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_NOENT' -Value 'noent-orig'
+$fNe = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_NOENT') -TestMode -Store $storeNe
+$uNe = Invoke-CslEnvUndo -Id $fNe.id -NoPause -TestMode -Store $storeNe
+Assert-True ($fNe.ok -and $uNe.ok -and ((& $storeNe.GetUserEntry 'CSL_TEST_ANTHROPIC_NOENT').Value -eq 'noent-orig') -and (@($uNe.conflicts | Where-Object { $null -ne $_ }).Count -eq 0) -and ($script:Uncaught -eq $uncBefore2)) 'undo other backup ok with entries-less files present'
+Remove-Item -LiteralPath $neMissing, $neNull -Force -ErrorAction SilentlyContinue
+
 Remove-Item -LiteralPath $script:Root -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {

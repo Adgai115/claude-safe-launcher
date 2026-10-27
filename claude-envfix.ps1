@@ -222,6 +222,10 @@ function Read-CslEnvBackupFile {
     if (-not $j -or -not $j.id) {
       return @{ ok = $false; error = "备份文件损坏或无法解析: $Path" }
     }
+    # 缺 entries 字段或 entries 为 null 按损坏处理（否则 @($j.entries) 在 5.1 下得到一个 $null 元素）
+    if (-not $j.PSObject.Properties['entries'] -or $null -eq $j.entries) {
+      return @{ ok = $false; error = "备份文件损坏或无法解析: $Path" }
+    }
     return @{ ok = $true; data = $j; path = $Path }
   } catch {
     return @{ ok = $false; error = "备份文件损坏或无法解析: $Path ($_)" }
