@@ -1,7 +1,8 @@
 ﻿# Claude Safe Launcher — rules load + single scoring (v4.0.0)
 # Dot-source after claude-common.ps1. Do not redefine Mask-Value / Protect-Secret.
 
-Set-StrictMode -Version Latest
+# 不在脚本作用域设置 StrictMode：本文件会被 dot-source 进 preflight，严格模式会泄漏到调用方
+# （claude-common.ps1 的 Load-Config 等会抛 PropertyNotFoundStrict）。
 
 # Captured at dot-source time (MyInvocation inside functions points at the caller).
 $script:CslRulesDir = Split-Path -Parent $MyInvocation.MyCommand.Path

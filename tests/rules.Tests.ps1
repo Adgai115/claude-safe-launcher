@@ -3,7 +3,7 @@
 # 用法: powershell -NoProfile -ExecutionPolicy Bypass -File tests\rules.Tests.ps1
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-# 与 claude-preflight.ps1 相同的加载顺序：common、envfix 在 rules（Set-StrictMode）之前
+# 与 claude-preflight.ps1 相同的加载顺序：common、envfix、rules
 . (Join-Path $root 'claude-common.ps1')
 . (Join-Path $root 'claude-envfix.ps1')
 . (Join-Path $root 'claude-rules.ps1')
@@ -26,6 +26,14 @@ function Assert-Eq($a, $b, $msg) {
   if ("$a" -eq "$b") { Write-Host "  PASS  $msg" -ForegroundColor Green }
   else { Write-Host "  FAIL  $msg (got=[$a] expected=[$b])" -ForegroundColor Red; $script:Fail++ }
 }
+
+Write-Host '== StrictMode not leaked to caller ==' -ForegroundColor Cyan
+$probe = New-Object psobject
+$leak = $null
+try { $null = $probe.PSObject.Properties.Name; $null = $probe.NoSuchProp } catch { $leak = $_.FullyQualifiedErrorId }
+Assert-True ($null -eq $leak) "dot-sourcing claude-rules.ps1 leaves caller non-strict (err=[$leak])"
+$rulesSrc = Get-Content (Join-Path $root 'claude-rules.ps1') -Raw -Encoding UTF8
+Assert-True (-not ($rulesSrc -match '(?m)^\s*Set-StrictMode')) 'claude-rules.ps1 has no script-level Set-StrictMode'
 
 Write-Host '== Catalog load ==' -ForegroundColor Cyan
 $cat = Get-CslRulesCatalog

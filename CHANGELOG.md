@@ -12,6 +12,7 @@
 - 新增 `tests/rules.Tests.ps1`。
 - JSON 输出冻结候选 v1：`status` 含 `error`（扣 0；must_fix error → blocked）；`fixType`/`fixId` 取代 `fixable`；`containsIp`；`summary.error`。面板修复按钮跟 `CSL_FIX_ID`/`fixId`（如 `envfix.user-anthropic`），不再依赖「用户级」文案。
 - JSON 的 `current` 对环境变量项只输出变量名和状态（如 `用户级 NAME：已设置`），不含值、不含打码值（无 `=`、无 `*`）；覆盖第 9 组用户级变量和 `HTTPS_PROXY=…`。屏幕和 CLI 上的检查行不变。新增断言用 `CSL_TEST_CANARY` 金丝雀值锁定。
+- 修复回归：`claude-rules.ps1` 不再在脚本作用域设置 `Set-StrictMode -Version Latest`（dot-source 进 preflight 后严格模式泄漏到 `claude-common.ps1`，`Load-Config` 等在 CLI 中抛 PropertyNotFoundStrict）。新增断言锁定调用方不受严格模式影响。
 - **不在本批**：不改 `mac/`；issue 导出沿用 v3.3.0 已发布实现，v4 未改动；不改静默 Start-Process / tzutil 行为（标在规则 notes，后续 PR）。
 
 ## v3.3.0（一期 · Windows）
