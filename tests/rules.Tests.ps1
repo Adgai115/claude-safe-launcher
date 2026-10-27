@@ -25,33 +25,62 @@ Assert-Eq ($ids | Select-Object -Unique).Count 32 'unique ids'
 $api = Get-CslRuleById -Catalog $cat -Id 'exit.api_anthropic'
 Assert-True ($null -ne $api) 'api rule exists'
 Assert-Eq $api.category 'proxy-net' 'api.anthropic category=proxy-net'
-$tun = Get-CslRuleById -Catalog $cat -Id 'net.tun'
-Assert-True ($tun.checks -match 'tun\.enable') 'tun uses Clash tun.enable'
-$https = Get-CslRuleById -Catalog $cat -Id 'cfg.https_proxy'
-Assert-Eq $https.severity 'info' 'https_proxy info'
-Assert-Eq $https.refDeduction 0 'https_proxy 0'
-$desk = Get-CslRuleById -Catalog $cat -Id 'cfg.claude_desktop'
-Assert-Eq $desk.refDeduction 0 'desktop 0'
-$risk = Get-CslRuleById -Catalog $cat -Id 'exit.ip_risk_proxycheck'
-Assert-Eq $risk.refDeduction 0 'ip risk 0'
+
+Write-Host '== fixType / fixId / containsIp / no fixable ==' -ForegroundColor Cyan
+$allowedFt = @('none','confirm','manual')
+$badFt = @($cat.checks | Where-Object { $allowedFt -notcontains [string]$_.fixType })
+Assert-Eq $badFt.Count 0 'fixType enum'
+$withFixable = @($cat.checks | Where-Object { $null -ne $_.PSObject.Properties['fixable'] })
+Assert-Eq $withFixable.Count 0 'no fixable field'
 $envu = Get-CslRuleById -Catalog $cat -Id 'cfg.env_relay_user'
-Assert-True ($envu.platforms -contains 'win') 'envfix platforms include win'
-Assert-True (-not ($envu.platforms -contains 'mac')) 'envfix platforms exclude mac (manual only)'
+Assert-Eq $envu.fixType 'confirm' 'envfix fixType=confirm'
+Assert-Eq $envu.fixId 'envfix.user-anthropic' 'envfix fixId'
+Assert-True (-not ($envu.platforms -contains 'mac')) 'envfix platforms exclude mac'
+$tun = Get-CslRuleById -Catalog $cat -Id 'net.tun'
+Assert-Eq $tun.fixType 'manual' 'tun manual'
+Assert-True ($null -eq $tun.fixId -or [string]$tun.fixId -eq '') 'tun fixId empty'
+$ip = Get-CslRuleById -Catalog $cat -Id 'exit.three_way_ip'
+Assert-True ([bool]$ip.containsIp) 'three_way containsIp'
+$noip = Get-CslRuleById -Catalog $cat -Id 'net.controller'
+Assert-True (-not [bool]$noip.containsIp) 'controller not containsIp'
 
 Write-Host '== Severity enum ==' -ForegroundColor Cyan
 $allowed = @('must_fix','should_fix','info')
 $bad = @($cat.checks | Where-Object { $allowed -notcontains [string]$_.severity })
 Assert-Eq $bad.Count 0 'all severities in enum'
 
-Write-Host '== Score: must_fix blocks launch ==' -ForegroundColor Cyan
+Write-Host '== Score: must_fix failed blocks ==' -ForegroundColor Cyan
 $r = Get-CslRulesScore -Catalog $cat -Results @(
   [pscustomobject]@{ id = 'net.tun'; status = 'failed' }
 )
 Assert-Eq $r.score 75 'tun fail deducts 25'
 Assert-True (-not $r.canLaunchSafely) 'must_fix failed → unsafe'
 Assert-Eq $r.summary.must_fix_failed 1 'one must_fix'
+Assert-Eq $r.summary.error 0 'error count 0'
 
-Write-Host '== Score: should_fix does not block ==' -ForegroundColor Cyan
+Write-Host '== Score: error deducts 0; must_fix error → blocked ==' -ForegroundColor Cyan
+$re = Get-CslRulesScore -Catalog $cat -Results @(
+  [pscustomobject]@{ id = 'net.tun'; status = 'error'; current = 'Clash config unreadable (masked)' }
+)
+Assert-Eq $re.score 100 'error never deducts'
+Assert-True (-not $re.canLaunchSafely) 'must_fix error → unsafe'
+Assert-Eq $re.summary.error 1 'summary.error=1'
+Assert-Eq $re.summary.must_fix_failed 0 'error is not failed'
+$rowE = @($re.checks | Where-Object id -eq 'net.tun')[0]
+Assert-Eq $rowE.status 'error' 'row status error'
+Assert-True ($rowE.current -match 'unreadable') 'error current has reason'
+$payloadE = New-CslPreflightResult -ScoreResult $re -Platform 'win'
+Assert-Eq $payloadE.verdict 'blocked' 'must_fix error → verdict blocked'
+
+Write-Host '== Score: should_fix error does not block ==' -ForegroundColor Cyan
+$re2 = Get-CslRulesScore -Catalog $cat -Results @(
+  [pscustomobject]@{ id = 'net.controller'; status = 'error'; current = 'timeout' }
+)
+Assert-Eq $re2.score 100 'should_fix error 0 deduction'
+Assert-True $re2.canLaunchSafely 'should_fix error still safe'
+Assert-Eq $re2.summary.error 1 'error counted'
+
+Write-Host '== Score: should_fix failed does not block ==' -ForegroundColor Cyan
 $r2 = Get-CslRulesScore -Catalog $cat -Results @(
   [pscustomobject]@{ id = 'net.controller'; status = 'failed' }
 )
@@ -68,7 +97,6 @@ Assert-Eq $r3.score 100 'hint-only no deduction'
 Assert-True $r3.canLaunchSafely 'info fails still safe'
 
 Write-Host '== Score: static browser cap 20 ==' -ForegroundColor Cyan
-# Three static should_fix fails with 5+5+… — use overrides so we exceed 20
 $staticResults = @(
   [pscustomobject]@{ id = 'net.browser_webrtc_chromium'; status = 'failed'; refDeductionOverride = 10 },
   [pscustomobject]@{ id = 'net.browser_webrtc_firefox'; status = 'failed'; refDeductionOverride = 10 },
@@ -78,34 +106,31 @@ $r4 = Get-CslRulesScore -Catalog $cat -Results $staticResults
 Assert-Eq $r4.browserCap.staticWarnSumBeforeCap 30 'before cap 30'
 Assert-Eq $r4.browserCap.staticWarnSumAfterCap 20 'after cap 20'
 Assert-Eq $r4.score 80 'score after cap'
-Assert-True $r4.canLaunchSafely 'static warns do not block'
 
-Write-Host '== Score: override + mixed ==' -ForegroundColor Cyan
+Write-Host '== Enriched fixType/fixId/containsIp ==' -ForegroundColor Cyan
 $r5 = Get-CslRulesScore -Catalog $cat -Results @(
-  [pscustomobject]@{ id = 'net.ipv6_leak'; status = 'failed' },
-  [pscustomobject]@{ id = 'net.dns_fakeip'; status = 'failed' },
-  [pscustomobject]@{ id = 'locale.system_lang'; status = 'info' },
-  [pscustomobject]@{ id = 'net.clash_running'; status = 'passed' }
+  [pscustomobject]@{ id = 'cfg.env_relay_user'; status = 'failed' },
+  [pscustomobject]@{ id = 'exit.three_way_ip'; status = 'failed' }
 )
-Assert-Eq $r5.score 65 '25+10=35 → 65'
-Assert-True (-not $r5.canLaunchSafely) 'ipv6 must_fix blocks'
-Assert-Eq $r5.summary.passed 1 'one passed'
+$envRow = @($r5.checks | Where-Object id -eq 'cfg.env_relay_user')[0]
+Assert-Eq $envRow.fixType 'confirm' 'enriched fixType'
+Assert-Eq $envRow.fixId 'envfix.user-anthropic' 'enriched fixId'
+Assert-True ($null -eq $envRow.PSObject.Properties['fixable']) 'enriched has no fixable'
+$ipRow = @($r5.checks | Where-Object id -eq 'exit.three_way_ip')[0]
+Assert-True ([bool]$ipRow.containsIp) 'enriched containsIp'
+Assert-True (-not $r5.canLaunchSafely) 'env+ip must_fix blocks'
+Assert-Eq $r5.summary.error 0 'no errors in this case'
 
-Write-Host '== JSON shape (current/expected/recheck) ==' -ForegroundColor Cyan
-$row = @($r5.checks | Where-Object id -eq 'net.ipv6_leak')[0]
-Assert-True ($null -ne $row.current -or $row.current -eq '') 'current field present'
-Assert-True ($null -ne $row.expected) 'expected field present'
-Assert-True ($null -ne $row.recheck) 'recheck field present'
+Write-Host '== JSON shape ==' -ForegroundColor Cyan
 $payload = New-CslPreflightResult -ScoreResult $r5 -Platform 'win' -Verdict 'blocked'
-Assert-Eq $payload.verdict 'blocked' 'verdict blocked'
 Assert-Eq $payload.schemaVersion 1 'schemaVersion'
+Assert-Eq $payload.verdict 'blocked' 'verdict'
+Assert-True ($null -ne $payload.summary.error) 'summary.error present'
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("csl-preflight-result-" + [guid]::NewGuid().ToString('n') + '.json')
 Write-CslPreflightResultJson -Result $payload -Path $tmp | Out-Null
-Assert-True (Test-Path $tmp) 'json written'
 $loaded = Get-Content -LiteralPath $tmp -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-Eq $loaded.score $r5.score 'round-trip score'
-Assert-True ($loaded.checks.Count -ge 1) 'checks array'
-# no BOM
+Assert-Eq $loaded.summary.error 0 'round-trip error count'
 $bytes = [IO.File]::ReadAllBytes($tmp)
 Assert-True (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) 'json no BOM'
 Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue

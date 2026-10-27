@@ -224,7 +224,7 @@ const CST={pass:'通过',warn:'警告',fail:'失败',fix:'已修复'};
 const $=id=>document.getElementById(id);
 let theme='__THEME__'; if(!T[theme]) theme='anime';
 let st, next=0, busy=false;
-function reset(){st={groups:[],cur:null,score:null,cnt:{pass:0,warn:0,fail:0,fix:0},events:[],phase:'idle',live:100};$('groups').innerHTML='';$('events').textContent='';setScore(null);count();const ca=$('bCopyAll');if(ca)ca.disabled=true}
+function reset(){st={groups:[],cur:null,score:null,cnt:{pass:0,warn:0,fail:0,fix:0},events:[],phase:'idle',live:100,fixIds:[]};$('groups').innerHTML='';$('events').textContent='';setScore(null);count();const ca=$('bCopyAll');if(ca)ca.disabled=true}
 function esc(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
 function idxLabel(n){return theme==='chinese'?(CN[n-1]||n):theme==='mech'?('0'+n).slice(-2):n}
 function count(){for(const k in st.cnt)$('c'+k).textContent=st.cnt[k]}
@@ -314,9 +314,9 @@ window.addEventListener('resize',()=>fitAll());
 function cardStatus(g){let w='info';g.rows.forEach(r=>{if(RANK[r.cls]>RANK[w])w=r.cls});const c=g.el.querySelector('.cst');c.className='cst '+w;const nW=g.rows.filter(r=>r.cls===w).length;c.textContent=(CST[w]||'信息')+((w==='fail'||w==='warn')&&nW>0?' '+nW:'');c.style.display=CST[w]?'':'none';g.el.classList.toggle('r-fail',w==='fail');g.el.classList.toggle('r-warn',w==='warn');
  if(isEnvGroup(g)){updateEnvActions(g,w)}}
 function updateEnvActions(g,w){const box=g.el.querySelector('.card-actions');if(!box)return;
- const hasUserFail=g.rows.some(r=>r.cls==='fail'&&/用户级/.test(r.text));
+ const hasEnvFix=(st.fixIds||[]).indexOf('envfix.user-anthropic')>=0;
  box.innerHTML='';
- if(hasUserFail){const b=document.createElement('button');b.className='btn primary btn-sm';b.textContent='修复';b.onclick=()=>envFixApply(g);box.appendChild(b)}
+ if(hasEnvFix){const b=document.createElement('button');b.className='btn primary btn-sm';b.textContent='修复';b.onclick=()=>envFixApply(g);box.appendChild(b)}
  const u=document.createElement('button');u.className='btn btn-sm';u.textContent='撤销上次修复';u.onclick=()=>envFixUndo(g);box.appendChild(u);
  box.hidden=false}
 async function envFixApply(g){try{
@@ -415,6 +415,7 @@ async function envFixUndo(g){try{
   run(false,false);
  }catch(e){alert('撤销请求失败: '+e)}}
 function handle(line){line=line.replace(/^\uFEFF/,'').replace(/\s+$/,'');if(!line)return;let m;
+ if(m=line.match(/^CSL_FIX_ID=([\w.-]+)\s*$/)){if(!st.fixIds)st.fixIds=[];if(st.fixIds.indexOf(m[1])<0)st.fixIds.push(m[1]);const eg=st.groups.find(isEnvGroup);if(eg)updateEnvActions(eg,'fail');return}
  if(m=line.match(/^== (?:(\d+)\.\s*)?(.+)$/)){const g={n:st.groups.length+1,name:m[2],rows:[]};st.groups.push(g);st.cur=g;addCard(g);g.el.scrollIntoView({block:'nearest'});return}
  if(m=line.match(/^\s+\[(通过|信息|修复|提示|警告|失败)\]\s*(.*)$/)){const r={lvl:m[1],cls:LV[m[1]],text:m[2]};
   if(!st.cur){const g={n:st.groups.length+1,name:'其他',rows:[]};st.groups.push(g);st.cur=g;addCard(g)}

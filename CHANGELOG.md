@@ -10,6 +10,7 @@
 - `claude-preflight.ps1`：接入规则评分；新增 `-Json`；写出 `preflight-result.json`（含每条 `current` / `expected` / `recheck`，供后续 issue 导出读取）。不改 Mask-Value / Protect-Secret。
 - `claude-panel.html`：去掉本地 25/8 重算，分数只取自预检「一致性评分」行。
 - 新增 `tests/rules.Tests.ps1`。
+- JSON 输出冻结候选 v1：`status` 含 `error`（扣 0；must_fix error → blocked）；`fixType`/`fixId` 取代 `fixable`；`containsIp`；`summary.error`。面板修复按钮跟 `CSL_FIX_ID`/`fixId`（如 `envfix.user-anthropic`），不再依赖「用户级」文案。
 - **不在本批**：不改 `mac/`；不改 issue 导出（归 v3.3.0 / `feat/issue-export`）；不改静默 Start-Process / tzutil 行为（标在规则 notes，后续 PR）。
 
 ## v3.3.0（一期 · Windows）

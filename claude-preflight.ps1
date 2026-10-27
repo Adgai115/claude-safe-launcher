@@ -342,6 +342,7 @@ if (-not $targets.ok) {
   } else {
     foreach ($u in $targets.user) {
       Say-Fail ("用户级 {0}={1}（会让 Claude Code 走第三方接口）" -f $u.Name, (Protect-Secret $u.Value))
+      Write-Host 'CSL_FIX_ID=envfix.user-anthropic' -ForegroundColor DarkGray
     }
     foreach ($m in $targets.machineOnly) {
       Say-Note ("{0} 仅 Machine 级存在：需要管理员手动处理" -f $m.Name)
@@ -644,6 +645,10 @@ foreach ($it in @($script:Items)) {
   if ($it.Level -eq 'FAIL') { $sev = 'must_fix'; $st = 'failed' }
   elseif ($it.Level -eq 'WARN') { $sev = 'should_fix'; $st = 'failed' }
   elseif ($it.Level -eq 'NOTE') { $sev = 'info'; $st = 'info' }
+  $fixTypeOv = $null; $fixIdOv = $null
+  if ([string]$it.Text -match '用户级' -and $st -eq 'failed') {
+    $fixTypeOv = 'confirm'; $fixIdOv = 'envfix.user-anthropic'
+  }
   [void]$script:CslScoreMapped.Add([pscustomobject]@{
     id                   = ('item.{0}' -f $ix)
     status               = $st
@@ -653,6 +658,8 @@ foreach ($it in @($script:Items)) {
     expected             = ''
     recheck              = 'powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause'
     masked               = $true
+    fixTypeOverride      = $fixTypeOv
+    fixIdOverride        = $fixIdOv
   })
 }
 
