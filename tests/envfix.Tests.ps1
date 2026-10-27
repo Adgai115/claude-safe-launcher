@@ -425,6 +425,19 @@ try {
   if ($fNew -and $fNew.id) { Remove-Item -LiteralPath (Join-Path $mixDir ("envfix-{0}.json" -f $fNew.id)) -Force -ErrorAction SilentlyContinue }
 }
 
+Write-Host '== Fix id: old-format id later than now ==' -ForegroundColor Cyan
+$futDir = Get-CslEnvBackupDir
+$futOld = ([datetime]::UtcNow.AddMinutes(10).ToString('yyyyMMddTHHmmss', [Globalization.CultureInfo]::InvariantCulture)) + '-0000'
+$futPath = Join-Path $futDir ("envfix-{0}.json" -f $futOld)
+[IO.File]::WriteAllText($futPath, '{"id":"' + $futOld + '","ts":"2000-01-01T00:00:00Z","testMode":true,"undone":true,"entries":[]}', [Text.UTF8Encoding]::new($false))
+try {
+  $idFut = New-CslEnvFixId
+  Assert-True ($idFut.CompareTo($futOld) -gt 0) 'future old-format id: new id sorts after it'
+  Assert-Eq ((Get-CslEnvFixIdTime $idFut) - (Get-CslEnvFixIdTime $futOld)).TotalMilliseconds 1 'future old-format id: new id = old id (second + 999ms) + 1ms'
+} finally {
+  Remove-Item -LiteralPath $futPath -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host '== TestMode undo rejects non CSL_TEST_ names ==' -ForegroundColor Cyan
 $store = New-MemStore
 $fakeId = '20990101T000000001-fade'
