@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Claude 安全启动</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:var(--font);color:var(--text);background:var(--bg);overflow:hidden;transition:color .4s}
+.deco{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden}
+.p{position:absolute;bottom:-40px;opacity:.75;animation:floatUp linear infinite}
+@keyframes floatUp{0%{transform:translateY(0) rotate(0)}100%{transform:translateY(-115vh) rotate(360deg)}}
+.app{position:relative;z-index:1;height:100vh;display:flex;flex-direction:column;padding:20px 24px 16px;gap:14px}
+header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-bottom:10px;border-bottom:var(--hline,0)}
+.brand{display:flex;align-items:center;gap:14px;min-width:0}
+.logo{width:54px;height:54px;flex:none;display:grid;place-items:center;font-size:28px;border-radius:var(--radius);background:var(--accent);color:var(--on-accent);box-shadow:var(--shadow);font-family:var(--title-font)}
+h1{font-family:var(--title-font);font-size:26px;letter-spacing:var(--title-ls,0);white-space:nowrap}
+.sub{color:var(--muted);font-size:13px;margin-top:3px}
+.themes{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:420px}
+.themes button{font-family:"Microsoft YaHei UI",sans-serif;font-size:12px;padding:6px 12px;border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--text);cursor:pointer;transition:all .2s}
+.themes button:hover{transform:translateY(-1px)}
+.themes button.on{background:var(--accent);color:var(--on-accent);border-color:transparent}
+.hero{display:flex;gap:26px;align-items:center;padding:16px 22px;background:var(--panel);border:var(--border);border-radius:var(--radius);box-shadow:var(--shadow);backdrop-filter:blur(8px)}
+.ring{position:relative;width:128px;height:128px;flex:none}
+.ring svg{width:100%;height:100%;transform:rotate(-90deg)}
+.ring.running svg{animation:spin 1.1s linear infinite}
+@keyframes spin{to{transform:rotate(270deg)}}
+.ring circle{fill:none;stroke-width:10}
+.track{stroke:var(--line)}
+.bar{stroke:var(--accent);stroke-linecap:round;stroke-dasharray:326.7;stroke-dashoffset:326.7;transition:stroke-dashoffset 1s ease,stroke .4s}
+.ring.running .bar{stroke-dashoffset:250}
+.score{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.score b{font-family:var(--title-font);font-size:40px;line-height:1}
+.score span{font-size:12px;color:var(--muted);margin-top:2px}
+.summary{flex:1;min-width:0}
+.state{font-family:var(--title-font);font-size:21px;margin-bottom:10px;letter-spacing:var(--title-ls,0)}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{font-size:13px;padding:5px 12px;border-radius:999px;background:var(--chip-bg,var(--panel));border:1px solid var(--line)}
+.chip b{margin-left:4px}
+.chip.pass b{color:var(--pass)}.chip.warn b{color:var(--warn)}.chip.fail b{color:var(--fail)}.chip.fix b{color:var(--fix)}
+.events{margin-top:10px;font-size:13px;color:var(--muted);min-height:18px}
+main{flex:1;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:14px;align-content:start;padding:2px 6px 6px 2px}
+main::-webkit-scrollbar{width:8px}main::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px}
+.card{background:var(--panel);border:var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:13px 16px;animation:pop .45s ease both}
+.card h3{font-family:var(--title-font);font-size:15px;display:flex;align-items:center;gap:9px;margin-bottom:7px;letter-spacing:var(--h3-ls,0)}
+.idx{min-width:26px;height:26px;padding:0 6px;display:grid;place-items:center;border-radius:var(--idx-radius,50%);background:var(--accent);color:var(--on-accent);font-size:13px}
+.cst{margin-left:auto;font-size:12px;font-family:var(--font);padding:2px 9px;border-radius:999px;color:#fff;background:var(--muted)}
+.cst.pass{background:var(--pass)}.cst.warn{background:var(--warn)}.cst.fail{background:var(--fail)}.cst.fix{background:var(--fix)}
+.row{display:flex;gap:10px;align-items:flex-start;font-size:13px;padding:5px 0;border-top:1px dashed var(--line);animation:fade .35s ease both}
+.row:nth-child(2){border-top:0}
+.tag{flex:none;font-size:11px;padding:2px 8px;border-radius:var(--tag-radius,6px);color:#fff;background:var(--muted);margin-top:1px}
+.row.pass .tag{background:var(--pass)}.row.warn .tag{background:var(--warn)}.row.fail .tag{background:var(--fail)}.row.fix .tag{background:var(--fix)}
+.row.fail .txt{color:var(--fail);font-weight:600}.row.info .txt,.row.note .txt{color:var(--muted)}
+.txt{word-break:break-all;line-height:1.55}
+footer{display:flex;gap:10px;justify-content:flex-end;align-items:center}
+footer .hint{margin-right:auto;font-size:12px;color:var(--muted)}
+.btn{font:inherit;font-size:14px;padding:10px 20px;border-radius:var(--radius);border:var(--border);background:var(--panel);color:var(--text);cursor:pointer;transition:transform .15s,box-shadow .15s}
+.btn:hover{transform:translateY(-2px)}
+.btn.primary{background:var(--accent);color:var(--on-accent);box-shadow:var(--shadow)}
+.btn:disabled{opacity:.45;cursor:default;transform:none}
+.noanim *{animation:none!important}
+@keyframes pop{from{opacity:0;transform:translateY(12px) scale(.98)}}
+@keyframes fade{from{opacity:0;transform:translateX(-6px)}}
+
+/* 动漫风 */
+body[data-theme=anime]{--bg:#eaf5ff;--panel:#ffffff;--text:#2d3a5a;--muted:#7b8db0;--accent:#3d8bff;--on-accent:#fff;--line:#d3e4f7;--chip-bg:#f5faff;--pass:#22b07d;--warn:#f59e0b;--fail:#e5484d;--fix:#7c5cff;--radius:22px;--font:"YouYuan","Microsoft YaHei UI",sans-serif;--title-font:"YouYuan","Microsoft YaHei UI",sans-serif;--border:2px solid #d3e4f7;--shadow:0 6px 0 #d3e4f7}
+body[data-theme=anime] h1{color:#3d8bff}
+body[data-theme=anime] .logo{background:#ffd43b;color:#2d3a5a}
+body[data-theme=anime] .btn.primary{background:#3d8bff}
+
+/* 机械风 */
+body[data-theme=mech]{--bg:linear-gradient(rgba(0,255,220,.05) 1px,transparent 1px) 0 0/28px 28px,linear-gradient(90deg,rgba(0,255,220,.05) 1px,transparent 1px) 0 0/28px 28px,#0c1117;--panel:rgba(18,26,36,.88);--text:#d6e4ee;--muted:#6f8597;--accent:#ff8a00;--on-accent:#111;--line:#2a3b4c;--chip-bg:#0f161e;--pass:#00d6a8;--warn:#ffb000;--fail:#ff3b4e;--fix:#3fa9ff;--radius:3px;--idx-radius:2px;--tag-radius:2px;--font:"Bahnschrift","Consolas","Microsoft YaHei UI",sans-serif;--title-font:"Bahnschrift","Microsoft YaHei UI",sans-serif;--title-ls:2px;--h3-ls:1px;--border:1px solid #30465a;--shadow:0 0 0 1px rgba(255,138,0,.12),0 0 22px rgba(0,214,168,.07);--hline:1px solid #30465a}
+body[data-theme=mech] .card,body[data-theme=mech] .hero{clip-path:polygon(14px 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%,0 14px);border-left:3px solid #ff8a00}
+body[data-theme=mech] .deco::after{content:"";position:absolute;inset:0;background:repeating-linear-gradient(0deg,rgba(255,255,255,.025) 0 1px,transparent 1px 3px);animation:scan 8s linear infinite}
+@keyframes scan{to{background-position:0 300px}}
+body[data-theme=mech] .tag,body[data-theme=mech] .cst{color:#0b0f14;font-weight:700}
+body[data-theme=mech] .score b{color:#ff8a00;text-shadow:0 0 12px rgba(255,138,0,.5)}
+
+/* 夏日风 */
+body[data-theme=summer]{--bg:#bfe8ff;--panel:rgba(255,255,255,.8);--text:#0b4a6f;--muted:#5a90ad;--accent:#ffb627;--on-accent:#5a3200;--line:#cfe9f6;--chip-bg:#fff;--pass:#18b98a;--warn:#ff9416;--fail:#e5484d;--fix:#118ab2;--radius:16px;--font:"Microsoft YaHei UI",sans-serif;--title-font:"Segoe UI Black","Microsoft YaHei UI",sans-serif;--border:1px solid rgba(255,255,255,.95);--shadow:0 10px 30px rgba(17,138,178,.18)}
+body[data-theme=summer] .deco::before{content:"";position:absolute;right:-50px;top:-50px;width:190px;height:190px;border-radius:50%;background:#ffd23f;animation:glow 4s ease-in-out infinite alternate}
+@keyframes glow{to{transform:scale(1.08)}}
+body[data-theme=summer] .deco::after{content:"";position:absolute;left:0;right:0;bottom:0;height:120px;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 120' preserveAspectRatio='none'%3E%3Cpath d='M0 60 Q150 20 300 60 T600 60 T900 60 T1200 60 V120 H0Z' fill='%2366c7f4' fill-opacity='.45'/%3E%3Cpath d='M0 80 Q150 45 300 80 T600 80 T900 80 T1200 80 V120 H0Z' fill='%23ffffff' fill-opacity='.55'/%3E%3C/svg%3E") 0 0/100% 100%}
+
+/* 彩绘风 */
+body[data-theme=painted]{--bg:#fbf7ef;--panel:rgba(255,255,255,.62);--text:#3b3a4a;--muted:#8a8597;--accent:#7b61ff;--on-accent:#fff;--line:#e2dccd;--chip-bg:rgba(255,255,255,.8);--pass:#3fb37f;--warn:#f0a03a;--fail:#e5484d;--fix:#4d9de0;--radius:255px 15px 225px 15px/15px 225px 15px 255px;--idx-radius:50% 40% 55% 45%;--tag-radius:10px 4px 12px 5px;--font:"KaiTi","Microsoft YaHei UI",sans-serif;--title-font:"STXingkai","KaiTi","Microsoft YaHei UI",sans-serif;--border:2px solid #3b3a4a;--shadow:4px 5px 0 rgba(59,58,74,.18)}
+body[data-theme=painted] .deco{background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1000 800' preserveAspectRatio='none'%3E%3Cpath d='M60 140 C120 60 260 80 280 170 C300 260 170 300 110 260 C50 220 20 190 60 140Z' fill='%23ffcf70' fill-opacity='.45'/%3E%3Cpath d='M760 60 C860 30 960 110 930 190 C900 270 780 250 740 190 C700 130 700 80 760 60Z' fill='%239bd0ff' fill-opacity='.45'/%3E%3Cpath d='M680 600 C760 540 900 580 900 660 C900 740 760 770 700 730 C640 690 620 650 680 600Z' fill='%23b5e6a3' fill-opacity='.45'/%3E%3Cpath d='M80 620 C140 570 260 590 270 670 C280 750 150 770 100 730 C50 690 40 660 80 620Z' fill='%23c7b8ff' fill-opacity='.45'/%3E%3C/svg%3E") 0 0/100% 100%}
+body[data-theme=painted] .card:nth-child(odd){transform:rotate(-.4deg)}body[data-theme=painted] .card:nth-child(even){transform:rotate(.4deg)}
+body[data-theme=painted] .btn.primary{background:#7b61ff}
+body[data-theme=painted] h1{font-size:30px}
+
+/* 中国风 */
+body[data-theme=chinese]{--bg:#f2ead6;--panel:rgba(252,248,238,.92);--text:#2b2118;--muted:#8c7b66;--accent:#b22222;--on-accent:#fff6e6;--line:#d8c7a4;--chip-bg:#fbf6ea;--pass:#2e7d5b;--warn:#c98a1b;--fail:#b22222;--fix:#2f5d8a;--radius:2px;--idx-radius:2px;--tag-radius:2px;--font:"KaiTi","STKaiti","Microsoft YaHei UI",serif;--title-font:"STXingkai","KaiTi","STKaiti",serif;--title-ls:4px;--h3-ls:2px;--border:1px solid #c8b48c;--shadow:0 0 0 4px rgba(252,248,238,.95),0 0 0 5px #c8b48c,0 6px 18px rgba(80,50,20,.12);--hline:1px solid #c8b48c}
+body[data-theme=chinese] .logo{font-size:30px;box-shadow:inset 0 0 0 3px #b22222,inset 0 0 0 5px #fff6e6;transform:rotate(-4deg)}
+body[data-theme=chinese] .deco::after{content:"安";position:absolute;right:4%;bottom:-6%;font-family:"STXingkai","KaiTi",serif;font-size:420px;color:rgba(43,33,24,.05)}
+body[data-theme=chinese] h1{font-size:30px}
+body[data-theme=chinese] .card,body[data-theme=chinese] .hero{margin:5px}
+body[data-theme=chinese] .chip,body[data-theme=chinese] .cst{border-radius:2px}
+
+/* 欧美风 */
+body[data-theme=western]{--bg:#f4efe4;--panel:#fffdf8;--text:#1d2a44;--muted:#6b7385;--accent:#1d2a44;--on-accent:#f3e2b8;--line:#e5ddcb;--chip-bg:#fffdf8;--pass:#2f7d4f;--warn:#b7791f;--fail:#b3261e;--fix:#2b5c9e;--radius:6px;--idx-radius:3px;--font:"Segoe UI","Microsoft YaHei UI",sans-serif;--title-font:Georgia,"Times New Roman","SimSun",serif;--h3-ls:.5px;--border:1px solid #e5ddcb;--shadow:0 1px 2px rgba(0,0,0,.04),0 10px 26px rgba(29,42,68,.08);--hline:2px solid #c9a227}
+body[data-theme=western] h1{font-size:30px;font-style:italic}
+body[data-theme=western] .logo{color:#c9a227}
+body[data-theme=western] .card h3{text-transform:uppercase;font-size:14px}
+body[data-theme=western] .score b{font-style:italic}
+/* 紧凑一屏布局 */
+.app{padding:14px 18px 12px;gap:10px}
+header{padding-bottom:6px}
+.logo{width:42px;height:42px;font-size:22px}
+h1,body[data-theme=painted] h1,body[data-theme=chinese] h1,body[data-theme=western] h1{font-size:23px}
+.sub{font-size:12px;margin-top:1px}
+.hero{padding:10px 18px;gap:20px}
+.ring{width:96px;height:96px}
+.ring.running svg{animation:none}
+.score b{font-size:30px}
+.state{font-size:18px;margin-bottom:6px}
+.chip{font-size:12px;padding:3px 10px}
+.events{margin-top:6px;font-size:12px;min-height:16px}
+main{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;overflow:hidden auto}
+.card{padding:9px 12px;min-width:0}
+.card h3{font-size:13px;margin-bottom:3px;gap:7px}
+.card h3 span:nth-child(2){white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.idx{min-width:22px;height:22px;font-size:11px;flex:none}
+.cst{font-size:11px;padding:1px 7px;flex:none}
+.row{font-size:12px;padding:3px 0;gap:7px}
+.tag{font-size:10px;padding:1px 6px}
+.txt{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.45}
+.row.fail .txt,.row.warn .txt,.row.fix .txt{white-space:normal}
+.card.r-fail{order:-2;border-color:var(--fail);box-shadow:0 0 0 2px var(--fail)}
+.card.r-warn{order:-1;border-color:var(--warn);box-shadow:0 0 0 2px var(--warn)}
+.btn{padding:8px 16px;font-size:13px}
+.score b{transition:color .3s}
+.score.drop b{animation:drop .5s ease}
+@keyframes drop{30%{transform:scale(1.25);color:var(--fail)}}
+/* 字体清晰度优化：正文统一用微软雅黑，装饰字体只用于大标题 */
+body{--font:"Microsoft YaHei UI","Microsoft YaHei","Segoe UI",sans-serif!important;text-rendering:optimizeLegibility}
+.card h3{font-family:"Microsoft YaHei UI","Microsoft YaHei",sans-serif;font-weight:700;font-size:13.5px}
+.row{font-size:13px}
+.tag{font-size:11px;font-weight:700}
+.chip{font-size:12.5px}
+.cst{font-weight:700}
+.row.warn .tag,.cst.warn{color:#2a1a00}
+.row.info .txt,.row.note .txt{opacity:1}
+.btn{font-family:"Microsoft YaHei UI","Microsoft YaHei",sans-serif;font-weight:600}
+.state{font-weight:700}
+body[data-theme=anime]{--muted:#5d6f92;--title-font:"YouYuan","Microsoft YaHei UI",sans-serif}
+body[data-theme=anime] h1,body[data-theme=anime] .state,body[data-theme=anime] .score b{font-weight:900}
+body[data-theme=mech]{--muted:#9db0c0;--text:#e8f1f7;--panel:rgba(18,26,36,.96);--title-font:"Bahnschrift","Microsoft YaHei UI",sans-serif}
+body[data-theme=mech] .card h3{font-family:"Bahnschrift","Microsoft YaHei UI",sans-serif}
+body[data-theme=summer]{--muted:#2f6684;--text:#073b5a;--panel:rgba(255,255,255,.94);--title-font:"Segoe UI","Microsoft YaHei UI",sans-serif}
+body[data-theme=summer] h1{font-weight:900}
+body[data-theme=painted]{--muted:#57526a;--text:#2b2a38;--panel:rgba(255,255,255,.9);--title-font:"KaiTi","STKaiti","Microsoft YaHei UI",serif}
+body[data-theme=painted] h1,body[data-theme=painted] .state{font-weight:700}
+body[data-theme=chinese]{--muted:#6a5842;--text:#21180f;--title-font:"KaiTi","STKaiti","Microsoft YaHei UI",serif}
+body[data-theme=chinese] h1,body[data-theme=chinese] .state,body[data-theme=chinese] .logo{font-weight:700}
+body[data-theme=chinese] .deco::after{font-family:"KaiTi",serif}
+body[data-theme=western]{--muted:#4c5567;--title-font:Georgia,"Microsoft YaHei UI",serif}
+</style></head>
+<body data-theme="anime">
+<div class="deco" id="deco"></div>
+<div class="app">
+  <header>
+    <div class="brand"><div class="logo" id="logo">✦</div><div><h1 id="title">Claude 安全启动</h1><p class="sub" id="sub"></p></div></div>
+    <div class="themes" id="themes"></div>
+  </header>
+  <section class="hero">
+    <div class="ring" id="ring"><svg viewBox="0 0 120 120"><circle class="track" cx="60" cy="60" r="52"/><circle class="bar" id="bar" cx="60" cy="60" r="52"/></svg><div class="score"><b id="score">--</b><span>/ 100</span></div></div>
+    <div class="summary">
+      <div class="state" id="state"></div>
+      <div class="chips">
+        <span class="chip pass">通过<b id="cpass">0</b></span><span class="chip warn">警告<b id="cwarn">0</b></span>
+        <span class="chip fail">失败<b id="cfail">0</b></span><span class="chip fix">自动修复<b id="cfix">0</b></span>
+      </div>
+      <div class="events" id="events"></div>
+    </div>
+  </section>
+  <main id="groups"></main>
+  <footer>
+    <span class="hint" id="hint"></span>
+    <button class="btn" id="bCheck">重新检查（不启动）</button>
+    <button class="btn primary" id="bLaunch">检查并启动 Claude</button>
+    <button class="btn" id="bLearn">记住当前环境</button>
+  </footer>
+</div>
+<script>
+const T={
+ anime:{name:'动漫',title:'Claude 出发准备中♪',sub:'今天也要平安上线哦～',logo:'⭐',p:['✨','⭐','☁️','🌙','💫'],s:{idle:'准备好了吗？',run:'正在努力检查中…',ok:'完美！可以出发啦 ✨',warn:'有点小问题，看看再走～',fail:'等一下！有必须修的问题 >_<'}},
+ mech:{name:'机械',title:'CLAUDE // PRE-FLIGHT',sub:'SYSTEM DIAGNOSTICS · 启动前系统自检',logo:'⚙',p:['⚙','◆','⚙'],s:{idle:'STANDBY',run:'SCANNING…',ok:'ALL SYSTEMS GO',warn:'WARNINGS DETECTED',fail:'LAUNCH ABORTED'}},
+ summer:{name:'夏日',title:'Claude 夏日出航',sub:'清爽出发 · 一路畅通',logo:'☀️',p:['🫧','🐚','🍉','🌴','🫧'],s:{idle:'整装待发',run:'正在检查航线…',ok:'风平浪静，随时出发 🌊',warn:'有点小风浪，留意一下',fail:'暂时不宜出航'}},
+ painted:{name:'彩绘',title:'Claude 启程画册',sub:'为每一次出发上色',logo:'🎨',p:['🖌️','🌈','🎨','💧'],s:{idle:'画布已备好',run:'正在调色…',ok:'色彩完美，可以出发',warn:'还差几笔',fail:'这幅画需要修改'}},
+ chinese:{name:'中国风',title:'Claude 安全启程',sub:'启程之前 · 一一勘验',logo:'安',p:['❀','☁','❀'],s:{idle:'静候勘验',run:'勘验中…',ok:'诸事皆宜 · 可以启程',warn:'尚有小疵 · 酌情处置',fail:'不宜出行 · 须先修正'}},
+ western:{name:'欧美',title:'Claude Pre-flight',sub:'Ready for takeoff · 启动前检查',logo:'✈',p:[],s:{idle:'Standing by',run:'Running checks…',ok:'Cleared for takeoff',warn:'Proceed with caution',fail:'Hold — action required'}}
+};
+const CN=['壹','贰','叁','肆','伍','陆','柒','捌','玖','拾','拾壹','拾贰','拾叁','拾肆'];
+const LV={'通过':'pass','警告':'warn','失败':'fail','修复':'fix','信息':'info','提示':'note'};
+const RANK={fail:4,warn:3,fix:2,pass:1,info:0,note:0};
+const CST={pass:'通过',warn:'警告',fail:'失败',fix:'已修复'};
+const $=id=>document.getElementById(id);
+let theme='__THEME__'; if(!T[theme]) theme='anime';
+let st, next=0, busy=false;
+function reset(){st={groups:[],cur:null,score:null,cnt:{pass:0,warn:0,fail:0,fix:0},events:[],phase:'idle',live:100};$('groups').innerHTML='';$('events').textContent='';setScore(null);count();}
+function esc(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+function idxLabel(n){return theme==='chinese'?(CN[n-1]||n):theme==='mech'?('0'+n).slice(-2):n}
+function count(){for(const k in st.cnt)$('c'+k).textContent=st.cnt[k]}
+function setState(){$('state').textContent=T[theme].s[st.phase]; $('ring').classList.toggle('running',st.phase==='run')}
+function setScore(s){const bar=$('bar');if(s==null){$('score').textContent='--';bar.style.strokeDashoffset=326.7;return}
+ $('score').textContent=s;bar.style.strokeDashoffset=326.7*(1-s/100);bar.style.stroke=s>=90?'var(--pass)':s>=70?'var(--warn)':'var(--fail)'}
+function addCard(g){const el=document.createElement('div');el.className='card';
+ el.innerHTML=`<h3><span class="idx">${idxLabel(g.n)}</span><span>${esc(g.name)}</span><span class="cst"></span></h3>`;g.el=el;$('groups').appendChild(el);g.rows.forEach(r=>addRow(g,r));cardStatus(g)}
+function addRow(g,r){const d=document.createElement('div');d.className='row '+r.cls;d.innerHTML=`<span class="tag">${r.lvl}</span><span class="txt">${esc(r.text)}</span>`;d.title=r.text;g.el.appendChild(d)}
+function cardStatus(g){let w='info';g.rows.forEach(r=>{if(RANK[r.cls]>RANK[w])w=r.cls});const c=g.el.querySelector('.cst');c.className='cst '+w;c.textContent=CST[w]||'信息';c.style.display=CST[w]?'':'none';g.el.classList.toggle('r-fail',w==='fail');g.el.classList.toggle('r-warn',w==='warn')}
+function handle(line){line=line.replace(/^\uFEFF/,'').replace(/\s+$/,'');if(!line)return;let m;
+ if(m=line.match(/^== (?:(\d+)\.\s*)?(.+)$/)){const g={n:st.groups.length+1,name:m[2],rows:[]};st.groups.push(g);st.cur=g;addCard(g);g.el.scrollIntoView({block:'nearest'});return}
+ if(m=line.match(/^\s+\[(通过|信息|修复|提示|警告|失败)\]\s*(.*)$/)){const r={lvl:m[1],cls:LV[m[1]],text:m[2]};
+  if(!st.cur){const g={n:st.groups.length+1,name:'其他',rows:[]};st.groups.push(g);st.cur=g;addCard(g)}
+  st.cur.rows.push(r);addRow(st.cur,r);cardStatus(st.cur);if(r.cls==='fail'||r.cls==='warn'){st.live=Math.max(0,st.live-(r.cls==='fail'?25:8));setScore(st.live);const sc=document.querySelector('.score');sc.classList.remove('drop');void sc.offsetWidth;sc.classList.add('drop')}if(st.cnt[r.cls]!=null){st.cnt[r.cls]++;count()}return}
+ if(m=line.match(/一致性评分:\s*(\d+)/)){st.score=+m[1];return}
+ if(/正在启动 Claude|切换到前台|已启动后台监控|未启动 Claude|NoLaunch/.test(line)){st.events.push(line.trim());$('events').textContent=st.events.join('　·　')}
+}
+function finish(){busy=false;setBusy(false);st.phase=st.cnt.fail?'fail':st.cnt.warn?'warn':'ok';setState();
+ setScore(st.score!=null?st.score:Math.max(0,100-st.cnt.fail*25-st.cnt.warn*8));
+ $('hint').textContent='检查完成 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});}
+function setBusy(b){$('bCheck').disabled=b;$('bLaunch').disabled=b;$('bLearn').disabled=b}
+async function run(launch,relearn){if(busy)return;
+ if(launch){try{const r=await(await fetch('/api/claude')).json();if(r.running&&!confirm('Claude 已经在运行。继续只会检查并把它切到前台，不会重启它。继续吗？'))return}catch(e){}}
+ busy=true;setBusy(true);reset();st.phase='run';setState();setScore(100);$('hint').textContent=launch?'检查通过后会启动 Claude':'只检查，不会启动或打扰 Claude';
+ await fetch('/api/run?launch='+(launch?1:0)+'&relearn='+(relearn?1:0),{method:'POST'});next=0;poll()}
+async function poll(){try{const r=await(await fetch('/api/poll?from='+next)).json();if(typeof r.next==='number'){(r.lines||[]).forEach(handle);next=r.next;if(r.done){finish();return}}}catch(e){}setTimeout(poll,350)}
+function particles(){const d=$('deco');d.querySelectorAll('.p').forEach(e=>e.remove());const ps=T[theme].p;if(!ps.length)return;
+ for(let i=0;i<14;i++){const s=document.createElement('span');s.className='p';s.textContent=ps[i%ps.length];
+  s.style.left=Math.random()*100+'%';s.style.fontSize=(14+Math.random()*18)+'px';s.style.animationDuration=(14+Math.random()*16)+'s';s.style.animationDelay=(-Math.random()*25)+'s';
+  if(theme==='chinese'){s.style.color=i%2?'rgba(178,34,34,.35)':'rgba(43,33,24,.18)'}if(theme==='mech'){s.style.color='rgba(0,214,168,.18)'}d.appendChild(s)}}
+function applyTheme(t,save){theme=t;document.body.dataset.theme=t;const th=T[t];$('title').textContent=th.title;$('sub').textContent=th.sub;$('logo').textContent=th.logo;document.title=th.title;
+ [...$('themes').children].forEach(b=>b.classList.toggle('on',b.dataset.t===t));particles();setState();
+ const m=$('groups');m.classList.add('noanim');m.innerHTML='';st.groups.forEach(addCard);setTimeout(()=>m.classList.remove('noanim'),50);
+ if(save)fetch('/api/theme?t='+t,{method:'POST'}).catch(()=>{})}
+for(const k in T){const b=document.createElement('button');b.textContent=T[k].name;b.dataset.t=k;b.onclick=()=>applyTheme(k,true);$('themes').appendChild(b)}
+$('bCheck').onclick=()=>run(false);$('bLaunch').onclick=()=>run(true);$('bLearn').onclick=()=>{if(confirm('把当前的出口 IP、Clash 节点和时区记为正确环境？以后发生变化会提醒并自动切回。'))run(false,true)};$('bLog').onclick=()=>fetch('/api/log',{method:'POST'});
+setInterval(()=>fetch('/api/ping').catch(()=>{}),5000);
+reset();applyTheme(theme,false);run(false);
+</script></body></html>
