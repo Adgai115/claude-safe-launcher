@@ -880,6 +880,9 @@ Assert-True ($panelText -match '\.card\.env \.row \.txt\{white-space:normal;over
 Assert-True ($panelText -match '\.row\.fail \.txt,\.row\.warn \.txt,\.row\.fix \.txt\{white-space:normal;overflow-wrap:anywhere\}') 'fail/warn/fix rows break long tokens'
 Assert-True ($panelText -match 'function fitAll\(\)' -and $panelText -match "class=""row more""|className='row more'" -and $panelText -match "more\.title=") 'overflowing card rows fold into a hover row (no silent clipping)'
 Assert-True ($panelText -match '#groups>\.card\{max-height:none\}' -and $panelText -match 'function finish\(\)\{busy=false;setBusy\(false\);fitAll\(\);') 'cards not clipped by max-height; fold recomputed on finish'
+Assert-True ($panelText -match "const nFail=hidden\.filter\(o=>o\.r\.classList\.contains\('fail'\)\)\.length;more\.classList\.toggle\('has-fail',nFail>0\)" -and $panelText -match "'（含 '\+nFail\+' 条失败）'") 'fold row counts folded failures and gets fail style'
+Assert-True ($panelText -match '\.row\.more\.has-fail \.tag\{background:var\(--fail\)\}' -and $panelText -match '\.row\.more\.has-fail \.txt\{color:var\(--fail\);font-weight:600\}') 'fold row with failures uses the fail colour (no gradient)'
+Assert-True ($panelText -match "const nW=g\.rows\.filter\(r=>r\.cls===w\)\.length" ) 'card title count is computed from all rows (folded included)'
 $fnAst = $pfAst.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Write-CslEnvFixPlan' }, $true)
 Assert-True ($null -ne $fnAst) 'preflight defines Write-CslEnvFixPlan'
 if ($fnAst) {

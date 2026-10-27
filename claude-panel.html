@@ -152,6 +152,8 @@ body{--font:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Hiragino Sans 
 .row.more .tag{background:var(--muted)}
 .row.more .txt{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:help}
 .row[hidden]{display:none!important}
+.row.more.has-fail .tag{background:var(--fail)}
+.row.more.has-fail .txt{color:var(--fail);font-weight:600}
 #groups>.card{max-height:none}
 .btn{font-family:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Hiragino Sans GB",sans-serif;font-weight:600}
 .state{font-weight:700}
@@ -295,7 +297,8 @@ function mainOver(){const m=$('groups');return !!m&&m.scrollHeight>m.clientHeigh
 function setMore(el,hidden){let more=el.querySelector(':scope > .row.more');
  if(!hidden.length){if(more)more.remove();return}
  if(!more){more=document.createElement('div');more.className='row more';more.innerHTML='<span class="tag">更多</span><span class="txt"></span>';el.appendChild(more)}
- more.querySelector('.txt').textContent='还有 '+hidden.length+' 条未显示，鼠标悬停看全文';
+ const nFail=hidden.filter(o=>o.r.classList.contains('fail')).length;more.classList.toggle('has-fail',nFail>0);
+ more.querySelector('.txt').textContent='还有 '+hidden.length+' 条未显示'+(nFail>0?'（含 '+nFail+' 条失败）':'')+'，鼠标悬停看全文';
  more.title=[...hidden].sort((x,y)=>x.i-y.i).map(o=>'['+o.r.querySelector('.tag').textContent+'] '+o.r.title).join('\n')}
 function fitAll(){const gs=(st&&st.groups)||[];
  gs.forEach(g=>{if(!g.el)return;g.el.querySelectorAll(':scope > .row').forEach(r=>r.hidden=false);setMore(g.el,[]);g._hidden=[]});
@@ -308,7 +311,7 @@ function fitAll(){const gs=(st&&st.groups)||[];
   vis.sort((x,y)=>x.k-y.k||y.i-x.i);tgt._hidden.push(vis[0]);vis[0].r.hidden=true;setMore(tgt.el,tgt._hidden)}}
 function fitCard(g){fitAll()}
 window.addEventListener('resize',()=>fitAll());
-function cardStatus(g){let w='info';g.rows.forEach(r=>{if(RANK[r.cls]>RANK[w])w=r.cls});const c=g.el.querySelector('.cst');c.className='cst '+w;c.textContent=CST[w]||'信息';c.style.display=CST[w]?'':'none';g.el.classList.toggle('r-fail',w==='fail');g.el.classList.toggle('r-warn',w==='warn');
+function cardStatus(g){let w='info';g.rows.forEach(r=>{if(RANK[r.cls]>RANK[w])w=r.cls});const c=g.el.querySelector('.cst');c.className='cst '+w;const nW=g.rows.filter(r=>r.cls===w).length;c.textContent=(CST[w]||'信息')+((w==='fail'||w==='warn')&&nW>0?' '+nW:'');c.style.display=CST[w]?'':'none';g.el.classList.toggle('r-fail',w==='fail');g.el.classList.toggle('r-warn',w==='warn');
  if(isEnvGroup(g)){updateEnvActions(g,w)}}
 function updateEnvActions(g,w){const box=g.el.querySelector('.card-actions');if(!box)return;
  const hasUserFail=g.rows.some(r=>r.cls==='fail'&&/用户级/.test(r.text));
