@@ -487,8 +487,11 @@ function Invoke-CslEnvUndo {
     [switch]$ForceSkipConflicts,
     [int]$FailAtIndex = 0,
     [switch]$TestMode,
+    [switch]$DryRun,
     $Store,
-    [scriptblock]$OnConflict
+    [scriptblock]$OnConflict,
+    [hashtable]$ConflictDecisions,
+    [ValidateSet('skip','overwrite','abort')][string]$DefaultConflictDecision = 'skip'
   )
   if (-not $Store) { $Store = Get-CslDefaultEnvStore }
 
@@ -606,27 +609,51 @@ function Invoke-CslEnvUndo {
       elseif ([string]$curEntry.Value -ne [string]$expectAfter) { $conflict = $true }
     }
 
+    $curShow = if ($curAbsent) { '(不存在)' } else { Protect-Secret $curEntry.Value }
+    $expShow = if ($expectAbsent) { '(删除)' } else { Protect-Secret ([string]$expectAfter) }
+    $conflictMsg = "冲突: $name 当前值与修复后不一致（当前=$curShow，期望修复后=$expShow）"
+
     if ($conflict) {
-      $curShow = if ($curAbsent) { '(不存在)' } else { Protect-Secret $curEntry.Value }
-      $expShow = if ($expectAbsent) { '(删除)' } else { Protect-Secret ([string]$expectAfter) }
-      $msg = "冲突: $name 当前值与修复后不一致（当前=$curShow，期望修复后=$expShow）"
-      $decision = 'skip'
-      if ($OnConflict) {
-        $decision = & $OnConflict $name $curShow $expShow
-      } elseif ($NoPause -or $ForceSkipConflicts) {
+      $decision = $DefaultConflictDecision
+      if (-not $decision) { $decision = 'skip' }
+      $explicitDefault = $PSBoundParameters.ContainsKey('DefaultConflictDecision')
+      if ($ConflictDecisions -and $ConflictDecisions.ContainsKey($name)) {
+        $decision = [string]$ConflictDecisions[$name]
+      } elseif ($OnConflict) {
+        $decision = [string](& $OnConflict $name $curShow $expShow)
+      } elseif ($ForceSkipConflicts) {
         $decision = 'skip'
-      } else {
+      } elseif ($NoPause) {
+        # CLI -NoPause：若未显式传 DefaultConflictDecision 则跳过
+        if (-not $explicitDefault) { $decision = 'skip' }
+      } elseif (-not $DryRun -and -not $explicitDefault) {
+        # 仅交互且未指定默认策略时询问
         try {
-          $ans = Read-Host "  $msg  跳过该变量？(Y 跳过 / N 中止撤销)"
+          $ans = Read-Host "  $conflictMsg  跳过该变量？(Y 跳过 / N 中止撤销)"
           if ($ans -match '^[nN]') { $decision = 'abort' } else { $decision = 'skip' }
         } catch { $decision = 'skip' }
       }
+      $decision = ([string]$decision).ToLowerInvariant()
       if ($decision -eq 'abort') {
-        return @{ ok = $false; error = '用户中止撤销'; conflicts = @($conflicts + $msg); exitCode = 1; partial = $restored }
+        return @{
+          ok = $false; error = '用户中止撤销'
+          conflicts = @($conflicts + @{ name = $name; currentMasked = $curShow; expectedMasked = $expShow; message = $conflictMsg })
+          exitCode = 1; partial = $restored; dryRun = [bool]$DryRun
+        }
       }
-      $conflicts += $msg
-      $skipped += $name
-      continue
+      $conflicts += @{
+        name = $name
+        currentMasked = $curShow
+        expectedMasked = $expShow
+        message = $conflictMsg
+        decision = $decision
+      }
+      if ($decision -eq 'overwrite') {
+        # 覆盖：无视当前≠期望，仍恢复 earliest
+      } else {
+        $skipped += $name
+        continue
+      }
     }
 
     $pending += [pscustomobject]@{
@@ -634,6 +661,29 @@ function Invoke-CslEnvUndo {
       wantExisted = $wantExisted
       wantVal = $wantVal
       wantKind = $wantKind
+      conflict = [bool]$conflict
+    }
+  }
+
+  if ($DryRun) {
+    return @{
+      ok = $true
+      dryRun = $true
+      id = $bak.id
+      conflicts = @($conflicts)
+      pending = @(
+        $pending | ForEach-Object {
+          [pscustomobject]@{
+            name = $_.name
+            valueMasked = $(if ($_.wantExisted) { Protect-Secret $_.wantVal } else { '(删除)' })
+            kind = $_.wantKind
+            conflict = [bool]$_.conflict
+          }
+        }
+      )
+      skipped = @($skipped)
+      exitCode = 0
+      hint = '新开的终端才会生效'
     }
   }
 
@@ -697,9 +747,9 @@ function Invoke-CslEnvUndo {
   }
 
   $code = 0
-  if ($conflicts.Count -gt 0) { $code = 3 }
+  if ($skipped.Count -gt 0) { $code = 3 }
   return @{
-    ok = ($conflicts.Count -eq 0)
+    ok = ($skipped.Count -eq 0)
     id = $bak.id
     restored = $restored
     skipped = $skipped

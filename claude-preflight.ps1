@@ -65,7 +65,10 @@ if ($script:DoUndoFix) {
   if ($undo.restored) {
     foreach ($r in $undo.restored) { Write-Host ("  [修复] 已恢复 {0} = {1}" -f $r.name, $r.valueMasked) -ForegroundColor Yellow }
   }
-  foreach ($c in @($undo.conflicts)) { Write-Host ("  [警告] {0}" -f $c) -ForegroundColor Yellow }
+  foreach ($c in @($undo.conflicts)) {
+    $msg = if ($c -is [string]) { $c } elseif ($c.PSObject.Properties['message']) { [string]$c.message } else { [string]$c }
+    Write-Host ("  [警告] {0}" -f $msg) -ForegroundColor Yellow
+  }
   if (-not $undo.ok -and $undo.error) { Write-Host ("  [失败] {0}" -f $undo.error) -ForegroundColor Red }
   if ($undo.hint) { Write-Host ("  [信息] {0}" -f $undo.hint) -ForegroundColor Gray }
   if (-not $NoPause) { try { Read-Host '按回车退出' | Out-Null } catch {} }

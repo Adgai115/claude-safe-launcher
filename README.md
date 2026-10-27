@@ -181,6 +181,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\claude-preflight.ps1 -NoPa
 | `monitorKillOnChange` | IP 变化时是否自动关闭 Claude，默认 `false` |
 | `fixVarPatterns` | （Windows）用户级中转变量名通配符数组；空则用内置 `ANTHROPIC_*` 默认列表。非 TestMode 下禁止含 `CSL_TEST_` |
 
+
+## 面板 API 长期安全规则
+
+本地面板（`claude-panel.ps1`，端口 **47831**）的 `/api/*` 遵循下列硬规则（CSRF / DNS rebinding 缓解）：
+
+1. **只绑定 loopback**：HttpListener 前缀仅为 `http://127.0.0.1:47831/` 与 `http://localhost:47831/`，从不使用 `0.0.0.0` / `+` / `*`。
+2. **Host 白名单**：每个 `/api` 请求的 `Host` 必须精确为 `localhost:47831` 或 `127.0.0.1:47831`，否则 **403**。
+3. **Origin（所有 POST）**：`Origin` 必须存在且为 `http://localhost:47831` 或 `http://127.0.0.1:47831`；缺省或跨站一律 **403**。
+4. **Content-Type**：POST 必须为 `application/json`（可带 charset），以触发 CORS 预检；**从不**对 OPTIONS 返回宽松 CORS，也**从不**发送 `Access-Control-Allow-Origin`。
+5. **会话令牌**：每次启动用 `RNGCryptoServiceProvider` 生成 ≥32 字节随机令牌，注入面板 HTML；所有 `/api` 请求（含 GET）必须带 `X-CSL-Token`，常量时间比较；令牌绝不写入日志。页面 HTML 本身不要求令牌。
+6. **patterns**：非 TestMode（面板未以 `-TestMode` 启动）时忽略请求体中的 `patterns` / `testMode`，只用配置/默认列表。
+7. **撤销**：`undo-plan`（dry-run）→ 冲突脱敏列表 → 用户选「全部跳过 / 全部覆盖」（可选手动逐项）→ `undo-apply`；取消则不改系统。不再无 `-ForceSkipConflicts`。
+
 ## 目录结构
 
 ```text

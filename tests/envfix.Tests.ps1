@@ -202,6 +202,82 @@ Assert-True (-not $uc.ok) 'corrupt undo fails'
 Assert-True ($uc.error -match '损坏|解析') 'corrupt error message'
 Assert-True ($null -eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_API_KEY')) 'corrupt undo changed nothing'
 
+
+Write-Host '== Panel API security helpers ==' -ForegroundColor Cyan
+$token = New-CslSessionToken
+Assert-True ($token.Length -ge 64) 'token length >= 64 hex chars'
+Assert-True (Test-CslSecureEqual $token $token) 'secure equal same'
+Assert-True (-not (Test-CslSecureEqual $token ($token.Substring(0, $token.Length-1) + '0'))) 'secure equal different'
+Assert-True (Test-CslPanelHostAllowed -HostHeader 'localhost:47831') 'host localhost ok'
+Assert-True (Test-CslPanelHostAllowed -HostHeader '127.0.0.1:47831') 'host 127 ok'
+Assert-True (-not (Test-CslPanelHostAllowed -HostHeader 'evil.example:47831')) 'host evil rejected'
+Assert-True (-not (Test-CslPanelHostAllowed -HostHeader 'localhost:80')) 'host wrong port rejected'
+Assert-True (Test-CslPanelOriginAllowed -Origin 'http://localhost:47831') 'origin localhost ok'
+Assert-True (-not (Test-CslPanelOriginAllowed -Origin 'https://evil.example')) 'origin evil rejected'
+Assert-True (-not (Test-CslPanelOriginAllowed -Origin $null)) 'origin missing rejected'
+Assert-True (Test-CslPanelContentTypeJson 'application/json') 'ctype json'
+Assert-True (Test-CslPanelContentTypeJson 'application/json; charset=utf-8') 'ctype json charset'
+Assert-True (-not (Test-CslPanelContentTypeJson 'text/plain')) 'ctype text/plain rejected'
+$g1 = Test-CslPanelApiRequest -Method POST -HostHeader 'localhost:47831' -Origin 'https://evil.example' -ContentType 'text/plain' -TokenHeader $token -ExpectedToken $token -IsApiPath
+Assert-True (-not $g1.ok -and $g1.status -eq 403) 'SEC-01 evil origin+plain rejected'
+$g2 = Test-CslPanelApiRequest -Method POST -HostHeader 'localhost:47831' -Origin $null -ContentType 'application/json' -TokenHeader $token -ExpectedToken $token -IsApiPath
+Assert-True (-not $g2.ok) 'POST missing Origin rejected'
+$g3 = Test-CslPanelApiRequest -Method GET -HostHeader 'localhost:47831' -Origin $null -ContentType $null -TokenHeader $token -ExpectedToken $token -IsApiPath
+Assert-True $g3.ok 'GET api with token ok (Origin optional)'
+$g4 = Test-CslPanelApiRequest -Method GET -HostHeader 'localhost:47831' -Origin $null -ContentType $null -TokenHeader 'wrong' -ExpectedToken $token -IsApiPath
+Assert-True (-not $g4.ok) 'GET api missing/wrong token rejected'
+$g5 = Test-CslPanelApiRequest -Method OPTIONS -HostHeader 'localhost:47831' -Origin 'http://localhost:47831' -ContentType 'application/json' -TokenHeader $token -ExpectedToken $token -IsApiPath
+Assert-True (-not $g5.ok) 'OPTIONS rejected'
+$g6 = Test-CslPanelApiRequest -Method POST -HostHeader 'localhost:47831' -Origin 'http://127.0.0.1:47831' -ContentType 'application/json' -TokenHeader $token -ExpectedToken $token -IsApiPath
+Assert-True $g6.ok 'POST good headers ok'
+
+Write-Host '== Undo DryRun + conflict overwrite/skip ==' -ForegroundColor Cyan
+$store = New-MemStore
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_API_KEY' -Value 'orig-key'
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_BASE_URL' -Value 'https://orig.example'
+$f = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_*') -TestMode -Store $store
+# tamper one var to create conflict
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_API_KEY' -Value 'tampered-key'
+$plan = Invoke-CslEnvUndo -Id $f.id -DryRun -Store $store -DefaultConflictDecision skip
+Assert-True $plan.ok 'undo dryrun ok'
+Assert-True $plan.dryRun 'undo dryrun flag'
+Assert-True ($plan.conflicts.Count -ge 1) 'undo dryrun lists conflicts'
+Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_API_KEY').Value 'tampered-key' 'dryrun no change'
+# cancel semantics: never call apply
+Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_API_KEY').Value 'tampered-key' 'cancel leaves system'
+# skip (default)
+$uskip = Invoke-CslEnvUndo -Id $f.id -Store $store -DefaultConflictDecision skip
+Assert-True ($uskip.exitCode -eq 3 -or -not $uskip.ok) 'skip conflict exitCode 3'
+Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_API_KEY').Value 'tampered-key' 'skip leaves tampered'
+# BASE_URL had no conflict and should be restored (absent after fix, earliest was https://orig...)
+# After first fix both deleted; tamper only API_KEY. Undo with skip: API_KEY skipped, BASE_URL restored.
+$bu = & $store.GetUserEntry 'CSL_TEST_ANTHROPIC_BASE_URL'
+Assert-True ($null -ne $bu -and $bu.Value -eq 'https://orig.example') 'skip still restores non-conflict'
+
+# fresh for overwrite
+$store = New-MemStore
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_API_KEY' -Value 'orig2'
+$f2 = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_API_KEY') -TestMode -Store $store
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_API_KEY' -Value 'tampered2'
+$uov = Invoke-CslEnvUndo -Id $f2.id -Store $store -DefaultConflictDecision overwrite
+Assert-True $uov.ok 'overwrite conflict ok'
+Assert-Eq $uov.exitCode 0 'overwrite exitCode 0'
+Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_API_KEY').Value 'orig2' 'overwrite restored earliest'
+
+# per-item decisions
+$store = New-MemStore
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_API_KEY' -Value 'a0'
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_BASE_URL' -Value 'b0'
+$f3 = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_*') -TestMode -Store $store
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_API_KEY' -Value 'aX'
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_BASE_URL' -Value 'bX'
+$dec = @{ 'CSL_TEST_ANTHROPIC_API_KEY' = 'overwrite'; 'CSL_TEST_ANTHROPIC_BASE_URL' = 'skip' }
+$u3 = Invoke-CslEnvUndo -Id $f3.id -Store $store -DefaultConflictDecision skip -ConflictDecisions $dec
+Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_API_KEY').Value 'a0' 'per-item overwrite'
+Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_BASE_URL').Value 'bX' 'per-item skip'
+Assert-True ($u3.skipped -contains 'CSL_TEST_ANTHROPIC_BASE_URL') 'per-item skip listed'
+
+
 Remove-Item -LiteralPath $script:Root -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($script:Fail -gt 0) {

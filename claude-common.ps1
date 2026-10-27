@@ -260,3 +260,114 @@ function Ctl-SelectNode($cfg, [string]$group, [string]$node) {
   $body = '{"name":' + (ConvertTo-Json $node) + '}'
   return (Invoke-Ctl $cfg 'PUT' ('/proxies/' + [uri]::EscapeDataString($group)) $body).ok
 }
+
+# ----- Panel API security (CSRF / DNS rebinding) -----
+# Long-term rules: loopback-only bind; Host allowlist; Origin required on POST;
+# application/json POSTs; per-launch X-CSL-Token on every /api request; never log the token.
+
+function New-CslSessionToken {
+  $bytes = New-Object byte[] 32
+  $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+  try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+  # hex: 64 chars, URL/header safe
+  return ([BitConverter]::ToString($bytes) -replace '-','').ToLowerInvariant()
+}
+
+function Test-CslSecureEqual {
+  param([AllowNull()][string]$A, [AllowNull()][string]$B)
+  if ($null -eq $A) { $A = '' }
+  if ($null -eq $B) { $B = '' }
+  $ba = [Text.Encoding]::UTF8.GetBytes($A)
+  $bb = [Text.Encoding]::UTF8.GetBytes($B)
+  $diff = $ba.Length -bxor $bb.Length
+  $n = [Math]::Min($ba.Length, $bb.Length)
+  for ($i = 0; $i -lt $n; $i++) { $diff = $diff -bor ($ba[$i] -bxor $bb[$i]) }
+  # pad remaining length into timing without short-circuit on content
+  if ($ba.Length -ne $bb.Length) {
+    $longer = if ($ba.Length -gt $bb.Length) { $ba } else { $bb }
+    for ($i = $n; $i -lt $longer.Length; $i++) { $diff = $diff -bor $longer[$i] -bor 1 }
+  }
+  return ($diff -eq 0)
+}
+
+function Test-CslPanelHostAllowed {
+  param([string]$HostHeader, [int]$Port = 47831)
+  if (-not $HostHeader) { return $false }
+  $h = $HostHeader.Trim()
+  $allowed = @(
+    ("localhost:{0}" -f $Port),
+    ("127.0.0.1:{0}" -f $Port)
+  )
+  foreach ($a in $allowed) {
+    if ([string]::Equals($h, $a, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  }
+  return $false
+}
+
+function Test-CslPanelOriginAllowed {
+  param([AllowNull()][string]$Origin, [int]$Port = 47831)
+  if (-not $Origin) { return $false }
+  $o = $Origin.Trim().TrimEnd('/')
+  $allowed = @(
+    ("http://localhost:{0}" -f $Port),
+    ("http://127.0.0.1:{0}" -f $Port)
+  )
+  foreach ($a in $allowed) {
+    if ([string]::Equals($o, $a, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  }
+  return $false
+}
+
+function Test-CslPanelContentTypeJson {
+  param([AllowNull()][string]$ContentType)
+  if (-not $ContentType) { return $false }
+  $ct = $ContentType.Trim()
+  if ($ct -match '^\s*application/json(\s*;.*)?$') { return $true }
+  return $false
+}
+
+<#
+.SYNOPSIS
+  Validate a panel /api request. Returns @{ ok; status; error }.
+  - Page GET "/" is not validated here (caller skips).
+  - All /api requests need Host allowlist + X-CSL-Token (constant-time).
+  - POST additionally: Origin required+allowlisted; Content-Type application/json.
+  - Never emits Access-Control-* ; OPTIONS should be rejected by caller.
+#>
+function Test-CslPanelApiRequest {
+  param(
+    [string]$Method,
+    [string]$HostHeader,
+    [AllowNull()][string]$Origin,
+    [AllowNull()][string]$ContentType,
+    [AllowNull()][string]$TokenHeader,
+    [string]$ExpectedToken,
+    [int]$Port = 47831,
+    [switch]$IsApiPath
+  )
+  if (-not $IsApiPath) {
+    return @{ ok = $true; status = 200; error = $null }
+  }
+  if (-not (Test-CslPanelHostAllowed -HostHeader $HostHeader -Port $Port)) {
+    return @{ ok = $false; status = 403; error = 'forbidden host' }
+  }
+  if (-not (Test-CslSecureEqual -A $TokenHeader -B $ExpectedToken)) {
+    return @{ ok = $false; status = 403; error = 'forbidden token' }
+  }
+  $m = [string]$Method
+  if ($m -eq 'OPTIONS') {
+    return @{ ok = $false; status = 403; error = 'forbidden method' }
+  }
+  if ($m -eq 'POST') {
+    if (-not $Origin) {
+      return @{ ok = $false; status = 403; error = 'forbidden origin' }
+    }
+    if (-not (Test-CslPanelOriginAllowed -Origin $Origin -Port $Port)) {
+      return @{ ok = $false; status = 403; error = 'forbidden origin' }
+    }
+    if (-not (Test-CslPanelContentTypeJson -ContentType $ContentType)) {
+      return @{ ok = $false; status = 403; error = 'forbidden content-type' }
+    }
+  }
+  return @{ ok = $true; status = 200; error = $null }
+}

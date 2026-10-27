@@ -195,6 +195,11 @@ const T={
 const CN=['壹','贰','叁','肆','伍','陆','柒','捌','玖','拾','拾壹','拾贰','拾叁','拾肆'];
 const LV={'通过':'pass','警告':'warn','失败':'fail','修复':'fix','信息':'info','提示':'note'};
 const RANK={fail:4,warn:3,fix:2,pass:1,info:0,note:0};
+const CSL_TOKEN='__CSL_TOKEN__';
+const CSL_TESTMODE=('__CSL_TESTMODE__'==='1');
+function apiHeaders(isPost){const h={'X-CSL-Token':CSL_TOKEN};if(isPost)h['Content-Type']='application/json';return h}
+async function api(method,url,body){const opt={method,headers:apiHeaders(method==='POST')};if(body!==undefined)opt.body=JSON.stringify(body);const r=await fetch(url,opt);let j=null;try{j=await r.json()}catch(e){j={ok:false,error:'bad response '+r.status}}if(r.status===403){j=j||{};j.ok=false;j.error=j.error||'forbidden';}return j}
+
 const CST={pass:'通过',warn:'警告',fail:'失败',fix:'已修复'};
 const $=id=>document.getElementById(id);
 let theme='__THEME__'; if(!T[theme]) theme='anime';
@@ -219,7 +224,7 @@ function updateEnvActions(g,w){const box=g.el.querySelector('.card-actions');if(
  const u=document.createElement('button');u.className='btn btn-sm';u.textContent='撤销上次修复';u.onclick=()=>envFixUndo(g);box.appendChild(u);
  box.hidden=false}
 async function envFixApply(g){try{
-  const planRes=await(await fetch('/api/envfix?action=plan')).json();
+  const planRes=await api('POST','/api/envfix',{action:'plan'});
   if(!planRes.ok){alert(planRes.error||'无法预览修复');return}
   const rows=(planRes.plan||[]).filter(p=>p.action==='remove');
   const skips=(planRes.plan||[]).filter(p=>p.action==='skip-admin');
@@ -229,24 +234,51 @@ async function envFixApply(g){try{
   skips.forEach(p=>{msg+='  · '+p.name+' 仅 Machine 级：需要管理员手动处理\n'});
   msg+='\n新开的终端才会生效。\n确认修复？';
   if(!confirm(msg))return;
-  const r=await(await fetch('/api/envfix',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'apply'})})).json();
+  const r=await api('POST','/api/envfix',{action:'apply'});
   if(!r.ok){alert(r.error||'修复失败');return}
   alert('已修复'+(r.id?('（备份 '+r.id+'）'):'')+'。'+(r.hint||'新开的终端才会生效')+'\n将自动重新检查。');
   run(false,false);
  }catch(e){alert('修复请求失败: '+e)}}
+function undoConflictDialog(conflicts){
+  return new Promise(resolve=>{
+    const wrap=document.createElement('div');
+    wrap.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px';
+    const box=document.createElement('div');
+    box.style.cssText='background:var(--panel,#fff);color:var(--text,#222);border:1px solid var(--line,#ccc);border-radius:8px;max-width:520px;width:100%;max-height:80vh;overflow:auto;padding:16px;font-family:Microsoft YaHei UI,sans-serif';
+    let html='<div style="font-weight:700;margin-bottom:8px">撤销冲突</div><div style="font-size:13px;margin-bottom:10px;color:var(--muted,#666)">当前值与修复后期望不一致（已脱敏）。默认跳过冲突项；也可全部覆盖。</div><div style="font-size:12px;margin-bottom:12px;max-height:40vh;overflow:auto">';
+    conflicts.forEach(c=>{html+='<div style="padding:4px 0;border-top:1px dashed var(--line,#ddd)">· <b>'+esc(c.name||'')+'</b><br>当前='+esc(c.currentMasked||'')+'　期望='+esc(c.expectedMasked||'')+'</div>'});
+    html+='</div><div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">';
+    html+='<button type="button" data-a="cancel" class="btn">取消</button>';
+    html+='<button type="button" data-a="skip" class="btn primary">全部跳过</button>';
+    html+='<button type="button" data-a="overwrite" class="btn">全部覆盖</button></div>';
+    box.innerHTML=html;wrap.appendChild(box);document.body.appendChild(wrap);
+    box.querySelectorAll('button').forEach(b=>b.onclick=()=>{const a=b.getAttribute('data-a');wrap.remove();resolve(a)});
+  });
+}
 async function envFixUndo(g){try{
-  const list=await(await fetch('/api/envfix?action=list')).json();
+  const list=await api('POST','/api/envfix',{action:'list'});
   const items=(list.items||[]).filter(i=>!i.undone);
   if(!items.length){alert('没有可撤销的修复');return}
   const latest=items[0];
-  let msg='撤销修复 '+latest.id+'（'+latest.ts+'）？\n';
-  (latest.vars||[]).forEach(v=>{msg+='  · '+v.name+': '+v.beforeMasked+' ← '+v.after+'\n'});
-  msg+='\n新开的终端才会生效。';
-  if(!confirm(msg))return;
-  const r=await(await fetch('/api/envfix',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'undo',id:latest.id})})).json();
-  if(r.conflicts&&r.conflicts.length){alert('部分冲突已跳过：\n'+r.conflicts.join('\n'))}
-  else if(!r.ok){alert(r.error||'撤销失败');return}
-  else {alert('已撤销。'+(r.hint||'新开的终端才会生效'))}
+  const plan=await api('POST','/api/envfix',{action:'undo-plan',id:latest.id});
+  if(!plan.ok){alert(plan.error||'无法预览撤销');return}
+  let defaultConflictDecision='skip';
+  const confs=plan.conflicts||[];
+  if(confs.length){
+    const choice=await undoConflictDialog(confs);
+    if(choice==='cancel')return; // 取消=不改系统
+    defaultConflictDecision=(choice==='overwrite')?'overwrite':'skip';
+  } else {
+    let msg='撤销修复 '+latest.id+(latest.ts?('（'+latest.ts+'）'):'')+'？\n';
+    (plan.pending||[]).forEach(v=>{msg+='  · '+v.name+': → '+v.valueMasked+'\n'});
+    msg+='\n新开的终端才会生效。';
+    if(!confirm(msg))return;
+  }
+  const r=await api('POST','/api/envfix',{action:'undo-apply',id:latest.id,defaultConflictDecision,decisions:{}});
+  if(!r.ok && !(r.skipped&&r.skipped.length)){alert(r.error||'撤销失败');return}
+  let done='已撤销。';
+  if(r.skipped&&r.skipped.length) done='已撤销（跳过冲突 '+r.skipped.length+' 项，exitCode='+(r.exitCode||3)+'）。';
+  alert(done+(r.hint||'新开的终端才会生效'));
   run(false,false);
  }catch(e){alert('撤销请求失败: '+e)}}
 function handle(line){line=line.replace(/^\uFEFF/,'').replace(/\s+$/,'');if(!line)return;let m;
@@ -263,14 +295,14 @@ function finish(){busy=false;setBusy(false);st.phase=st.cnt.fail?'fail':st.cnt.w
 function setBusy(b){$('bCheck').disabled=b;$('bLaunch').disabled=b;$('bLearn').disabled=b}
 function parseIce(cand){const c=cand&&cand.candidate;if(!c)return null;const p=c.split(' ');if(p.length<8)return null;const ip=p[4];const ti=p.indexOf('typ');if(ti<0)return null;return{ip,typ:p[ti+1]}}
 function gatherWebRTC(timeoutMs){return new Promise(resolve=>{const out={srflx:[],host:[],ipv6:[]};let done=false;const fin=()=>{if(done)return;done=true;try{pc.close()}catch(e){}out.srflx=[...new Set(out.srflx)];out.host=[...new Set(out.host)];out.ipv6=[...new Set(out.ipv6)];resolve(out)};const to=setTimeout(fin,timeoutMs||4000);let pc;try{pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun.cloudflare.com:3478'}]});pc.createDataChannel('csl');pc.onicecandidate=e=>{if(!e.candidate){clearTimeout(to);fin();return}const x=parseIce(e.candidate);if(!x||!x.ip)return;const v6=x.ip.includes(':')&&!x.ip.includes('.');if(x.typ==='srflx'||x.typ==='relay'){if(v6)out.ipv6.push(x.ip);else out.srflx.push(x.ip)}else if(x.typ==='host')out.host.push(x.ip)};pc.createOffer().then(o=>pc.setLocalDescription(o)).catch(()=>{clearTimeout(to);fin()})}catch(e){clearTimeout(to);fin()}})}
-async function collectBrowser(){const out={ts:new Date().toISOString(),webrtc:{srflx:[],host:[],ipv6:[]},timezone:'',tzOffsetMin:new Date().getTimezoneOffset(),language:navigator.language||'',languages:[...(navigator.languages||[])],webdriver:!!navigator.webdriver};try{out.timezone=Intl.DateTimeFormat().resolvedOptions().timeZone||''}catch(e){}try{out.webrtc=await gatherWebRTC(4000)}catch(e){}try{await fetch('/api/browser',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(out)})}catch(e){}return out}
+async function collectBrowser(){const out={ts:new Date().toISOString(),webrtc:{srflx:[],host:[],ipv6:[]},timezone:'',tzOffsetMin:new Date().getTimezoneOffset(),language:navigator.language||'',languages:[...(navigator.languages||[])],webdriver:!!navigator.webdriver};try{out.timezone=Intl.DateTimeFormat().resolvedOptions().timeZone||''}catch(e){}try{out.webrtc=await gatherWebRTC(4000)}catch(e){}try{await api('POST','/api/browser',out)}catch(e){}return out}
 async function run(launch,relearn){if(busy)return;
- if(launch){try{const r=await(await fetch('/api/claude')).json();if(r.running&&!confirm('Claude 已经在运行。继续只会检查并把它切到前台，不会重启它。继续吗？'))return}catch(e){}}
+ if(launch){try{const r=await api('GET','/api/claude');if(r.running&&!confirm('Claude 已经在运行。继续只会检查并把它切到前台，不会重启它。继续吗？'))return}catch(e){}}
  busy=true;setBusy(true);reset();st.phase='run';setState();setScore(100);$('hint').textContent='正在采集浏览器环境（WebRTC）…';
  await collectBrowser();
  $('hint').textContent=launch?'检查通过后会启动 Claude':'只检查，不会启动或打扰 Claude';
- await fetch('/api/run?launch='+(launch?1:0)+'&relearn='+(relearn?1:0),{method:'POST'});next=0;poll()}
-async function poll(){try{const r=await(await fetch('/api/poll?from='+next)).json();if(typeof r.next==='number'){(r.lines||[]).forEach(handle);next=r.next;if(r.done){finish();return}}}catch(e){}setTimeout(poll,350)}
+ await api('POST','/api/run?launch='+(launch?1:0)+'&relearn='+(relearn?1:0),{});next=0;poll()}
+async function poll(){try{const r=await api('GET','/api/poll?from='+next);if(typeof r.next==='number'){(r.lines||[]).forEach(handle);next=r.next;if(r.done){finish();return}}}catch(e){}setTimeout(poll,350)}
 function particles(){const d=$('deco');d.querySelectorAll('.p').forEach(e=>e.remove());const ps=T[theme].p;if(!ps.length)return;
  for(let i=0;i<14;i++){const s=document.createElement('span');s.className='p';s.textContent=ps[i%ps.length];
   s.style.left=Math.random()*100+'%';s.style.fontSize=(14+Math.random()*18)+'px';s.style.animationDuration=(14+Math.random()*16)+'s';s.style.animationDelay=(-Math.random()*25)+'s';
@@ -278,9 +310,9 @@ function particles(){const d=$('deco');d.querySelectorAll('.p').forEach(e=>e.rem
 function applyTheme(t,save){theme=t;document.body.dataset.theme=t;const th=T[t];$('title').textContent=th.title;$('sub').textContent=th.sub;$('logo').textContent=th.logo;document.title=th.title;
  [...$('themes').children].forEach(b=>b.classList.toggle('on',b.dataset.t===t));particles();setState();
  const m=$('groups');m.classList.add('noanim');m.innerHTML='';st.groups.forEach(addCard);setTimeout(()=>m.classList.remove('noanim'),50);
- if(save)fetch('/api/theme?t='+t,{method:'POST'}).catch(()=>{})}
+ if(save)api('POST','/api/theme?t='+t,{}).catch(()=>{})}
 for(const k in T){const b=document.createElement('button');b.textContent=T[k].name;b.dataset.t=k;b.onclick=()=>applyTheme(k,true);$('themes').appendChild(b)}
-$('bCheck').onclick=()=>run(false);$('bLaunch').onclick=()=>run(true);$('bLearn').onclick=()=>{if(confirm('把当前的出口 IP、Clash 节点和时区记为正确环境？以后发生变化会提醒并自动切回。'))run(false,true)};{const bl=$('bLog');if(bl)bl.onclick=()=>fetch('/api/log',{method:'POST'});}
-setInterval(()=>fetch('/api/ping').catch(()=>{}),5000);
+$('bCheck').onclick=()=>run(false);$('bLaunch').onclick=()=>run(true);$('bLearn').onclick=()=>{if(confirm('把当前的出口 IP、Clash 节点和时区记为正确环境？以后发生变化会提醒并自动切回。'))run(false,true)};{const bl=$('bLog');if(bl)bl.onclick=()=>api('POST','/api/log',{});}
+setInterval(()=>api('GET','/api/ping').catch(()=>{}),5000);
 reset();applyTheme(theme,false);run(false);
 </script></body></html>
