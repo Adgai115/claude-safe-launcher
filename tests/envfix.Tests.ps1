@@ -326,6 +326,122 @@ Assert-True ($pOff -notcontains 'CSL_TEST_ANTHROPIC_*' -or ($pOff | Where-Object
 Assert-True (($pOff | Where-Object { $_ -like 'CSL_TEST_*' }).Count -eq 0) 'normal excludes CSL_TEST patterns from defaults'
 
 
+Write-Host '== Backup write failure aborts before delete ==' -ForegroundColor Cyan
+$badRoot = Join-Path ([IO.Path]::GetTempPath()) ("csl-envfix-nowrap-" + [guid]::NewGuid().ToString('n'))
+New-Item -ItemType Directory -Path $badRoot -Force | Out-Null
+$bakDir = Join-Path $badRoot 'backups'
+New-Item -ItemType Directory -Path $bakDir -Force | Out-Null
+$prevRoot = $script:Root
+$script:Root = $badRoot
+try {
+  if ($IsLinux -or $IsMacOS -or (-not $IsWindows)) {
+    & chmod a-w -- $bakDir
+  } else {
+    # Windows: replace backups dir with a file so WriteAllText fails
+    Remove-Item -LiteralPath $bakDir -Force -Recurse -ErrorAction SilentlyContinue
+    Set-Content -LiteralPath $bakDir -Value 'not-a-dir' -Encoding ascii
+  }
+  $store = New-MemStore
+  & $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_API_KEY' -Value 'must-keep-xxxx'
+  $rbw = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_API_KEY') -TestMode -Store $store
+  Assert-True (-not $rbw.ok) 'unwritable backup fails'
+  Assert-True ($rbw.error -match '备份写入失败') 'unwritable error message'
+  Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_API_KEY').Value 'must-keep-xxxx' 'unwritable left var unchanged'
+  Assert-True ($null -eq $rbw.id) 'unwritable no id'
+} finally {
+  if ($IsLinux -or $IsMacOS -or (-not $IsWindows)) {
+    & chmod u+w -- $bakDir 2>$null
+  }
+  $script:Root = $prevRoot
+  Remove-Item -LiteralPath $badRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host '== Same-second fix ids: UndoFix undoes latest ==' -ForegroundColor Cyan
+$store = New-MemStore
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_A' -Value 'va-orig'
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_B' -Value 'vb-orig'
+# Force same-second collision by pre-seeding an id at current ms if possible; two rapid fixes on disjoint vars
+$fA = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_A') -TestMode -Store $store
+$fB = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_B') -TestMode -Store $store
+Assert-True $fA.ok 'same-sec fix A ok'
+Assert-True $fB.ok 'same-sec fix B ok'
+Assert-True ($fA.id -ne $fB.id) 'same-sec distinct ids'
+Assert-True ($fB.id.CompareTo($fA.id) -gt 0) 'same-sec B id sorts after A'
+# -UndoFix with no Id = latest
+$uLatest = Invoke-CslEnvUndo -NoPause -Store $store
+Assert-True $uLatest.ok 'same-sec undo latest ok'
+Assert-Eq $uLatest.id $fB.id 'same-sec undid B (latest)'
+Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_B').Value 'vb-orig' 'same-sec B restored'
+Assert-True ($null -eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_A')) 'same-sec A still deleted'
+
+Write-Host '== TestMode undo rejects non CSL_TEST_ names ==' -ForegroundColor Cyan
+$store = New-MemStore
+$fakeId = '20990101T000000001-fade'
+$fakeBak = [pscustomobject]@{
+  id = $fakeId
+  ts = '2099-01-01T00:00:00Z'
+  testMode = $false
+  undone = $false
+  entries = @(
+    [pscustomobject]@{
+      name = 'ANTHROPIC_FAKE_KEY'
+      existed = $true
+      before = 'fake-secret-xxxx'
+      kind = 'String'
+      after = $null
+      earliestExisted = $true
+      earliestBefore = 'fake-secret-xxxx'
+      earliestKind = 'String'
+    }
+  )
+}
+$fakePath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $fakeId)
+[IO.File]::WriteAllText($fakePath, ($fakeBak | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_KEEP' -Value 'stay'
+$uPlan = Invoke-CslEnvUndo -Id $fakeId -TestMode -DryRun -Store $store
+Assert-True (-not $uPlan.ok) 'TestMode undo-plan rejects ANTHROPIC_FAKE'
+Assert-True ($uPlan.error -match 'TestMode|CSL_TEST_') 'TestMode undo-plan error mentions guard'
+$uApply = Invoke-CslEnvUndo -Id $fakeId -TestMode -Store $store -DefaultConflictDecision overwrite
+Assert-True (-not $uApply.ok) 'TestMode undo-apply rejects ANTHROPIC_FAKE'
+Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_KEEP').Value 'stay' 'TestMode undo changed nothing'
+$chkFake = Get-CslEnvBackupById -Id $fakeId
+Assert-True ($null -ne $chkFake -and -not [bool]$chkFake.undone) 'TestMode undo did not mark backup undone'
+# cleanup fake
+Remove-Item -LiteralPath $fakePath -Force -ErrorAction SilentlyContinue
+
+Write-Host '== Conflict-skip backup retained past prune ==' -ForegroundColor Cyan
+$store = New-MemStore
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_KEEPVAL' -Value 'precious-orig-xxxx'
+$fSkip = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_KEEPVAL') -TestMode -Store $store
+Assert-True $fSkip.ok 'skip-retain fix ok'
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_KEEPVAL' -Value 'tampered-now'
+$uSkip = Invoke-CslEnvUndo -Id $fSkip.id -Store $store -DefaultConflictDecision skip
+Assert-True ($uSkip.exitCode -eq 3 -or -not $uSkip.ok) 'skip-retain undo conflict'
+$skipPath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $fSkip.id)
+Assert-True (Test-Path -LiteralPath $skipPath) 'skip-retain backup exists after undo'
+$skipJson = Get-Content -LiteralPath $skipPath -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True ([bool]$skipJson.undone) 'skip-retain marked undone'
+Assert-True (@($skipJson.skipped).Count -ge 1) 'skip-retain recorded skipped names'
+Assert-True (@($skipJson.skipped) -contains 'CSL_TEST_ANTHROPIC_KEEPVAL') 'skip-retain skipped name listed'
+$beforeVal = @($skipJson.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPVAL')[0].before
+Assert-Eq $beforeVal 'precious-orig-xxxx' 'skip-retain original value kept in file'
+# exceed keep with many more fixes (disjoint vars so chain stays separate)
+$prevKeep = $script:CslEnvBackupKeep
+$script:CslEnvBackupKeep = 10
+try {
+  for ($i = 0; $i -lt 25; $i++) {
+    $n = "CSL_TEST_ANTHROPIC_PRUNE_$i"
+    & $store.SetUserEntry -Name $n -Value ("v$i")
+    $fi = Invoke-CslEnvFix -Patterns @($n) -TestMode -Store $store
+    Assert-True $fi.ok ("prune-flood fix $i ok")
+  }
+} finally {
+  $script:CslEnvBackupKeep = $prevKeep
+}
+Assert-True (Test-Path -LiteralPath $skipPath) 'skip-retain backup survived prune'
+$skipJson2 = Get-Content -LiteralPath $skipPath -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-Eq @($skipJson2.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPVAL')[0].before 'precious-orig-xxxx' 'skip-retain value intact after prune'
+
 Remove-Item -LiteralPath $script:Root -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($script:Fail -gt 0) {

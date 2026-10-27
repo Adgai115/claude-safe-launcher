@@ -200,7 +200,7 @@ while (-not $quit) {
             'undo-plan' {
               $id = $null
               if ($bodyObj -and $bodyObj.id) { $id = [string]$bodyObj.id }
-              $undo = Invoke-CslEnvUndo -Id $id -DryRun -DefaultConflictDecision skip
+              $undo = Invoke-CslEnvUndo -Id $id -DryRun -DefaultConflictDecision skip -TestMode:$testMode
               Send $ctx (ConvertTo-Json @{
                 ok = [bool]$undo.ok; error = $undo.error; id = $undo.id; dryRun = $true
                 conflicts = @($undo.conflicts); pending = @($undo.pending); skipped = @($undo.skipped)
@@ -228,7 +228,7 @@ while (-not $quit) {
                   foreach ($p in $dobj.PSObject.Properties) { $dec[$p.Name] = [string]$p.Value }
                 }
               }
-              $planChk = Invoke-CslEnvUndo -Id $id -DryRun -DefaultConflictDecision skip
+              $planChk = Invoke-CslEnvUndo -Id $id -DryRun -DefaultConflictDecision skip -TestMode:$testMode
               if (-not $planChk.ok) {
                 $ctx.Response.StatusCode = 400
                 Send $ctx (ConvertTo-Json @{ ok = $false; error = $planChk.error } -Compress)
@@ -241,7 +241,7 @@ while (-not $quit) {
                 Send $ctx (ConvertTo-Json @{ ok = $false; error = $vdec.error } -Compress)
                 break
               }
-              $undo = Invoke-CslEnvUndo -Id $id -DefaultConflictDecision $def -ConflictDecisions $dec
+              $undo = Invoke-CslEnvUndo -Id $id -DefaultConflictDecision $def -ConflictDecisions $dec -TestMode:$testMode
               Send $ctx (ConvertTo-Json @{
                 ok = [bool]$undo.ok; error = $undo.error; id = $undo.id
                 restored = @($undo.restored); skipped = @($undo.skipped); conflicts = @($undo.conflicts)
