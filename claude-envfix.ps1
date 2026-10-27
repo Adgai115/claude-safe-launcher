@@ -98,6 +98,20 @@ function Get-CslDefaultEnvStore {
       } catch {}
       return $names
     }
+    # v3.3.0: read-only list of machine-level names, used only so wildcard patterns can report
+    # machine-only matches ("需要管理员手动处理"); machine values are never written
+    ListMachineNames = {
+      $names = New-Object System.Collections.Generic.List[string]
+      try {
+        $k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $false)
+        if ($k) {
+          try {
+            foreach ($n in $k.GetValueNames()) { if ($n) { [void]$names.Add([string]$n) } }
+          } finally { $k.Close() }
+        }
+      } catch {}
+      return $names
+    }
   }
 }
 
@@ -173,14 +187,28 @@ function Find-CslRelayEnvTargets {
   $machineOnly = @()
   $seen = @{}
   $names = @(& $Store.ListUserNames)
+  $userListed = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  foreach ($un in @($names)) { if ($null -ne $un) { [void]$userListed.Add([string]$un) } }
   foreach ($p in $Patterns) {
     if ($p -notmatch '[\*\?]' ) { $names += $p }
   }
-  $names = @($names | Select-Object -Unique)
+  # v3.3.0: wildcard patterns also see machine-level names (hint only; ListMachineNames is optional)
+  $machineListed = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  if ($Store.PSObject.Properties['ListMachineNames'] -and $Store.ListMachineNames) {
+    $mnames = @()
+    try { $mnames = @(& $Store.ListMachineNames) } catch { $mnames = @() }
+    foreach ($mn in $mnames) {
+      if ($null -eq $mn -or [string]::IsNullOrEmpty([string]$mn)) { continue }
+      [void]$machineListed.Add([string]$mn)
+      $names += [string]$mn
+    }
+  }
+  $names = @($names | Where-Object { $null -ne $_ -and [string]$_ -ne '' } | Select-Object -Unique)
   foreach ($n in $names) {
     if (-not (Test-CslNameMatchesPatterns -Name $n -Patterns $Patterns)) { continue }
     if (-not (Test-CslVarNameAllowed -Name $n -TestMode:$TestMode)) {
-      if ($TestMode) {
+      $onlyFromMachine = $machineListed.Contains($n) -and -not $userListed.Contains($n) -and ($Patterns -notcontains $n)
+      if ($TestMode -and -not $onlyFromMachine) {
         return @{ ok = $false; error = "TestMode 拒绝非 CSL_TEST_ 变量: $n"; user = @(); machineOnly = @() }
       }
       continue

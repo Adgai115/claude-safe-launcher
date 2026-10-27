@@ -57,12 +57,14 @@ function New-MemStore {
     }
   }.GetNewClosure()
   $listU = { @($state.u.Keys) }.GetNewClosure()
+  $listM = { @($state.m.Keys) }.GetNewClosure()
   return [pscustomobject]@{
     State = $state
     GetUserEntry = $getU
     GetMachine = $getM
     SetUserEntry = $setU
     ListUserNames = $listU
+    ListMachineNames = $listM
   }
 }
 
@@ -527,6 +529,39 @@ try {
 Assert-True (Test-Path -LiteralPath $skipPath) 'skip-retain backup survived prune'
 $skipJson2 = Get-Content -LiteralPath $skipPath -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-Eq @($skipJson2.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPVAL')[0].before 'precious-orig-xxxx' 'skip-retain value intact after prune'
+Clear-TestBackups
+
+Write-Host '== Wildcard patterns enumerate machine-level names (hint only) ==' -ForegroundColor Cyan
+$mw = New-MemStore
+$mw.State.m['CSL_TEST_ANTHROPIC_MW_ONLY'] = 'machine-only-val'
+$mw.State.m['CSL_TEST_ANTHROPIC_MW_BOTH'] = 'machine-both-val'
+$mw.State.m['CSL_TEST_OTHER_MW'] = 'other'
+& $mw.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_MW_BOTH' -Value 'user-both'
+& $mw.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_MW_USER' -Value 'user-only'
+$mwT = Find-CslRelayEnvTargets -Patterns @('CSL_TEST_ANTHROPIC_MW_*') -TestMode -Store $mw
+Assert-True $mwT.ok 'machine wildcard find ok'
+Assert-Eq (@($mwT.machineOnly | ForEach-Object { $_.Name }) -join ',') 'CSL_TEST_ANTHROPIC_MW_ONLY' 'machine-only match listed via wildcard'
+Assert-Eq (@($mwT.user | ForEach-Object { $_.Name } | Sort-Object) -join ',') 'CSL_TEST_ANTHROPIC_MW_BOTH,CSL_TEST_ANTHROPIC_MW_USER' 'user-level matches unchanged (BOTH stays user)'
+$mwPlan = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_MW_*') -TestMode -DryRun -Store $mw
+$mwRow = @($mwPlan.plan | Where-Object { $_.name -eq 'CSL_TEST_ANTHROPIC_MW_ONLY' })
+Assert-True ($mwRow.Count -eq 1 -and $mwRow[0].action -eq 'skip-admin' -and $mwRow[0].note -eq '需要管理员手动处理') 'plan shows machine-only as skip-admin with admin note'
+$mwFix = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_MW_*') -TestMode -Store $mw
+Assert-True ($mwFix.ok -and $mw.State.m['CSL_TEST_ANTHROPIC_MW_ONLY'] -eq 'machine-only-val' -and $mw.State.m['CSL_TEST_ANTHROPIC_MW_BOTH'] -eq 'machine-both-val' -and $mw.State.m.Count -eq 3) 'fix never touches machine-level values'
+Assert-True ($null -eq (& $mw.GetUserEntry 'CSL_TEST_ANTHROPIC_MW_BOTH') -and $null -eq (& $mw.GetUserEntry 'CSL_TEST_ANTHROPIC_MW_USER')) 'fix still removes user-level matches'
+# TestMode: a non CSL_TEST_ machine-only name matched by a wildcard is ignored, not an error
+$mw2 = New-MemStore
+$mw2.State.m['REAL_MW_X'] = 'real'
+& $mw2.SetUserEntry -Name 'CSL_TEST_MW_X' -Value 'tv'
+$mwT2 = Find-CslRelayEnvTargets -Patterns @('*_MW_X') -TestMode -Store $mw2
+Assert-True ($mwT2.ok -and @($mwT2.machineOnly).Count -eq 0 -and (@($mwT2.user | ForEach-Object { $_.Name }) -join ',') -eq 'CSL_TEST_MW_X') 'TestMode ignores real machine-only names'
+# stores without ListMachineNames keep the v3.2.0 behaviour
+$mw3 = New-MemStore
+$mw3.State.m['CSL_TEST_ANTHROPIC_MW_ONLY'] = 'x'
+$mw3Old = [pscustomobject]@{ GetUserEntry = $mw3.GetUserEntry; GetMachine = $mw3.GetMachine; SetUserEntry = $mw3.SetUserEntry; ListUserNames = $mw3.ListUserNames }
+$mwT3 = Find-CslRelayEnvTargets -Patterns @('CSL_TEST_ANTHROPIC_MW_*') -TestMode -Store $mw3Old
+Assert-True ($mwT3.ok -and @($mwT3.machineOnly).Count -eq 0) 'store without ListMachineNames still works'
+$dStore = Get-CslDefaultEnvStore
+Assert-True ($null -ne $dStore.PSObject.Properties['ListMachineNames']) 'default store exposes ListMachineNames'
 Clear-TestBackups
 
 Write-Host '== Per-entry undo: conflict-skipped entry can be undone later ==' -ForegroundColor Cyan
