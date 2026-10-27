@@ -587,6 +587,38 @@ Assert-Eq (& $rec.GetUserEntry 'CSL_TEST_ANTHROPIC_REC_A').Value 'rec-a' 'record
 Assert-True ((-not $uRecMissing.ok) -and (-not $uRecNull.ok)) 'recording undo of entries-less backups refused'
 Remove-Item -LiteralPath $recMissing, $recNull -Force -ErrorAction SilentlyContinue
 
+Write-Host '== foreach over @($x.prop) skips $null explicitly ==' -ForegroundColor Cyan
+$guardMissing = @()
+$guardTotal = 0
+$repoDir = Split-Path -Parent $PSScriptRoot
+foreach ($srcName in @('claude-envfix.ps1', 'claude-preflight.ps1')) {
+  $srcAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoDir $srcName), [ref]$null, [ref]$null)
+  $loops = $srcAst.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.ForEachStatementAst] -and
+    $n.Condition -is [System.Management.Automation.Language.PipelineAst] -and
+    $n.Condition.Extent.Text -match '^@\(\$[\w]+(\.[\w]+)+\)$' }, $true)
+  foreach ($lp in $loops) {
+    $guardTotal++
+    $first = @($lp.Body.Statements)[0]
+    $vn = $lp.Variable.VariablePath.UserPath
+    $ok = ($null -ne $first) -and ($first.Extent.Text -match ('^if \(\$null -eq \$' + [regex]::Escape($vn) + '\) \{ continue \}$'))
+    if (-not $ok) { $guardMissing += ("{0}:{1}" -f $srcName, $lp.Extent.StartLineNumber) }
+  }
+}
+Assert-True ($guardTotal -ge 9) ("found foreach @(`$x.prop) loops ($guardTotal)")
+Assert-Eq ($guardMissing -join ',') '' 'every such loop skips $null first'
+$nlDir = Get-CslEnvBackupDir
+$storeNl = New-MemStore
+& $storeNl.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_NULLENT' -Value 'nullent-orig'
+$fNl = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_NULLENT') -TestMode -Store $storeNl
+$nlPath = Join-Path $nlDir ("envfix-{0}.json" -f $fNl.id)
+$nlJson = Get-Content -LiteralPath $nlPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$nlJson.entries = @($null) + @($nlJson.entries)
+[IO.File]::WriteAllText($nlPath, ($nlJson | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+$uncBefore3 = $script:Uncaught
+$uNl = Invoke-CslEnvUndo -Id $fNl.id -NoPause -TestMode -Store $storeNl
+Assert-True ($uNl.ok -and ((& $storeNl.GetUserEntry 'CSL_TEST_ANTHROPIC_NULLENT').Value -eq 'nullent-orig') -and ($script:Uncaught -eq $uncBefore3)) 'undo with a null element in entries restores, no error'
+
 Remove-Item -LiteralPath $script:Root -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {

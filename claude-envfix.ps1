@@ -243,6 +243,7 @@ function Get-CslEarliestMap {
     $j = $rd.data
     if ($j.undone) { continue }
     foreach ($e in @($j.entries)) {
+      if ($null -eq $e) { continue }
       $n = [string]$e.name
       if (-not $map.ContainsKey($n)) {
         $ex = $true
@@ -597,7 +598,7 @@ function Invoke-CslEnvUndo {
   $dir = Get-CslEnvBackupDir
 
   $targetNames = New-Object System.Collections.Generic.HashSet[string]
-  foreach ($e in @($bak.entries)) { [void]$targetNames.Add([string]$e.name) }
+  foreach ($e in @($bak.entries)) { if ($null -eq $e) { continue }; [void]$targetNames.Add([string]$e.name) }
 
   # 扫描连通备份；相关文件若损坏则整单中止、不改系统（无关损坏文件跳过）
   $changed = $true
@@ -610,6 +611,7 @@ function Invoke-CslEnvUndo {
       if ($j.undone) { continue }
       $hit = $false
       foreach ($e in @($j.entries)) {
+        if ($null -eq $e) { continue }
         if ($targetNames.Contains([string]$e.name)) { $hit = $true; break }
       }
       if ($hit) {
@@ -622,7 +624,7 @@ function Invoke-CslEnvUndo {
           $opsToMark[$j.id] = $f.FullName
           $changed = $true
         }
-        foreach ($e in @($j.entries)) { [void]$targetNames.Add([string]$e.name) }
+        foreach ($e in @($j.entries)) { if ($null -eq $e) { continue }; [void]$targetNames.Add([string]$e.name) }
       }
     }
   }
@@ -646,6 +648,7 @@ function Invoke-CslEnvUndo {
     if ($j.undone) { continue }
     if (-not $opsToMark.ContainsKey($j.id)) { continue }
     foreach ($e in @($j.entries)) {
+      if ($null -eq $e) { continue }
       $nm = [string]$e.name
       if (-not $targetNames.Contains($nm)) { continue }
       # after: $null = 删除；'' = 空字符串（若将来支持写入）
@@ -820,7 +823,7 @@ function Invoke-CslEnvUndo {
         # Record conflict-skipped names on this backup so pruning never deletes it (values stay for manual recovery)
         if ($skipped -and @($skipped).Count -gt 0) {
           $namesInThis = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-          foreach ($e in @($j.entries)) { [void]$namesInThis.Add([string]$e.name) }
+          foreach ($e in @($j.entries)) { if ($null -eq $e) { continue }; [void]$namesInThis.Add([string]$e.name) }
           $skipHere = @($skipped | Where-Object { $namesInThis.Contains([string]$_) } | Select-Object -Unique)
           if ($skipHere.Count -gt 0) {
             $prev = @()

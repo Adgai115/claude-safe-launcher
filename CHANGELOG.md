@@ -11,6 +11,7 @@
 - 新增 `claude-issueexport.ps1` 与 `tests/issueexport.Tests.ps1`。
 - 测试：所有测试文件统一加上「报错即失败」：任何未捕获的报错都输出 FAILED、退出码 1，不再打印 ALL PASSED。
 - 测试：用记录型内存存储直接断言修复 / 撤销过程中不会以空变量名读写环境变量。
+- 修复：`claude-envfix.ps1` / `claude-preflight.ps1` 中所有遍历 `@($x.属性)` 的循环都先显式跳过 `$null`（备份 `entries` 里混入 null 元素时撤销不再报错）；新增静态检查测试锁定这一写法。
 - 已知限制：Mac 端这一版没有改动。
 
 ## v3.2.0（一期 · Windows）

@@ -102,6 +102,7 @@ if ($FixEnv) {
     exit $(if ($null -ne $fix.exitCode) { $fix.exitCode } else { 1 })
   }
   foreach ($row in @($fix.plan)) {
+    if ($null -eq $row) { continue }
     if ($row.action -eq 'skip-admin') {
       Write-Host ("  [提示] {0} 仅 Machine 级存在：需要管理员手动处理" -f $row.name) -ForegroundColor DarkGray
     } else {
@@ -110,6 +111,7 @@ if ($FixEnv) {
   }
   if (-not $DryRun) {
     foreach ($a in @($fix.applied)) {
+      if ($null -eq $a) { continue }
       Write-Host ("  [修复] 已删除用户级 {0}（原 {1}）" -f $a.name, $a.valueMasked) -ForegroundColor Yellow
     }
     if ($fix.id) { Write-Host ("  [信息] 备份 id={0}（可用 -UndoFix 撤销）" -f $fix.id) -ForegroundColor Gray }
@@ -318,7 +320,7 @@ if (-not $targets.ok) {
       if ($ans -match '^[yY]') {
         $fix = Invoke-CslEnvFix -Patterns $script:FixPatterns -TestMode:$TestMode -FailAtIndex $FailAtIndex
         if ($fix.ok) {
-          foreach ($a in @($fix.applied)) { Say-Fix ("已删除用户级 {0}（原 {1}）" -f $a.name, $a.valueMasked) }
+          foreach ($a in @($fix.applied)) { if ($null -eq $a) { continue }; Say-Fix ("已删除用户级 {0}（原 {1}）" -f $a.name, $a.valueMasked) }
           if ($fix.id) { Say-Info ("备份 id={0}，可用 -UndoFix 撤销；新开的终端才会生效" -f $fix.id) }
         } else { Say-Fail $fix.error }
       } else {
