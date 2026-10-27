@@ -9,6 +9,8 @@
 - **不调用**任何本地或云端 agent，只生成可复制文本。
 - 问题说明在面板侧由已有检查结果生成（无新增写接口）；注入 `__CSL_USERPROFILE__` / `__CSL_COMPUTERNAME__` 供脱敏。既有 `/api/*` 仍走 v3.2.0 同源安全门。
 - 新增 `claude-issueexport.ps1` 与 `tests/issueexport.Tests.ps1`。
+- 测试：所有测试文件统一加上「报错即失败」：任何未捕获的报错都输出 FAILED、退出码 1，不再打印 ALL PASSED。
+- 测试：用记录型内存存储直接断言修复 / 撤销过程中不会以空变量名读写环境变量。
 - 已知限制：Mac 端这一版没有改动。
 
 ## v3.2.0（一期 · Windows）
@@ -29,6 +31,9 @@
 - 修复：`-TestMode` 下撤销（含 DryRun/plan）校验整条连通链变量名均为 `CSL_TEST_*`；面板 `undo-plan`/`undo-apply` 传入 TestMode。
 - 加固：撤销因冲突跳过的备份写入 `skipped` 名单，清理时永不删除该类备份（原值留在文件中可手动恢复）。
 - 已知问题：撤销时冲突跳过的变量，该次备份会被标记为已撤销，无法再用 `-UndoFix` 恢复；备份文件保留不删，值可从文件手动恢复；v3.3.0 修复。
+- 修复：撤销失败时 CLI 不再在 Windows PowerShell 5.1 上打出红色报错和空的「[警告]」行（冲突列表为空或含空值时跳过）。（`8c82758`）
+- 修复：缺少 `entries` 字段或 `entries` 为 null 的备份按损坏处理（提示与损坏备份一致），撤销其他备份时不再在 5.1 上报 NullArray。（`435c1df`）
+- 测试：单测改用 `[Environment]::OSVersion.Platform` 判断平台（5.1 没有 `$IsWindows`，此前 4 条备份不可写用例在 Windows 上被跳过）；任何未捕获的报错都判失败、退出码 1。（`7a69c37`）
 
 ## v3.1.0（一期 · Windows）
 

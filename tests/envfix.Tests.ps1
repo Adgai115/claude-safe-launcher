@@ -557,6 +557,36 @@ $uNe = Invoke-CslEnvUndo -Id $fNe.id -NoPause -TestMode -Store $storeNe
 Assert-True ($fNe.ok -and $uNe.ok -and ((& $storeNe.GetUserEntry 'CSL_TEST_ANTHROPIC_NOENT').Value -eq 'noent-orig') -and (@($uNe.conflicts | Where-Object { $null -ne $_ }).Count -eq 0) -and ($script:Uncaught -eq $uncBefore2)) 'undo other backup ok with entries-less files present'
 Remove-Item -LiteralPath $neMissing, $neNull -Force -ErrorAction SilentlyContinue
 
+Write-Host '== Undo never calls the store with an empty name ==' -ForegroundColor Cyan
+function New-RecordingStore {
+  $inner = New-MemStore
+  $calls = New-Object System.Collections.ArrayList
+  $g = { param([string]$Name) [void]$calls.Add("get:$Name"); & $inner.GetUserEntry $Name }.GetNewClosure()
+  $m = { param([string]$Name) [void]$calls.Add("machine:$Name"); & $inner.GetMachine $Name }.GetNewClosure()
+  $s = { param([string]$Name, [AllowNull()][object]$Value, [string]$Kind = 'String') [void]$calls.Add("set:$Name"); & $inner.SetUserEntry -Name $Name -Value $Value -Kind $Kind }.GetNewClosure()
+  return [pscustomobject]@{ State = $inner.State; GetUserEntry = $g; GetMachine = $m; SetUserEntry = $s; ListUserNames = $inner.ListUserNames; Calls = $calls }
+}
+$recDir = Get-CslEnvBackupDir
+$recMissing = Join-Path $recDir 'envfix-20000101T000000002-rcm1.json'
+$recNull = Join-Path $recDir 'envfix-20000101T000000003-rcn1.json'
+[IO.File]::WriteAllText($recMissing, '{"id":"20000101T000000002-rcm1","ts":"2000-01-01T00:00:00Z"}', (New-Object System.Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText($recNull, '{"id":"20000101T000000003-rcn1","ts":"2000-01-01T00:00:00Z","entries":null}', (New-Object System.Text.UTF8Encoding($false)))
+$rec = New-RecordingStore
+& $rec.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_REC_A' -Value 'rec-a'
+& $rec.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_REC_B' -Value 'rec-b'
+$rec.Calls.Clear()
+$fRec = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_REC_*') -TestMode -Store $rec
+& $rec.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_REC_B' -Value 'rec-b-changed'
+$uRec = Invoke-CslEnvUndo -Id $fRec.id -NoPause -TestMode -Store $rec
+$uRecMissing = Invoke-CslEnvUndo -Id '20000101T000000002-rcm1' -NoPause -TestMode -Store $rec
+$uRecNull = Invoke-CslEnvUndo -Id '20000101T000000003-rcn1' -NoPause -TestMode -Store $rec
+$names = @($rec.Calls | ForEach-Object { ([string]$_).Split(':', 2)[1] })
+Assert-True ($fRec.ok -and $names.Count -ge 4) 'recording store saw fix/undo calls'
+Assert-Eq @($names | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count 0 'no store call with empty name'
+Assert-Eq (& $rec.GetUserEntry 'CSL_TEST_ANTHROPIC_REC_A').Value 'rec-a' 'recording undo restored non-conflict var'
+Assert-True ((-not $uRecMissing.ok) -and (-not $uRecNull.ok)) 'recording undo of entries-less backups refused'
+Remove-Item -LiteralPath $recMissing, $recNull -Force -ErrorAction SilentlyContinue
+
 Remove-Item -LiteralPath $script:Root -Recurse -Force -ErrorAction SilentlyContinue
 
 if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {

@@ -5,6 +5,15 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 . (Join-Path $root 'claude-common.ps1')
 . (Join-Path $root 'claude-issueexport.ps1')
+# claude-common.ps1 sets Continue when dot-sourced; restore Stop so non-terminating errors also hit the trap
+$ErrorActionPreference = 'Stop'
+# Any uncaught error counts as a failure
+$script:Uncaught = 0
+trap {
+  $script:Uncaught++
+  Write-Host ("  FAIL  uncaught error: {0} (line {1})" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber) -ForegroundColor Red
+  continue
+}
 
 $script:Fail = 0
 function Assert-True($cond, $msg) {
@@ -107,10 +116,9 @@ Assert-NotContains $bad 'controllerSecret=deadbeef' 'secret assignment not verba
 Assert-Contains $bad '<节点>' 'node domain masked in formatted issue'
 
 Write-Host ''
-if ($script:Fail -eq 0) {
-  Write-Host 'ALL PASS' -ForegroundColor Green
-  exit 0
-} else {
-  Write-Host ("FAILED: {0}" -f $script:Fail) -ForegroundColor Red
+if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {
+  Write-Host "FAILED: $($script:Fail) assertion(s), $($script:Uncaught) uncaught error(s)" -ForegroundColor Red
   exit 1
 }
+Write-Host 'ALL PASSED' -ForegroundColor Green
+exit 0
