@@ -1,0 +1,20 @@
+# Windows scripts: CRLF
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.psm1 text eol=crlf
+
+# Unix / macOS / Python: LF (mac/install.command must stay LF)
+*.py text eol=lf
+*.sh text eol=lf
+*.command text eol=lf
+
+# Docs & panel: LF (matches current index majority; panel works on both OSes)
+*.html text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Binary
+*.ico binary
