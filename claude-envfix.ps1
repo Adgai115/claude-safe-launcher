@@ -232,6 +232,24 @@ function Read-CslEnvBackupFile {
   }
 }
 
+function Test-CslEntryUndone($Backup, $Entry) {
+  # v3.3.0: per-entry undo state; legacy file-level undone still means every entry is undone
+  if ($null -ne $Backup -and [bool]$Backup.undone) { return $true }
+  if ($null -eq $Entry) { return $true }
+  if ($Entry.PSObject.Properties['undone'] -and [bool]$Entry.undone) { return $true }
+  return $false
+}
+
+function Test-CslBackupFullyUndone($Backup) {
+  if ($null -eq $Backup) { return $true }
+  if ([bool]$Backup.undone) { return $true }
+  foreach ($e in @($Backup.entries)) {
+    if ($null -eq $e) { continue }
+    if (-not (Test-CslEntryUndone $Backup $e)) { return $false }
+  }
+  return $true
+}
+
 function Get-CslEarliestMap {
   # name -> @{ existed; before; kind }
   $dir = Get-CslEnvBackupDir
@@ -241,9 +259,10 @@ function Get-CslEarliestMap {
     $rd = Read-CslEnvBackupFile -Path $f.FullName
     if (-not $rd.ok) { continue }
     $j = $rd.data
-    if ($j.undone) { continue }
+    if (Test-CslBackupFullyUndone $j) { continue }
     foreach ($e in @($j.entries)) {
       if ($null -eq $e) { continue }
+      if (Test-CslEntryUndone $j $e) { continue }
       $n = [string]$e.name
       if (-not $map.ContainsKey($n)) {
         $ex = $true
@@ -338,7 +357,7 @@ function Write-CslEnvBackup($obj) {
       $hasSkipped = (@($rr.data.skipped).Count -gt 0)
     }
     if ($hasSkipped) { continue }
-    if ($rr.data.undone) { $undone += $f } else { $undoable += $f }
+    if (Test-CslBackupFullyUndone $rr.data) { $undone += $f } else { $undoable += $f }
   }
   if ($undoable.Count -gt $script:CslEnvBackupKeep) {
     foreach ($old in $undoable[$script:CslEnvBackupKeep..($undoable.Count - 1)]) {
@@ -390,7 +409,7 @@ function Get-CslEnvBackupById {
       if ($Strict) { return $rd }
       continue
     }
-    if (-not $rd.data.undone) {
+    if (-not (Test-CslBackupFullyUndone $rd.data)) {
       if ($Strict) { return @{ ok = $true; data = $rd.data; path = $rd.path } }
       return $rd.data
     }
@@ -409,17 +428,20 @@ function Get-CslEnvFixList {
       continue
     }
     $j = $rd.data
-    $vars = @($j.entries | ForEach-Object {
+    $vars = @($j.entries | Where-Object { $null -ne $_ } | ForEach-Object {
       $mask = if ($_.existed) { Protect-Secret ([string]$_.before) } else { '(不存在)' }
       [pscustomobject]@{
         name = $_.name
         beforeMasked = $mask
         after = $(if ($null -eq $_.after) { '(删除)' } else { Protect-Secret ([string]$_.after) })
         kind = $(if ($_.kind) { $_.kind } else { 'String' })
+        undone = (Test-CslEntryUndone $j $_)
       }
     })
+    $fully = Test-CslBackupFullyUndone $j
+    $partial = (-not $fully) -and (@($vars | Where-Object { $_.undone }).Count -gt 0)
     $out += [pscustomobject]@{
-      id = $j.id; ts = $j.ts; undone = [bool]$j.undone; testMode = [bool]$j.testMode; corrupt = $false
+      id = $j.id; ts = $j.ts; undone = [bool]$fully; partiallyUndone = [bool]$partial; testMode = [bool]$j.testMode; corrupt = $false
       vars = $vars
     }
   }
@@ -577,7 +599,7 @@ function Invoke-CslEnvUndo {
     return @{ ok = $false; error = $got.error; exitCode = 1 }
   }
   $bak = $got.data
-  if ($bak.undone) {
+  if (Test-CslBackupFullyUndone $bak) {
     return @{
       ok = $true
       alreadyUndone = $true
@@ -598,7 +620,7 @@ function Invoke-CslEnvUndo {
   $dir = Get-CslEnvBackupDir
 
   $targetNames = New-Object System.Collections.Generic.HashSet[string]
-  foreach ($e in @($bak.entries)) { if ($null -eq $e) { continue }; [void]$targetNames.Add([string]$e.name) }
+  foreach ($e in @($bak.entries)) { if ($null -eq $e) { continue }; if (Test-CslEntryUndone $bak $e) { continue }; [void]$targetNames.Add([string]$e.name) }
 
   # 扫描连通备份；相关文件若损坏则整单中止、不改系统（无关损坏文件跳过）
   $changed = $true
@@ -608,10 +630,11 @@ function Invoke-CslEnvUndo {
       $rd = Read-CslEnvBackupFile -Path $f.FullName
       if (-not $rd.ok) { continue }
       $j = $rd.data
-      if ($j.undone) { continue }
+      if (Test-CslBackupFullyUndone $j) { continue }
       $hit = $false
       foreach ($e in @($j.entries)) {
         if ($null -eq $e) { continue }
+        if (Test-CslEntryUndone $j $e) { continue }
         if ($targetNames.Contains([string]$e.name)) { $hit = $true; break }
       }
       if ($hit) {
@@ -624,7 +647,7 @@ function Invoke-CslEnvUndo {
           $opsToMark[$j.id] = $f.FullName
           $changed = $true
         }
-        foreach ($e in @($j.entries)) { if ($null -eq $e) { continue }; [void]$targetNames.Add([string]$e.name) }
+        foreach ($e in @($j.entries)) { if ($null -eq $e) { continue }; if (Test-CslEntryUndone $j $e) { continue }; [void]$targetNames.Add([string]$e.name) }
       }
     }
   }
@@ -645,10 +668,11 @@ function Invoke-CslEnvUndo {
     $rd = Read-CslEnvBackupFile -Path $f.FullName
     if (-not $rd.ok) { continue }
     $j = $rd.data
-    if ($j.undone) { continue }
+    if (Test-CslBackupFullyUndone $j) { continue }
     if (-not $opsToMark.ContainsKey($j.id)) { continue }
     foreach ($e in @($j.entries)) {
       if ($null -eq $e) { continue }
+      if (Test-CslEntryUndone $j $e) { continue }
       $nm = [string]$e.name
       if (-not $targetNames.Contains($nm)) { continue }
       # after: $null = 删除；'' = 空字符串（若将来支持写入）
@@ -819,19 +843,27 @@ function Invoke-CslEnvUndo {
           return @{ ok = $false; error = $rd.error; exitCode = 1 }
         }
         $j = $rd.data
-        $j.undone = $true
-        # Record conflict-skipped names on this backup so pruning never deletes it (values stay for manual recovery)
-        if ($skipped -and @($skipped).Count -gt 0) {
-          $namesInThis = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-          foreach ($e in @($j.entries)) { if ($null -eq $e) { continue }; [void]$namesInThis.Add([string]$e.name) }
-          $skipHere = @($skipped | Where-Object { $namesInThis.Contains([string]$_) } | Select-Object -Unique)
-          if ($skipHere.Count -gt 0) {
-            $prev = @()
-            if ($j.PSObject.Properties['skipped'] -and $j.skipped) { $prev = @($j.skipped | ForEach-Object { [string]$_ }) }
-            $merged = @($prev + $skipHere | Select-Object -Unique)
-            $j | Add-Member -NotePropertyName skipped -NotePropertyValue $merged -Force
-          }
+        # v3.3.0: mark undone per entry; conflict-skipped names stay undoable for a later -UndoFix
+        $skipSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($sn in @($skipped)) { if ($null -eq $sn) { continue }; [void]$skipSet.Add([string]$sn) }
+        $legacyUndone = [bool]$j.undone
+        $stillOpen = @()
+        foreach ($e in @($j.entries)) {
+          if ($null -eq $e) { continue }
+          $en = [string]$e.name
+          $wasUndone = $legacyUndone -or ($e.PSObject.Properties['undone'] -and [bool]$e.undone)
+          $nowUndone = $wasUndone -or ($targetNames.Contains($en) -and -not $skipSet.Contains($en))
+          $e | Add-Member -NotePropertyName undone -NotePropertyValue ([bool]$nowUndone) -Force
+          if (-not $nowUndone) { $stillOpen += $en }
         }
+        $j | Add-Member -NotePropertyName undone -NotePropertyValue ($stillOpen.Count -eq 0) -Force
+        # Keep conflict-skipped names that are still open so pruning never deletes this backup
+        $prevSkipped = @()
+        if ($j.PSObject.Properties['skipped'] -and $j.skipped) { $prevSkipped = @($j.skipped | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ }) }
+        $openSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($on in $stillOpen) { [void]$openSet.Add($on) }
+        $mergedSkipped = @(@($prevSkipped) + @($skipped) | Where-Object { $null -ne $_ -and $openSet.Contains([string]$_) } | Select-Object -Unique)
+        $j | Add-Member -NotePropertyName skipped -NotePropertyValue $mergedSkipped -Force
         [IO.File]::WriteAllText($p, ($j | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
       }
     } catch {
@@ -848,7 +880,7 @@ function Invoke-CslEnvUndo {
     skipped = $skipped
     conflicts = $conflicts
     exitCode = $code
-    hint = '新开的终端才会生效'
+    hint = $(if ($skipped.Count -gt 0) { '新开的终端才会生效；被跳过的变量处理好冲突后可再次撤销：-UndoFix -UndoId ' + $bak.id } else { '新开的终端才会生效' })
   }
 }
 

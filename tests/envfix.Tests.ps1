@@ -28,6 +28,12 @@ function Assert-Eq($a, $b, $msg) {
   else { Write-Host "  FAIL  $msg (got=[$a] expected=[$b])" -ForegroundColor Red; $script:Fail++ }
 }
 
+# A fresh MemStore stands for a different machine. Since v3.3.0 a conflict-skipped entry stays
+# undoable, so sections that leave one open clear the shared backup dir before the next section.
+function Clear-TestBackups {
+  Get-ChildItem -LiteralPath (Get-CslEnvBackupDir) -Filter 'envfix-*.json' -File -ErrorAction SilentlyContinue | Remove-Item -Force
+}
+
 function New-MemStore {
   # Value: key -> @{ Value = string (may be ''); Kind = 'String'|'ExpandString' } ; absent = no key
   $state = @{ u = @{}; m = @{} }
@@ -123,6 +129,7 @@ $u = Invoke-CslEnvUndo -Id $f.id -NoPause -Store $store
 Assert-True ($u.exitCode -ne 0) 'conflict exit nonzero'
 Assert-True ($u.conflicts.Count -ge 1) 'conflict reported'
 Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_API_KEY').Value 'tampered' 'conflict skipped leave current'
+Clear-TestBackups
 
 Write-Host '== FailAtIndex rollback (TestMode) ==' -ForegroundColor Cyan
 $store = New-MemStore
@@ -266,6 +273,7 @@ Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_API_KEY').Value 'tampered-k
 # After first fix both deleted; tamper only API_KEY. Undo with skip: API_KEY skipped, BASE_URL restored.
 $bu = & $store.GetUserEntry 'CSL_TEST_ANTHROPIC_BASE_URL'
 Assert-True ($null -ne $bu -and $bu.Value -eq 'https://orig.example') 'skip still restores non-conflict'
+Clear-TestBackups
 
 # fresh for overwrite
 $store = New-MemStore
@@ -289,6 +297,7 @@ $u3 = Invoke-CslEnvUndo -Id $f3.id -Store $store -DefaultConflictDecision skip -
 Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_API_KEY').Value 'a0' 'per-item overwrite'
 Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_BASE_URL').Value 'bX' 'per-item skip'
 Assert-True ($u3.skipped -contains 'CSL_TEST_ANTHROPIC_BASE_URL') 'per-item skip listed'
+Clear-TestBackups
 
 
 
@@ -322,6 +331,7 @@ Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_BASE_URL').Value 'uX' 'mixe
 Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_MODEL').Value 'm0' 'mixed3 overwrite model'
 Assert-True ($u4.skipped -contains 'CSL_TEST_ANTHROPIC_BASE_URL') 'mixed3 skip listed'
 Assert-Eq $u4.exitCode 3 'mixed3 exitCode 3'
+Clear-TestBackups
 
 Write-Host '== Panel CSL_PANEL_TESTMODE gate (logic) ==' -ForegroundColor Cyan
 # 模拟：仅环境变量可开；开则固定 CSL_TEST_ANTHROPIC_*
@@ -496,7 +506,7 @@ Assert-True ($uSkip.exitCode -eq 3 -or -not $uSkip.ok) 'skip-retain undo conflic
 $skipPath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $fSkip.id)
 Assert-True (Test-Path -LiteralPath $skipPath) 'skip-retain backup exists after undo'
 $skipJson = Get-Content -LiteralPath $skipPath -Raw -Encoding UTF8 | ConvertFrom-Json
-Assert-True ([bool]$skipJson.undone) 'skip-retain marked undone'
+Assert-True (-not [bool]$skipJson.undone) 'skip-retain backup stays undoable (skipped entry open)'
 Assert-True (@($skipJson.skipped).Count -ge 1) 'skip-retain recorded skipped names'
 Assert-True (@($skipJson.skipped) -contains 'CSL_TEST_ANTHROPIC_KEEPVAL') 'skip-retain skipped name listed'
 $beforeVal = @($skipJson.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPVAL')[0].before
@@ -517,6 +527,54 @@ try {
 Assert-True (Test-Path -LiteralPath $skipPath) 'skip-retain backup survived prune'
 $skipJson2 = Get-Content -LiteralPath $skipPath -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-Eq @($skipJson2.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPVAL')[0].before 'precious-orig-xxxx' 'skip-retain value intact after prune'
+Clear-TestBackups
+
+Write-Host '== Per-entry undo: conflict-skipped entry can be undone later ==' -ForegroundColor Cyan
+Clear-TestBackups
+$pe = New-MemStore
+& $pe.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PE_A' -Value 'pe-a0'
+& $pe.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PE_B' -Value 'pe-b0'
+$peFix = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_PE_*') -TestMode -Store $pe
+& $pe.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PE_B' -Value 'pe-bX'
+$peU1 = Invoke-CslEnvUndo -Id $peFix.id -NoPause -Store $pe
+Assert-Eq $peU1.exitCode 3 'first undo exitCode 3 (B skipped)'
+Assert-Eq (& $pe.GetUserEntry 'CSL_TEST_ANTHROPIC_PE_A').Value 'pe-a0' 'first undo restored A'
+Assert-Eq (& $pe.GetUserEntry 'CSL_TEST_ANTHROPIC_PE_B').Value 'pe-bX' 'first undo left B'
+Assert-True ([string]$peU1.hint -match ('-UndoFix -UndoId ' + [regex]::Escape($peFix.id))) 'hint tells how to retry the skipped variable'
+$pePath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $peFix.id)
+$peJ1 = Get-Content -LiteralPath $pePath -Raw -Encoding UTF8 | ConvertFrom-Json
+$peA1 = @($peJ1.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_PE_A')[0]
+$peB1 = @($peJ1.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_PE_B')[0]
+Assert-True (-not [bool]$peJ1.undone) 'backup not fully undone after skip'
+Assert-True ([bool]$peA1.undone) 'entry A marked undone'
+Assert-True (-not [bool]$peB1.undone) 'entry B still open'
+Assert-Eq (@($peJ1.skipped) -join ',') 'CSL_TEST_ANTHROPIC_PE_B' 'skipped lists only B'
+$peList = @(Get-CslEnvFixList | Where-Object { $_.id -eq $peFix.id })[0]
+Assert-True ($peList.partiallyUndone -and -not $peList.undone) 'list reports partially undone'
+# user resolves the conflict (B back to the fixed state), and changes A afterwards
+& $pe.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PE_B' -Value $null
+& $pe.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PE_A' -Value 'pe-a-user'
+$peU2 = Invoke-CslEnvUndo -Id $peFix.id -NoPause -Store $pe
+Assert-True ($peU2.ok -and $peU2.exitCode -eq 0 -and -not $peU2.alreadyUndone) 'second undo ok, exitCode 0'
+Assert-Eq (& $pe.GetUserEntry 'CSL_TEST_ANTHROPIC_PE_B').Value 'pe-b0' 'second undo restored B'
+Assert-Eq (& $pe.GetUserEntry 'CSL_TEST_ANTHROPIC_PE_A').Value 'pe-a-user' 'second undo did not touch A again'
+Assert-Eq (@($peU2.restored | ForEach-Object { $_.name }) -join ',') 'CSL_TEST_ANTHROPIC_PE_B' 'second undo restored only B'
+$peJ2 = Get-Content -LiteralPath $pePath -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True ([bool]$peJ2.undone) 'backup fully undone after second undo'
+Assert-Eq @($peJ2.skipped).Count 0 'skipped cleared once B undone'
+$peU3 = Invoke-CslEnvUndo -Id $peFix.id -NoPause -Store $pe
+Assert-True $peU3.alreadyUndone 'third undo reports already undone'
+# legacy backups: file-level undone only (no entry flags) still count as fully undone
+$lgStore = New-MemStore
+& $lgStore.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PE_LEGACY' -Value 'lg0'
+$lgFix = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_PE_LEGACY') -TestMode -Store $lgStore
+$lgPath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $lgFix.id)
+$lgJ = Get-Content -LiteralPath $lgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$lgJ.undone = $true
+[IO.File]::WriteAllText($lgPath, ($lgJ | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+$lgU = Invoke-CslEnvUndo -Id $lgFix.id -NoPause -Store $lgStore
+Assert-True ($lgU.alreadyUndone -and $null -eq (& $lgStore.GetUserEntry 'CSL_TEST_ANTHROPIC_PE_LEGACY')) 'legacy file-level undone still already undone, no change'
+Clear-TestBackups
 
 Write-Host '== Preflight undo conflict print skips null/empty ==' -ForegroundColor Cyan
 $pfPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'claude-preflight.ps1'

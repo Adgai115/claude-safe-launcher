@@ -132,7 +132,7 @@ sudo systemsetup -settimezone America/New_York
 | `-FixVarPattern <通配符…>` | （暂无） | 限定要检测/修复的**用户级**变量名；默认等同当前第 9 组列表 |
 | `-FixEnv` | （暂无） | 一键清除匹配的用户级中转变量（**显式指定=同意**，可与 `-NoPause` 同用） |
 | `-DryRun` | （暂无） | 只列出将修改项（脱敏），不写系统、不写备份；配合 `-FixEnv` |
-| `-UndoFix [-UndoId <id>]` | （暂无） | 撤销一次修复（默认最近一次）；冲突时配合 `-NoPause` 跳过该变量并返回非 0 |
+| `-UndoFix [-UndoId <id>]` | （暂无） | 撤销一次修复（默认最近一次）；冲突时配合 `-NoPause` 跳过该变量并返回非 0；被跳过的变量处理好冲突后可用同一 `-UndoId` 再撤销（v3.3.0 起逐项记录撤销状态） |
 | `-ListFixes` | （暂无） | 列出可撤销操作（值已脱敏） |
 | `-TestMode` | （暂无） | 仅允许操作 `CSL_TEST_` 前缀变量；测试请配合 `-FixVarPattern 'CSL_TEST_ANTHROPIC_*'` |
 | `-FailAtIndex <n>` | （暂无） | **仅** `-TestMode`：第 n 个变量变更时抛错以验证整单回滚；非 TestMode 警告并忽略 |
