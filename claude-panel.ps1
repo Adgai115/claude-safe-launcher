@@ -1,4 +1,4 @@
-﻿﻿# Claude 安全启动 · 主题面板（本地网页界面）
+﻿# Claude 安全启动 · 主题面板（本地网页界面）
 $dir = $PSScriptRoot
 $pre = Join-Path $dir 'claude-preflight.ps1'
 $htmlPath = Join-Path $dir 'claude-panel.html'

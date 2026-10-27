@@ -1,4 +1,4 @@
-﻿﻿# Claude 安全启动（通用版）- 公共函数（被 claude-preflight.ps1 / claude-monitor.ps1 / claude-panel.ps1 引用）
+﻿# Claude 安全启动（通用版）- 公共函数（被 claude-preflight.ps1 / claude-monitor.ps1 / claude-panel.ps1 引用）
 $ErrorActionPreference = 'Continue'
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 
