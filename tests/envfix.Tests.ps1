@@ -398,6 +398,33 @@ try {
   foreach ($f in @(Get-ChildItem -LiteralPath $idDir -Filter 'envfix-2099123*.json' -File -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $f.FullName -Force }
 }
 
+Write-Host '== Fix id: old-format id mixed with new, undo latest ==' -ForegroundColor Cyan
+$store = New-MemStore
+& $store.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_NEW' -Value 'vnew-orig'
+$mixDir = Get-CslEnvBackupDir
+# old-format id in the CURRENT second (worst case: same second as the new fix)
+$oldId = ([datetime]::UtcNow.ToString('yyyyMMddTHHmmss', [Globalization.CultureInfo]::InvariantCulture)) + '-ffff'
+$oldBak = [pscustomobject]@{
+  id = $oldId; ts = [datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'); testMode = $true; undone = $false
+  entries = @([pscustomobject]@{ name = 'CSL_TEST_ANTHROPIC_OLD'; existed = $true; before = 'vold-orig'; kind = 'String'; after = $null; earliestExisted = $true; earliestBefore = 'vold-orig'; earliestKind = 'String' })
+}
+$oldPath = Join-Path $mixDir ("envfix-{0}.json" -f $oldId)
+[IO.File]::WriteAllText($oldPath, ($oldBak | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+try {
+  $fNew = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_NEW') -TestMode -Store $store
+  Assert-True $fNew.ok 'mixed ids: new fix ok'
+  Assert-True ($fNew.id.CompareTo($oldId) -gt 0) 'mixed ids: new id sorts after old-format id'
+  Assert-True ((Get-CslEnvFixIdTime $fNew.id) -gt (Get-CslEnvFixIdTime $oldId)) 'mixed ids: new id time after old id time'
+  $uMix = Invoke-CslEnvUndo -NoPause -TestMode -Store $store
+  Assert-True $uMix.ok 'mixed ids: undo latest ok'
+  Assert-Eq $uMix.id $fNew.id 'mixed ids: undid the new (latest) fix'
+  Assert-Eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_NEW').Value 'vnew-orig' 'mixed ids: new var restored'
+  Assert-True ($null -eq (& $store.GetUserEntry 'CSL_TEST_ANTHROPIC_OLD')) 'mixed ids: old backup not applied'
+} finally {
+  Remove-Item -LiteralPath $oldPath -Force -ErrorAction SilentlyContinue
+  if ($fNew -and $fNew.id) { Remove-Item -LiteralPath (Join-Path $mixDir ("envfix-{0}.json" -f $fNew.id)) -Force -ErrorAction SilentlyContinue }
+}
+
 Write-Host '== TestMode undo rejects non CSL_TEST_ names ==' -ForegroundColor Cyan
 $store = New-MemStore
 $fakeId = '20990101T000000001-fade'
