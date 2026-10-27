@@ -305,31 +305,13 @@ def clash_verge_running() -> bool:
 
 
 def has_utun() -> bool:
-    """Best-effort Clash/mihomo TUN: a utun tied to fake-ip 198.18.0.0/15, not any system utun."""
-    # Prefer route evidence: 198.18.0.1 (or 198.19.0.1) egresses via utunN
-    for dest in ("198.18.0.1", "198.19.0.1"):
-        code, out, _ = _run(["route", "-n", "get", dest], timeout=8)
-        if code == 0 and out and re.search(r"interface:\s*utun\d+", out, re.I):
-            return True
-    # ifconfig: only count utun that has an inet in 198.18.0.0/15
     code, out, _ = _run(["ifconfig"], timeout=8)
-    if code == 0 and out:
-        cur = False
-        for line in out.splitlines():
-            if re.match(r"^utun\d+:", line):
-                cur = True
-                continue
-            # next interface header ends the block (name at column 0)
-            if cur and re.match(r"^[A-Za-z0-9].*:", line):
-                cur = False
-            if cur and re.search(r"\binet\s+198\.(18|19)\.", line):
-                return True
-    # Linux fallback for testing: tun/utun mentioned on a 198.18/19 route
-    code2, out2, _ = _run(["ip", "route"], timeout=5)
-    if code2 == 0 and out2 and ("198.18" in out2 or "198.19" in out2):
-        if re.search(r"\b(u?tun)\d*\b", out2, re.I):
-            return True
-    return False
+    if code != 0:
+        # Linux fallback for testing
+        code2, out2, _ = _run(["ip", "link"], timeout=5)
+        return "utun" in (out + out2).lower() or "tun" in (out + out2).lower()
+    return "utun" in out
+
 
 def has_fake_ip_route() -> bool:
     """Best-effort: 198.18.0.0/15 style routes used by Clash fake-ip / TUN."""
