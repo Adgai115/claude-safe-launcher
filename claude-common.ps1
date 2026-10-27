@@ -26,6 +26,29 @@ $script:TzMap = @{
 }
 function Convert-IanaToWindows([string]$iana) { if ($iana -and $script:TzMap.ContainsKey($iana)) { return $script:TzMap[$iana] }; return $null }
 
+function Convert-WindowsToIana([string]$win) {
+  if (-not $win) { return $null }
+  # Prefer a canonical IANA for each Windows zone (first matching key in TzMap)
+  $prefer = @{
+    'Eastern Standard Time'='America/New_York'; 'Central Standard Time'='America/Chicago'
+    'Mountain Standard Time'='America/Denver'; 'US Mountain Standard Time'='America/Phoenix'
+    'Pacific Standard Time'='America/Los_Angeles'; 'Alaskan Standard Time'='America/Anchorage'
+    'Hawaiian Standard Time'='Pacific/Honolulu'; 'GMT Standard Time'='Europe/London'
+    'W. Europe Standard Time'='Europe/Berlin'; 'Romance Standard Time'='Europe/Paris'
+    'Tokyo Standard Time'='Asia/Tokyo'; 'Korea Standard Time'='Asia/Seoul'
+    'Singapore Standard Time'='Asia/Singapore'; 'China Standard Time'='Asia/Shanghai'
+    'AUS Eastern Standard Time'='Australia/Sydney'; 'New Zealand Standard Time'='Pacific/Auckland'
+    'India Standard Time'='Asia/Kolkata'; 'Arabian Standard Time'='Asia/Dubai'
+    'E. South America Standard Time'='America/Sao_Paulo'; 'FLE Standard Time'='Europe/Helsinki'
+    'Central European Standard Time'='Europe/Warsaw'; 'Central Europe Standard Time'='Europe/Prague'
+    'Taipei Standard Time'='Asia/Taipei'; 'SE Asia Standard Time'='Asia/Bangkok'
+  }
+  if ($prefer.ContainsKey($win)) { return $prefer[$win] }
+  foreach ($k in $script:TzMap.Keys) { if ($script:TzMap[$k] -eq $win) { return $k } }
+  return $null
+}
+
+
 function Read-VergeRuntime {
   $h = @{}
   $rt = Join-Path $script:VergeDir 'clash-verge.yaml'
@@ -83,6 +106,7 @@ function Load-Config {
     mainGroup           = ''
     pinMainGroup        = $false
     timezone            = ''
+    expectedTzIana       = ''
     claudeAumid         = ''
     claudeExe           = ''
     clashExe            = ''
