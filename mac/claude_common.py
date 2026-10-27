@@ -125,7 +125,6 @@ DEFAULTS: Dict[str, Any] = {
     "mainGroup": "",
     "pinMainGroup": False,
     "timezone": "",  # IANA, e.g. America/New_York
-    "expectedTzIana": "",  # IANA for browser tz compare
     "claudeApp": "",
     "clashApp": "",
     "proxyUrl": "",

@@ -106,18 +106,16 @@ header{padding-bottom:6px}
 .logo{width:42px;height:42px;font-size:22px}
 h1,body[data-theme=painted] h1,body[data-theme=chinese] h1,body[data-theme=western] h1{font-size:23px}
 .sub{font-size:12px;margin-top:1px}
-.hero{padding:8px 16px;gap:16px}
-.ring{width:84px;height:84px}
+.hero{padding:10px 18px;gap:20px}
+.ring{width:96px;height:96px}
 .ring.running svg{animation:none}
-.score b{font-size:26px}
+.score b{font-size:30px}
 .state{font-size:18px;margin-bottom:6px}
 .chip{font-size:12px;padding:3px 10px}
 .events{margin-top:6px;font-size:12px;min-height:16px}
-main{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;overflow:hidden auto;align-content:start}
-.card{padding:7px 10px;min-width:0;max-height:100%;overflow:hidden}
-.card h3{font-size:12.5px;margin-bottom:2px;gap:6px}
-.card .row{padding:2px 0}
-.card .row.info .txt,.card .row.note .txt,.card .row.pass .txt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+main{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;overflow:hidden auto}
+.card{padding:9px 12px;min-width:0}
+.card h3{font-size:13px;margin-bottom:3px;gap:7px}
 .card h3 span:nth-child(2){white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .idx{min-width:22px;height:22px;font-size:11px;flex:none}
 .cst{font-size:11px;padding:1px 7px;flex:none}
@@ -220,14 +218,9 @@ function finish(){busy=false;setBusy(false);st.phase=st.cnt.fail?'fail':st.cnt.w
  setScore(st.score!=null?st.score:Math.max(0,100-st.cnt.fail*25-st.cnt.warn*8));
  $('hint').textContent='检查完成 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});}
 function setBusy(b){$('bCheck').disabled=b;$('bLaunch').disabled=b;$('bLearn').disabled=b}
-function parseIce(cand){const c=cand&&cand.candidate;if(!c)return null;const p=c.split(' ');if(p.length<8)return null;const ip=p[4];const ti=p.indexOf('typ');if(ti<0)return null;return{ip,typ:p[ti+1]}}
-function gatherWebRTC(timeoutMs){return new Promise(resolve=>{const out={srflx:[],host:[],ipv6:[]};let done=false;const fin=()=>{if(done)return;done=true;try{pc.close()}catch(e){}out.srflx=[...new Set(out.srflx)];out.host=[...new Set(out.host)];out.ipv6=[...new Set(out.ipv6)];resolve(out)};const to=setTimeout(fin,timeoutMs||4000);let pc;try{pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun.cloudflare.com:3478'}]});pc.createDataChannel('csl');pc.onicecandidate=e=>{if(!e.candidate){clearTimeout(to);fin();return}const x=parseIce(e.candidate);if(!x||!x.ip)return;const v6=x.ip.includes(':')&&!x.ip.includes('.');if(x.typ==='srflx'||x.typ==='relay'){if(v6)out.ipv6.push(x.ip);else out.srflx.push(x.ip)}else if(x.typ==='host')out.host.push(x.ip)};pc.createOffer().then(o=>pc.setLocalDescription(o)).catch(()=>{clearTimeout(to);fin()})}catch(e){clearTimeout(to);fin()}})}
-async function collectBrowser(){const out={ts:new Date().toISOString(),webrtc:{srflx:[],host:[],ipv6:[]},timezone:'',tzOffsetMin:new Date().getTimezoneOffset(),language:navigator.language||'',languages:[...(navigator.languages||[])],webdriver:!!navigator.webdriver};try{out.timezone=Intl.DateTimeFormat().resolvedOptions().timeZone||''}catch(e){}try{out.webrtc=await gatherWebRTC(4000)}catch(e){}try{await fetch('/api/browser',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(out)})}catch(e){}return out}
 async function run(launch,relearn){if(busy)return;
  if(launch){try{const r=await(await fetch('/api/claude')).json();if(r.running&&!confirm('Claude 已经在运行。继续只会检查并把它切到前台，不会重启它。继续吗？'))return}catch(e){}}
- busy=true;setBusy(true);reset();st.phase='run';setState();setScore(100);$('hint').textContent='正在采集浏览器环境（WebRTC）…';
- await collectBrowser();
- $('hint').textContent=launch?'检查通过后会启动 Claude':'只检查，不会启动或打扰 Claude';
+ busy=true;setBusy(true);reset();st.phase='run';setState();setScore(100);$('hint').textContent=launch?'检查通过后会启动 Claude':'只检查，不会启动或打扰 Claude';
  await fetch('/api/run?launch='+(launch?1:0)+'&relearn='+(relearn?1:0),{method:'POST'});next=0;poll()}
 async function poll(){try{const r=await(await fetch('/api/poll?from='+next)).json();if(typeof r.next==='number'){(r.lines||[]).forEach(handle);next=r.next;if(r.done){finish();return}}}catch(e){}setTimeout(poll,350)}
 function particles(){const d=$('deco');d.querySelectorAll('.p').forEach(e=>e.remove());const ps=T[theme].p;if(!ps.length)return;
