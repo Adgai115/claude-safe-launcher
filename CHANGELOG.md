@@ -1,5 +1,20 @@
 # 更新日志
 
+## Unreleased
+
+### v4.0.0（第一批 · 规则文件 + 结构化 JSON + 单一评分）
+
+- 新增 `rules/checks.json`：32 条检查的权威目录（`must_fix` / `should_fix` / `info`），含产品裁定（TUN=Clash `tun.enable`+路由、`api.anthropic`→`proxy-net`、HTTPS_PROXY/桌面版/IP 风险仅提示 0 分、Mac envfix 仅 win `fixable` 等）。
+- 新增 `docs/rules-v4.md`、`docs/preflight-json-schema.md`（JSON 键名 **DRAFT**，未产品冻结）。
+- 新增 `claude-rules.ps1`：`Get-CslRulesScore` / `New-CslPreflightResult` 为 CLI 与面板共用的**唯一**参考评分入口；`score = max(0,100−ΣrefDeduction)`，浏览器静态警告 cap 20；`canLaunchSafely` 仅看 must_fix。
+- `claude-preflight.ps1`：接入规则评分；新增 `-Json`；写出 `preflight-result.json`（含每条 `current` / `expected` / `recheck`，供后续 issue 导出读取）。不改 Mask-Value / Protect-Secret。
+- `claude-panel.html`：去掉本地 25/8 重算，分数只取自预检「一致性评分」行。
+- 新增 `tests/rules.Tests.ps1`。
+- JSON 输出冻结候选 v1：`status` 含 `error`（扣 0；must_fix error → blocked）；`fixType`/`fixId` 取代 `fixable`；`containsIp`；`summary.error`。面板修复按钮跟 `CSL_FIX_ID`/`fixId`（如 `envfix.user-anthropic`），不再依赖「用户级」文案。
+- JSON 的 `current` 对环境变量项只输出变量名和状态（如 `用户级 NAME：已设置`），不含值、不含打码值（无 `=`、无 `*`）；覆盖第 9 组用户级变量和 `HTTPS_PROXY=…`。屏幕和 CLI 上的检查行不变。新增断言用 `CSL_TEST_CANARY` 金丝雀值锁定。
+- 修复回归：`claude-rules.ps1` 不再在脚本作用域设置 `Set-StrictMode -Version Latest`（dot-source 进 preflight 后严格模式泄漏到 `claude-common.ps1`，`Load-Config` 等在 CLI 中抛 PropertyNotFoundStrict）。新增断言锁定调用方不受严格模式影响。
+- **不在本批**：不改 `mac/`；issue 导出沿用 v3.3.0 已发布实现，v4 未改动；不改静默 Start-Process / tzutil 行为（标在规则 notes，后续 PR）。
+
 ## v3.3.0（一期 · Windows）
 
 - 新增「问题说明」导出：面板对不可一键修复的失败/警告项提供「复制问题说明」，页脚提供「复制全部问题」与「隐藏 IP」开关；整屏布局保持不变。
@@ -28,6 +43,7 @@
 - `-ListFixes`、撤销冲突提示和修复/撤销结果只写变量名和动作，不再出现任何值（打码值也去掉）：列表每条形如 `CSL_TEST_SKIP_A: 已删除（可撤销）`，冲突提示为「冲突: 变量名 当前值与修复后不一致，已跳过」；面板撤销冲突框同样只显示变量名。第 9 组检查卡片里的检测结果仍带打码值，排到 v3.4.0。
 
 ## v3.2.0（一期 · Windows）
+
 
 - 新增用户级中转环境变量一键修复 / 撤销：检查第 9 组与 CLI/面板共用同一模式源（默认 `ANTHROPIC_*` 列表，可用 `-FixVarPattern` 或 `preflight.json` 的 `fixVarPatterns`）。
 - CLI：`-FixEnv` / `-DryRun` / `-UndoFix [-UndoId <id>]` / `-ListFixes` / `-TestMode`；显式 `-FixEnv`/`-UndoFix` 视为同意，可与 `-NoPause` 同用；纯 `-NoPause` 绝不自动修。
