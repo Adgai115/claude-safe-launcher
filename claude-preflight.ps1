@@ -14,7 +14,8 @@
   [int]$FailAtIndex = 0,
   [switch]$ExportIssues,
   [switch]$HideIp,
-  [switch]$Json
+  [switch]$Json,
+  [string]$JsonPath
 )
 <#
   Claude 桌面版 启动前检查 + 自动设置（v3.3.0）
@@ -33,7 +34,8 @@
   -FailAtIndex <n> : （仅 -TestMode）使第 n 个变量变更抛错，用于验证整单回滚；非 TestMode 警告并忽略
   -ExportIssues : 检查结束后打印可复制的「问题说明」（脱敏四段结构）；建议配合 -NoLaunch -NoPause
   -HideIp : 出口 IP / WebRTC IP 也脱敏：-ExportIssues 的问题说明省略 IP 提示行；preflight-result.json 的 current 同样遮罩（containsIp 照样标 true）
-  -Json     : 写出 preflight-result.json（UTF-8 无 BOM）并在末尾打印 CSL_JSON_PATH=…；评分走 claude-rules.ps1
+  -Json     : 写出 preflight-result.json（UTF-8 无 BOM）并在末尾打印 CSL_JSON_PATH=…；评分走 claude-rules.ps1。不带 -Json 就不写也不覆盖这个文件（v4.0.0 起）
+  -JsonPath <文件路径> : 配合 -Json，把 JSON 写到指定文件（默认脚本目录的 preflight-result.json）；目标目录必须已存在，不存在就报错退出（不自动创建）；不带 -Json 时忽略
   配置文件  : 同目录 preflight.json（可用 fixVarPatterns；controllerSecret 不会被打印）
   依赖      : 同目录 claude-common.ps1、claude-envfix.ps1、claude-issueexport.ps1、claude-monitor.ps1、claude-rules.ps1
 #>
@@ -41,6 +43,11 @@
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-envfix.ps1')
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-issueexport.ps1')
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-rules.ps1')
+# R4a: -JsonPath 先校验，目录不存在就在任何检查之前报错退出
+if ($Json) {
+  try { $script:CslJsonTarget = Resolve-CslPreflightJsonPath -Json -JsonPath $JsonPath -Root (Split-Path -Parent $MyInvocation.MyCommand.Path) }
+  catch { Write-Host ("CSL_JSON_ERROR=" + $_.Exception.Message) -ForegroundColor Red; exit 2 }
+} elseif ($JsonPath) { Write-Host '-JsonPath 只在配合 -Json 时有效，已忽略（不写 preflight-result.json）。' -ForegroundColor Yellow }
 try { $Host.UI.RawUI.WindowTitle = 'Claude 安全启动 - 启动前检查' } catch {}
 $cfg = Load-Config
 if ($Relearn) { Save-Learned $cfg @{ expectedIp = ''; expectedLoc = ''; expectedNode = ''; timezone = ''; expectedTzIana = '' } }
@@ -786,14 +793,13 @@ if ($ExportIssues) {
   Write-Host '-------- 结束 --------' -ForegroundColor Cyan
 }
 
-# Structured JSON (always written; -Json also prints path marker for machines/CI)
+# Structured JSON：只在 -Json 时写（R4a），并打印 CSL_JSON_PATH= 供机器读取
 try {
   if ($script:CslScoreResult) {
     $verdict = $(if ($fails.Count -eq 0) { 'ok' } elseif ($Force) { 'force' } else { 'blocked' })
     $payload = New-CslPreflightResult -ScoreResult $script:CslScoreResult -Platform 'win' -Verdict $verdict
-    $outJson = Join-Path $script:Root 'preflight-result.json'
-    Write-CslPreflightResultJson -Result $payload -Path $outJson | Out-Null
-    if ($Json) { Write-Host ("CSL_JSON_PATH=" + $outJson) -ForegroundColor DarkGray }
+    $outJson = Save-CslPreflightResultJson -Result $payload -Json:$Json -JsonPath $JsonPath -Root $script:Root
+    if ($Json -and $outJson) { Write-Host ("CSL_JSON_PATH=" + $outJson) -ForegroundColor DarkGray }
   }
 } catch {
   if ($Json) { Write-Host ("CSL_JSON_ERROR=" + $_) -ForegroundColor Yellow }

@@ -284,3 +284,31 @@ function Write-CslPreflightResultJson {
   [System.IO.File]::WriteAllText($Path, $json + "`n", $utf8NoBom)
   return $Path
 }
+
+# R4a: preflight-result.json 只在 -Json 时写；-JsonPath 指定文件（目录必须已存在，不自动创建）
+function Resolve-CslPreflightJsonPath {
+  param(
+    [switch]$Json,
+    [AllowNull()][string]$JsonPath,
+    [Parameter(Mandatory)][string]$Root
+  )
+  if (-not $Json) { return $null }
+  if ([string]::IsNullOrWhiteSpace($JsonPath)) { return (Join-Path $Root 'preflight-result.json') }
+  $full = [System.IO.Path]::GetFullPath($JsonPath)
+  if (Test-Path -LiteralPath $full -PathType Container) { throw "-JsonPath 指向的是目录，请给出文件路径" }
+  $dir = Split-Path -Parent $full
+  if ([string]::IsNullOrWhiteSpace($dir) -or -not (Test-Path -LiteralPath $dir -PathType Container)) { throw "-JsonPath 的目标目录不存在（不会自动创建）" }
+  return $full
+}
+
+function Save-CslPreflightResultJson {
+  param(
+    [Parameter(Mandatory)]$Result,
+    [switch]$Json,
+    [AllowNull()][string]$JsonPath,
+    [Parameter(Mandatory)][string]$Root
+  )
+  $target = Resolve-CslPreflightJsonPath -Json:$Json -JsonPath $JsonPath -Root $Root
+  if (-not $target) { return $null }
+  return (Write-CslPreflightResultJson -Result $Result -Path $target)
+}

@@ -540,6 +540,89 @@ foreach ($g in $r0Golden) {
   Assert-True ($fxMis.Count -eq 0) ("R0 $($g.Name): every item fixId equals d025841 (mismatch=[$($fxMis -join ',')])")
 }
 
+Write-Host '== R4a: preflight-result.json only with -Json; -JsonPath ==' -ForegroundColor Cyan
+# Temp dirs only; nothing is written to the repo or script directory.
+$r4aBase = Join-Path ([IO.Path]::GetTempPath()) ('csl-r4a-' + [guid]::NewGuid().ToString('n'))
+$r4aRoot = Join-Path $r4aBase 'root'
+$r4aOut = Join-Path $r4aBase 'out'
+New-Item -ItemType Directory -Path $r4aRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $r4aOut -Force | Out-Null
+$r4aPayload = [pscustomobject]@{ schemaVersion = 1; score = 77; checks = @() }
+$r4aDefault = Join-Path $r4aRoot 'preflight-result.json'
+$r4aX = Join-Path $r4aOut 'x.json'
+try {
+  # 1) no -Json: nothing written
+  $r4aRet = Save-CslPreflightResultJson -Result $r4aPayload -Root $r4aRoot
+  Assert-True ($null -eq $r4aRet) 'R4a no -Json: save returns nothing'
+  Assert-True (-not (Test-Path -LiteralPath $r4aDefault)) 'R4a no -Json: no preflight-result.json in script dir'
+  $r4aRet = Save-CslPreflightResultJson -Result $r4aPayload -JsonPath $r4aX -Root $r4aRoot
+  Assert-True ($null -eq $r4aRet) 'R4a -JsonPath without -Json: save returns nothing'
+  Assert-True (-not (Test-Path -LiteralPath $r4aX)) 'R4a -JsonPath without -Json: target file not created'
+  Assert-Eq (@(Get-ChildItem -LiteralPath $r4aBase -Recurse -File).Count) 0 'R4a no -Json: no file at all in script dir or temp dir'
+  Assert-True ($null -eq (Resolve-CslPreflightJsonPath -JsonPath $r4aX -Root $r4aRoot)) 'R4a resolve without -Json gives no path'
+  # 2) no -Json does not overwrite an existing file
+  [IO.File]::WriteAllText($r4aDefault, 'old-r4a', (New-Object System.Text.UTF8Encoding($false)))
+  Save-CslPreflightResultJson -Result $r4aPayload -Root $r4aRoot | Out-Null
+  Assert-Eq ([IO.File]::ReadAllText($r4aDefault)) 'old-r4a' 'R4a no -Json: existing preflight-result.json not overwritten'
+  Remove-Item -LiteralPath $r4aDefault -Force
+  # 3) -Json default path = script dir
+  $r4aRet = Save-CslPreflightResultJson -Result $r4aPayload -Json -Root $r4aRoot
+  Assert-Eq $r4aRet $r4aDefault 'R4a -Json default path is script dir preflight-result.json'
+  Assert-True (Test-Path -LiteralPath $r4aDefault) 'R4a -Json default: file written'
+  $r4aJ = $null; try { $r4aJ = [IO.File]::ReadAllText($r4aDefault) | ConvertFrom-Json } catch {}
+  Assert-Eq $r4aJ.score 77 'R4a -Json default: file parses with payload'
+  Remove-Item -LiteralPath $r4aDefault -Force
+  # 4) -Json -JsonPath: only the given file
+  $r4aRet = Save-CslPreflightResultJson -Result $r4aPayload -Json -JsonPath $r4aX -Root $r4aRoot
+  Assert-Eq $r4aRet ([IO.Path]::GetFullPath($r4aX)) 'R4a -JsonPath: save returns the given path'
+  Assert-True (Test-Path -LiteralPath $r4aX) 'R4a -JsonPath: file written to given path'
+  Assert-True (-not (Test-Path -LiteralPath $r4aDefault)) 'R4a -JsonPath: no preflight-result.json in script dir'
+  $r4aBytes = [IO.File]::ReadAllBytes($r4aX)
+  Assert-True (-not ($r4aBytes.Length -ge 3 -and $r4aBytes[0] -eq 0xEF -and $r4aBytes[1] -eq 0xBB -and $r4aBytes[2] -eq 0xBF)) 'R4a -JsonPath: UTF-8 without BOM'
+  $r4aJ = $null; try { $r4aJ = [IO.File]::ReadAllText($r4aX) | ConvertFrom-Json } catch {}
+  Assert-Eq $r4aJ.schemaVersion 1 'R4a -JsonPath: file parses with payload'
+  # 5) missing directory: error, nothing created
+  $r4aMissDir = Join-Path $r4aBase 'nope'
+  $r4aMiss = Join-Path $r4aMissDir 'x.json'
+  $r4aErr = $null
+  try { Save-CslPreflightResultJson -Result $r4aPayload -Json -JsonPath $r4aMiss -Root $r4aRoot | Out-Null } catch { $r4aErr = $_.Exception.Message }
+  Assert-True ($null -ne $r4aErr) 'R4a -JsonPath missing dir: error'
+  Assert-True ([string]$r4aErr -match '目录不存在') 'R4a -JsonPath missing dir: message says directory missing'
+  Assert-True (-not (Test-Path -LiteralPath $r4aMissDir)) 'R4a -JsonPath missing dir: directory not created'
+  Assert-True (-not (Test-Path -LiteralPath $r4aDefault)) 'R4a -JsonPath missing dir: no fallback file in script dir'
+  $r4aErr = $null
+  try { Resolve-CslPreflightJsonPath -Json -JsonPath $r4aOut -Root $r4aRoot | Out-Null } catch { $r4aErr = $_.Exception.Message }
+  Assert-True ($null -ne $r4aErr) 'R4a -JsonPath pointing to a directory: error'
+  # 6) real CLI: missing -JsonPath dir exits before any check, writes nothing
+  $r4aCli = Join-Path $r4aBase 'cli'
+  New-Item -ItemType Directory -Path $r4aCli -Force | Out-Null
+  Get-ChildItem -LiteralPath $root -Filter 'claude-*.ps1' -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $r4aCli }
+  Copy-Item -LiteralPath (Join-Path $root 'rules') -Destination $r4aCli -Recurse
+  $r4aCliMiss = Join-Path (Join-Path $r4aBase 'cli-nope') 'x.json'
+  $r4aExe = (Get-Process -Id $PID).Path
+  $r4aPrevEnc = $null
+  try { $r4aPrevEnc = [Console]::OutputEncoding; [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
+  try {
+    $r4aOutLines = @(& $r4aExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $r4aCli 'claude-preflight.ps1') -NoLaunch -NoPause -Json -JsonPath $r4aCliMiss 2>&1 | ForEach-Object { [string]$_ })
+    $r4aExit = $LASTEXITCODE
+  } finally {
+    if ($null -ne $r4aPrevEnc) { try { [Console]::OutputEncoding = $r4aPrevEnc } catch {} }
+  }
+  Assert-Eq $r4aExit 2 'R4a CLI -JsonPath missing dir: exit 2'
+  Assert-True ((($r4aOutLines -join "`n") -match 'CSL_JSON_ERROR=')) 'R4a CLI -JsonPath missing dir: prints CSL_JSON_ERROR='
+  Assert-True (-not (Test-Path -LiteralPath (Split-Path -Parent $r4aCliMiss))) 'R4a CLI -JsonPath missing dir: directory not created'
+  Assert-True (-not (Test-Path -LiteralPath (Join-Path $r4aCli 'preflight-result.json'))) 'R4a CLI -JsonPath missing dir: no preflight-result.json in script dir'
+  Assert-True (-not (Test-Path -LiteralPath (Join-Path $r4aCli 'preflight.json'))) 'R4a CLI -JsonPath missing dir: exits before config is written'
+} finally {
+  try { Remove-Item -LiteralPath $r4aBase -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+}
+# 7) preflight wiring (static): the only write goes through the -Json gate
+$r4aPf = Get-Content (Join-Path $root 'claude-preflight.ps1') -Raw -Encoding UTF8
+Assert-Eq ([regex]::Matches($r4aPf, 'Save-CslPreflightResultJson\s+-Result\s+\$payload\s+-Json:\$Json\s+-JsonPath\s+\$JsonPath').Count) 1 'R4a preflight saves JSON only via Save-CslPreflightResultJson -Json:$Json -JsonPath $JsonPath'
+Assert-Eq ([regex]::Matches($r4aPf, 'Write-CslPreflightResultJson').Count) 0 'R4a preflight has no direct Write-CslPreflightResultJson call'
+Assert-True ($r4aPf -match '\[string\]\$JsonPath') 'R4a preflight has -JsonPath parameter'
+Assert-True ($r4aPf -match '-JsonPath <') 'R4a -? help documents -JsonPath'
+
 Write-Host ''
 if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {
   Write-Host "FAILED: $($script:Fail) assertion(s), $($script:Uncaught) uncaught error(s)" -ForegroundColor Red
