@@ -10,13 +10,14 @@ $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 # Restore Stop after dot-sourcing so non-terminating errors also hit the trap
 $ErrorActionPreference = 'Stop'
 # Any uncaught error counts as a failure
-# Counting rule (R3, same in all test files): count failures with (?m)^\s*FAIL(?!ED)\b.
-# Every failed assertion and every uncaught error prints one line starting with "  FAIL  "; the summary line starts with FAILED and is not counted.
-# On failure the regex count must equal the summary's "FAIL line(s)" number (assertions + uncaught errors).
+# Counting rule (R3, same in all test files):
+#   (?m)^\s*FAIL(?!ED)\b   counts failed assertions; must equal "N assertion(s)" in the FAILED summary.
+#   (?m)^\s*UNCAUGHT\b     counts uncaught errors;    must equal "M uncaught error(s)".
+# The summary line starts with FAILED / ALL PASSED and matches neither regex.
 $script:Uncaught = 0
 trap {
   $script:Uncaught++
-  Write-Host ("  FAIL  uncaught error: {0} (line {1})" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber) -ForegroundColor Red
+  Write-Host ("  UNCAUGHT  {0} (line {1})" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber) -ForegroundColor Red
   continue
 }
 
@@ -472,7 +473,7 @@ foreach ($g in $r0Golden) {
 
 Write-Host ''
 if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {
-  Write-Host ("FAILED: {0} assertion(s), {1} uncaught error(s), {2} FAIL line(s)" -f $script:Fail, $script:Uncaught, ($script:Fail + $script:Uncaught)) -ForegroundColor Red
+  Write-Host "FAILED: $($script:Fail) assertion(s), $($script:Uncaught) uncaught error(s)" -ForegroundColor Red
   exit 1
 }
 Write-Host 'ALL PASSED' -ForegroundColor Green
