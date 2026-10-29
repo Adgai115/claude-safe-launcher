@@ -285,14 +285,17 @@ function Write-CslPreflightResultJson {
   return $Path
 }
 
-# R4a: preflight-result.json 只在 -Json 时写；-JsonPath 指定文件（目录必须已存在，不自动创建）
+# R4a: preflight-result.json 只在 -Json 时写；-JsonPath 指定文件（目录必须已存在，不自动创建）；只给 -JsonPath 不给 -Json 报错
 function Resolve-CslPreflightJsonPath {
   param(
     [switch]$Json,
     [AllowNull()][string]$JsonPath,
     [Parameter(Mandatory)][string]$Root
   )
-  if (-not $Json) { return $null }
+  if (-not $Json) {
+    if (-not [string]::IsNullOrWhiteSpace($JsonPath)) { throw "-JsonPath 需要配合 -Json 使用（未写任何文件）" }
+    return $null
+  }
   if ([string]::IsNullOrWhiteSpace($JsonPath)) { return (Join-Path $Root 'preflight-result.json') }
   $full = [System.IO.Path]::GetFullPath($JsonPath)
   if (Test-Path -LiteralPath $full -PathType Container) { throw "-JsonPath 指向的是目录，请给出文件路径" }
