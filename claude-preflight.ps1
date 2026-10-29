@@ -15,10 +15,10 @@ Claude 桌面版 启动前检查 + 自动设置（v4.0.0）
 -NoPause  : 结束时不等待按键；单独使用时不提示也不自动修复
 
 .PARAMETER NoLaunch
--NoLaunch : 只检查，不启动/不切换 Claude，也不启动后台监控（测试用）。R4d：带 -NoLaunch 时从不改时区（不调用 tzutil）、不向 Clash 发任何写请求（不切节点）、不学习也不写 preflight.json（含 expectedNode / 出口 IP / 时区，-Relearn 也不清空）、不改 Clash 配置文件；只读检查和报告照常，被跳过的动作会以「[NoLaunch] 已跳过…」报告。与 claudeGroup / pinMainGroup / mainGroup 怎么配、有没有 preflight.json 都无关。
+-NoLaunch : 只检查，不启动/不切换 Claude，也不启动后台监控（测试用）。R4d：带 -NoLaunch 时从不改时区（不调用 tzutil）、不向 Clash 发任何写请求（不切节点）、不启动 Clash、不改 Clash 配置文件，与是否带 -Relearn 无关；只读检查和报告照常，被跳过的动作会以「[NoLaunch] 已跳过…」报告（Clash 未运行只报告）。写 preflight.json（学习时区 / expectedNode / 出口 IP 与地区、首次写默认值）只在显式带 -Relearn 时允许（面板「重新学习」就是 -NoLaunch -Relearn）；带 -NoLaunch 不带 -Relearn 时一切自动学习和写入都拦截，默认值只留在内存。与 claudeGroup / pinMainGroup / mainGroup 怎么配、有没有 preflight.json 都无关。
 
 .PARAMETER Relearn
--Relearn  : 忘掉记住的出口 IP / 节点 / 时区，按当前环境重新记住
+-Relearn  : 忘掉记住的出口 IP / 节点 / 时区，按当前环境重新记住（与 -NoLaunch 同用时，只有显式 -Relearn 才允许写 preflight.json；仍不改时区、不切节点、不启动 Clash）
 
 .PARAMETER TestMode
 -TestMode : 仅允许操作 CSL_TEST_ 前缀变量；测试请配合 -FixVarPattern 'CSL_TEST_ANTHROPIC_*'
@@ -110,13 +110,17 @@ if ($Json -or $JsonPath) {
   catch { Write-Host ("CSL_JSON_ERROR=" + $_.Exception.Message) -ForegroundColor Red; exit 2 }
 }
 # ---------- R4d：-NoLaunch 从不改时区、节点和 Clash ----------
-# 所有「写」入口只经由下面三个包装函数，每个包装函数的第一条语句就是 -NoLaunch 守卫（带 -NoLaunch 时只报告“已跳过”，不执行）：
+# 所有「写」入口只经由下面的包装函数，每个包装函数的第一条语句就是 -NoLaunch 守卫（带 -NoLaunch 时只报告“已跳过”，不执行）：
 #   改时区 tzutil /s                  → Set-CslSystemTimeZone  → Invoke-CslTzutilSet
 #   Clash 控制器写请求（PUT 切节点）   → Switch-CslClashNode    → Ctl-SelectNode
-#   学习 / 清空 preflight.json         → Save-CslLearnedGuarded → Save-Learned
-# 每个调用点都必须带 -NoLaunch:$NoLaunch（tests/rules.Tests.ps1 里逐个静态断言，并用桩函数在进程内验证写调用次数为 0）。
+#   启动 Clash                         → Start-CslClashProcess  → Start-Process（-NoLaunch 一律不启动，与 -Relearn 无关）
+#   学习 / 清空 preflight.json         → Save-CslLearnedGuarded → Save-Learned（守卫是 Test-CslLearnWriteAllowed：带 -NoLaunch 时只有显式 -Relearn 才放行）
+#   首次写默认值                       → Load-Config -NoWrite:($NoLaunch -and -not $Relearn)（claude-common.ps1，默认行为不变）
+# 改时区 / 切节点 / 启动 Clash 在 -NoLaunch 下无论带不带 -Relearn 都不做。
+# 每个调用点都必须带 -NoLaunch:$NoLaunch（学习相关的调用点还要带 -Relearn:$Relearn；tests/rules.Tests.ps1 里逐个静态断言，并用桩函数在进程内验证写调用次数为 0）。
 # 只读检查与报告不受影响。包装函数只用 Write-Host 输出（-Relearn 发生在 Say-* 定义之前）。
 function Test-CslNoLaunchWriteAllowed([switch]$NoLaunch) { return (-not $NoLaunch) }
+function Test-CslLearnWriteAllowed([switch]$NoLaunch, [switch]$Relearn) { return ((-not $NoLaunch) -or $Relearn) }
 function Invoke-CslTzutilSet([string]$WindowsTzId) {
   & tzutil.exe /s "$WindowsTzId" 2>&1 | Out-Null
   return (& tzutil.exe /g).Trim()
@@ -131,19 +135,32 @@ function Switch-CslClashNode($cfg, [string]$Group, [string]$Current, [string]$No
   Write-Host ("  [修复] {0} 组当前为 {1}，正在切回 {2}" -f $Group, $Current, $Node) -ForegroundColor Yellow
   return (Ctl-SelectNode $cfg $Group $Node)
 }
-function Save-CslLearnedGuarded($cfg, [hashtable]$Vals, [string]$DoneText, [string]$SkipText, [switch]$NoLaunch) {
-  if (-not (Test-CslNoLaunchWriteAllowed -NoLaunch:$NoLaunch)) { Write-Host ("  [信息] [NoLaunch] 已跳过（不学习、不写 preflight.json）：{0}" -f $SkipText) -ForegroundColor Gray; return $false }
+function Start-CslClashProcess([string]$ClashExe, [switch]$NoLaunch) {
+  if (-not (Test-CslNoLaunchWriteAllowed -NoLaunch:$NoLaunch)) { Write-Host ("  [信息] [NoLaunch] 已跳过启动 Clash：{0}（-NoLaunch 从不启动 Clash，与 -Relearn 无关）" -f $ClashExe) -ForegroundColor Gray; return $false }
+  Write-Host ("  [修复] Clash Verge 未运行，正在启动: {0}" -f $ClashExe) -ForegroundColor Yellow
+  Start-Process -FilePath $ClashExe | Out-Null
+  return $true
+}
+# Clash 未运行：不带 -NoLaunch 时启动；带 -NoLaunch 只报告（失败项 net.clash_running）。
+function Invoke-CslClashStartStep($cfg, [bool]$VergeRunning, [switch]$NoLaunch) {
+  if ($VergeRunning) { Say-Info 'Clash Verge 已运行，但 TUN 未就绪，等待中…'; return }
+  $exeOk = [bool]($cfg.clashExe -and (Test-Path $cfg.clashExe))
+  if ($exeOk -and (Start-CslClashProcess ([string]$cfg.clashExe) -NoLaunch:$NoLaunch)) { return }
+  Say-Fail $(if ($exeOk) { 'Clash Verge 未运行（-NoLaunch 不启动 Clash，只报告；去掉 -NoLaunch 才会自动启动）' } else { 'Clash Verge 未运行，也没找到安装位置（可在 preflight.json 里填写 clashExe）' }) -Id 'net.clash_running'
+}
+function Save-CslLearnedGuarded($cfg, [hashtable]$Vals, [string]$DoneText, [string]$SkipText, [switch]$NoLaunch, [switch]$Relearn) {
+  if (-not (Test-CslLearnWriteAllowed -NoLaunch:$NoLaunch -Relearn:$Relearn)) { Write-Host ("  [信息] [NoLaunch] 已跳过（不学习、不写 preflight.json；加 -Relearn 才会学习）：{0}" -f $SkipText) -ForegroundColor Gray; return $false }
   Save-Learned $cfg $Vals
   if ($DoneText) { Write-Host ("  [修复] {0}" -f $DoneText) -ForegroundColor Yellow }
   return $true
 }
 # 第 2 节：时区（学习 + 校正）。返回当前时区 id。
-function Invoke-CslTimezoneStep($cfg, [string]$Tz, [switch]$NoLaunch) {
+function Invoke-CslTimezoneStep($cfg, [string]$Tz, [switch]$NoLaunch, [switch]$Relearn) {
   if (-not $cfg.timezone) {
     $tr0 = Get-Trace 'https://claude.ai/cdn-cgi/trace'; $iana = $null
     if ($tr0['ip']) { try { $iana = ((Invoke-Curl @('-m','12',"https://ipinfo.io/$($tr0['ip'])/json")) | ConvertFrom-Json).timezone } catch {} }
     $win = Convert-IanaToWindows $iana
-    if ($win) { [void](Save-CslLearnedGuarded $cfg @{ timezone = $win; expectedTzIana = [string]$iana } "首次运行：按出口 IP 所在地（$($iana)）设定目标时区 $($win)" "按出口 IP 所在地（$($iana)）设定目标时区 $($win)" -NoLaunch:$NoLaunch) }
+    if ($win) { [void](Save-CslLearnedGuarded $cfg @{ timezone = $win; expectedTzIana = [string]$iana } "首次运行：按出口 IP 所在地（$($iana)）设定目标时区 $($win)" "按出口 IP 所在地（$($iana)）设定目标时区 $($win)" -NoLaunch:$NoLaunch -Relearn:$Relearn) }
     else { Say-Note "无法按出口 IP 判断时区（$($iana)），跳过时区检查；可在 preflight.json 里手动填写 timezone" -Id 'locale.system_tz' }
   }
   if ($cfg.timezone -and $Tz -ne $cfg.timezone) { $Tz = Set-CslSystemTimeZone $cfg.timezone $Tz -NoLaunch:$NoLaunch }
@@ -151,7 +168,7 @@ function Invoke-CslTimezoneStep($cfg, [string]$Tz, [switch]$NoLaunch) {
   return $Tz
 }
 # 第 3 节：节点锁定（学习 expectedNode + 切回）。返回是否切换过节点。
-function Invoke-CslNodeLock($cfg, [switch]$NoLaunch) {
+function Invoke-CslNodeLock($cfg, [switch]$NoLaunch, [switch]$Relearn) {
   $switched = $false
   $ctlVer = Ctl-Get $cfg '/version'
   if (-not $ctlVer) {
@@ -162,7 +179,7 @@ function Invoke-CslNodeLock($cfg, [switch]$NoLaunch) {
     if ($cfg.pinMainGroup -and $cfg.mainGroup) { $groups += $cfg.mainGroup }
     if (-not $cfg.expectedNode -and $cfg.claudeGroup) {
       $gi = Ctl-GetGroup $cfg $cfg.claudeGroup
-      if ($gi -and $gi.now) { [void](Save-CslLearnedGuarded $cfg @{ expectedNode = [string]$gi.now } "首次运行：记住 $($cfg.claudeGroup) 组当前节点 $($gi.now)，以后被切走会自动切回" "记住 $($cfg.claudeGroup) 组当前节点 $($gi.now)" -NoLaunch:$NoLaunch) }
+      if ($gi -and $gi.now) { [void](Save-CslLearnedGuarded $cfg @{ expectedNode = [string]$gi.now } "首次运行：记住 $($cfg.claudeGroup) 组当前节点 $($gi.now)，以后被切走会自动切回" "记住 $($cfg.claudeGroup) 组当前节点 $($gi.now)" -NoLaunch:$NoLaunch -Relearn:$Relearn) }
     }
     foreach ($g in $groups) {
       $info = Ctl-GetGroup $cfg $g
@@ -182,8 +199,8 @@ function Invoke-CslNodeLock($cfg, [switch]$NoLaunch) {
   return $switched
 }
 try { $Host.UI.RawUI.WindowTitle = 'Claude 安全启动 - 启动前检查' } catch {}
-$cfg = Load-Config
-if ($Relearn) { [void](Save-CslLearnedGuarded $cfg @{ expectedIp = ''; expectedLoc = ''; expectedNode = ''; timezone = ''; expectedTzIana = '' } '' '-Relearn 清空已记住的出口 IP / 节点 / 时区' -NoLaunch:$NoLaunch) }
+$cfg = Load-Config -NoWrite:($NoLaunch -and -not $Relearn)
+if ($Relearn) { [void](Save-CslLearnedGuarded $cfg @{ expectedIp = ''; expectedLoc = ''; expectedNode = ''; timezone = ''; expectedTzIana = '' } '' '-Relearn 清空已记住的出口 IP / 节点 / 时区' -NoLaunch:$NoLaunch -Relearn:$Relearn) }
 
 $script:DoUndoFix = [bool]$UndoFix
 $script:UndoFixId = $(if ($UndoId) { $UndoId } else { $null })
@@ -438,10 +455,7 @@ $mihomo = Get-ProxyCore
 $verge  = Get-Process -Name 'clash-verge' -ErrorAction SilentlyContinue
 $tun = Get-TunAdapter
 if (-not ($mihomo -and $tun -and $tun.Status -eq 'Up')) {
-  if (-not $verge) {
-    if ($cfg.clashExe -and (Test-Path $cfg.clashExe)) { Say-Fix "Clash Verge 未运行，正在启动: $($cfg.clashExe)"; Start-Process -FilePath $cfg.clashExe | Out-Null }
-    else { Say-Fail "Clash Verge 未运行，也没找到安装位置（可在 preflight.json 里填写 clashExe）" -Id 'net.clash_running' }
-  } else { Say-Info 'Clash Verge 已运行，但 TUN 未就绪，等待中…' }
+  Invoke-CslClashStartStep $cfg ([bool]$verge) -NoLaunch:$NoLaunch
   $deadline = (Get-Date).AddSeconds(30)
   while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 2
@@ -457,14 +471,14 @@ else { Say-Fail '30 秒内 TUN 网卡未启用。请在 Clash Verge 里打开「
 # ---------- 2. 时区 ----------
 Say-Head '2. 系统时区'
 $tz = (Get-TimeZone).Id
-$tz = Invoke-CslTimezoneStep $cfg $tz -NoLaunch:$NoLaunch
+$tz = Invoke-CslTimezoneStep $cfg $tz -NoLaunch:$NoLaunch -Relearn:$Relearn
 $tzAuto = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\tzautoupdate' -ErrorAction SilentlyContinue).Start
 if ($tzAuto -eq 4) { Say-Pass '自动设置时区已关闭 (tzautoupdate Start=4)' }
 else { Say-Warn "自动设置时区未关闭 (Start=$($tzAuto))，时区可能被系统改回" 5 -Id 'locale.tz_auto' }
 
 # ---------- 3. 节点锁定（mihomo 外部控制器） ----------
 Say-Head '3. 节点锁定'
-$switched = Invoke-CslNodeLock $cfg -NoLaunch:$NoLaunch
+$switched = Invoke-CslNodeLock $cfg -NoLaunch:$NoLaunch -Relearn:$Relearn
 if ($switched) { Say-Info '已切换节点，等待 3 秒后重新测 IP…'; Start-Sleep -Seconds 3 }
 
 # ---------- 4. 三方 IP 对比 ----------
@@ -489,7 +503,7 @@ $edgeLoc = $(if ($edge.Count) { $edge[0].Loc } else { '' })
 if ($edgeLoc -and $edgeLoc -match $blocked) { Say-Fail "Claude 看到你位于 $($edgeLoc)，这是 Claude 不支持的地区，请检查代理规则是否让 Claude 走了代理" -Id 'exit.blocked_region' }
 if (-not $cfg.expectedIp) {
   $ips = @(@($edge | ForEach-Object { $_.Ip }) + @($localIp) | Where-Object { $_ } | Select-Object -Unique)
-  if ($edge.Count -and $edgeLoc -notmatch $blocked -and $ips.Count -eq 1) { [void](Save-CslLearnedGuarded $cfg @{ expectedIp = $ips[0]; expectedLoc = $edgeLoc } "首次运行：记住当前出口 IP $($ips[0])（$($edgeLoc)），以后变化会提醒" "记住当前出口 IP $($ips[0])（$($edgeLoc)）" -NoLaunch:$NoLaunch) }
+  if ($edge.Count -and $edgeLoc -notmatch $blocked -and $ips.Count -eq 1) { [void](Save-CslLearnedGuarded $cfg @{ expectedIp = $ips[0]; expectedLoc = $edgeLoc } "首次运行：记住当前出口 IP $($ips[0])（$($edgeLoc)），以后变化会提醒" "记住当前出口 IP $($ips[0])（$($edgeLoc)）" -NoLaunch:$NoLaunch -Relearn:$Relearn) }
   elseif ($ips.Count -gt 1) { Say-Warn ("各方看到的出口 IP 不一致，暂不记住: " + ($ips -join ', ')) 10 -Id 'exit.three_way_ip' }
   elseif (-not $edge.Count) { Say-Warn '测不到 Claude 看到的出口 IP，暂不记住' 10 -Id 'exit.three_way_ip' }
 }
