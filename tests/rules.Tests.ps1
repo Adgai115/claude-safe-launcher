@@ -935,7 +935,7 @@ foreach ($r4cPr in $r4cProbes) {
   $r4cDynNames += @(
     "R4c -Help $($r4cN): exit 0",
     "R4c -Help $($r4cN): prints the help text",
-    "R4c -Help $($r4cN): no preflight.json created",
+    "R4c -Help $($r4cN): seed preflight.json not modified",
     "R4c -Help $($r4cN): no preflight.log created",
     "R4c -Help $($r4cN): no preflight-result.json created",
     "R4c -Help $($r4cN): temp copy unchanged (no file added or changed; no monitor / panel started)"
@@ -954,6 +954,10 @@ try {
       Get-ChildItem -LiteralPath $root -Filter 'claude-*.ps1' -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $r4cD }
       Copy-Item -LiteralPath (Join-Path $root 'rules') -Destination $r4cD -Recurse
       Copy-Item -LiteralPath (Join-Path $root 'claude-panel.html') -Destination $r4cD
+      # Safety seed: if -Help ever regresses, a real preflight in this copy must not learn/switch nodes or run tzutil.
+      # timezone = the current Windows zone (no change), claudeGroup '' (no node learning / PUT), no main group pin.
+      $r4cSeed = [ordered]@{ timezone = [TimeZoneInfo]::Local.Id; claudeGroup = ''; pinMainGroup = $false; mainGroup = '' }
+      [IO.File]::WriteAllText((Join-Path $r4cD 'preflight.json'), ($r4cSeed | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
     }
     $r4cSetupOk = $true
   } catch { $r4cSetupErr = $_.Exception.Message }
@@ -966,12 +970,15 @@ try {
       $r4cN = $r4cPr.Name
       $r4cD = Join-Path $r4cBase ([IO.Path]::GetFileNameWithoutExtension($r4cN))
       $r4cSyn = ([regex]::Match([IO.File]::ReadAllText((Join-Path $root $r4cN)), '(?m)^\.SYNOPSIS\r?\n(.+?)\r?$').Groups[1].Value).Trim()
+      $r4cSeedText = [IO.File]::ReadAllText((Join-Path $r4cD 'preflight.json'))
       $r4cSnapBefore = Get-CslDirSnapshot $r4cD
       $r4cRes = Invoke-CslHelpProbe (Join-Path $r4cD $r4cN) $r4cPr.Args
       $r4cSnapAfter = Get-CslDirSnapshot $r4cD
       Assert-True ((-not $r4cRes.TimedOut) -and $r4cRes.Exit -eq 0) "R4c -Help $($r4cN): exit 0"
       Assert-True ($r4cSyn.Length -gt 0 -and $r4cRes.Out.Contains($r4cSyn)) "R4c -Help $($r4cN): prints the help text"
-      Assert-True (-not (Test-Path -LiteralPath (Join-Path $r4cD 'preflight.json'))) "R4c -Help $($r4cN): no preflight.json created"
+      $r4cSeedAfter = ''
+      try { $r4cSeedAfter = [IO.File]::ReadAllText((Join-Path $r4cD 'preflight.json')) } catch {}
+      Assert-True ($r4cSeedAfter -ceq $r4cSeedText) "R4c -Help $($r4cN): seed preflight.json not modified"
       Assert-True (-not (Test-Path -LiteralPath (Join-Path $r4cD 'preflight.log'))) "R4c -Help $($r4cN): no preflight.log created"
       Assert-True (-not (Test-Path -LiteralPath (Join-Path $r4cD 'preflight-result.json'))) "R4c -Help $($r4cN): no preflight-result.json created"
       Assert-True ($r4cSnapBefore -ceq $r4cSnapAfter) "R4c -Help $($r4cN): temp copy unchanged (no file added or changed; no monitor / panel started)"
