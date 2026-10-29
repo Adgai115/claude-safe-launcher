@@ -339,7 +339,7 @@ Write-Host '== v4 part 2: real rule ids, no item.N placeholders ==' -ForegroundC
 $catIds = @($cat.checks | ForEach-Object { [string]$_.id })
 $pfSrc = [IO.File]::ReadAllText((Join-Path $root 'claude-preflight.ps1'))
 Assert-True (-not ($pfSrc -match "item\.\{0\}")) 'preflight has no item.N placeholder id'
-# 每个 Say-Fail / Say-Warn / Say-Note / Soft-BrowserWarn 调用点都必须带 -Id <目录里的真实 id>（函数定义内部的转发调用除外）
+# 每个 Say-Fail / Say-Warn / Say-Note / Soft-BrowserWarn 调用点都必须带 -Id <目录里的真实 id>（仅 Soft-BrowserWarn 内部的转发调用除外；R4d 把第 2/3 节挪进了命名函数，其中的调用点仍要检查）
 $sayNames = @('Say-Fail', 'Say-Warn', 'Say-Note', 'Soft-BrowserWarn')
 $callAsts = @($pfAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and ($sayNames -contains $n.GetCommandName()) }, $true))
 $sites = New-Object System.Collections.ArrayList
@@ -347,7 +347,7 @@ $parseSiteId = $null
 $badSites = New-Object System.Collections.ArrayList
 foreach ($ca in $callAsts) {
   $anc = $ca.Parent; $inFn = $false
-  while ($anc) { if ($anc -is [System.Management.Automation.Language.FunctionDefinitionAst]) { $inFn = $true; break }; $anc = $anc.Parent }
+  while ($anc) { if ($anc -is [System.Management.Automation.Language.FunctionDefinitionAst]) { if ($anc.Name -eq 'Soft-BrowserWarn') { $inFn = $true }; break }; $anc = $anc.Parent }
   if ($inFn) { continue }
   $els = @($ca.CommandElements); $idVal = $null
   for ($k = 0; $k -lt $els.Count; $k++) {
@@ -986,6 +986,488 @@ try {
   }
 } finally {
   try { Remove-Item -LiteralPath $r4cBase -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+}
+
+# ============================================================================
+# R4d: -NoLaunch 从不改时区、节点和 Clash（写入口守卫 + 进程内桩函数验证）
+# 守卫约束：本节不连任何真实 Clash 控制器、不改真实时区、不碰真实 ANTHROPIC_* 变量、不联网；
+# 控制器读写（Invoke-Ctl）、tzutil、Save-Learned、Get-Trace / Invoke-Curl 全是桩，Load-Config 只写临时目录。
+# ============================================================================
+Write-Host '== R4d-1 every write entry point has a -NoLaunch guard before it (static, by entry point) ==' -ForegroundColor Cyan
+$r4dPfPath = Join-Path $root 'claude-preflight.ps1'
+$r4dAst = [System.Management.Automation.Language.Parser]::ParseFile($r4dPfPath, [ref]$null, [ref]$null)
+function Get-R4dFn($Ast, [string]$Name) {
+  return ($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $Name }, $true) | Select-Object -First 1)
+}
+function Get-R4dCmds($Ast, [string[]]$Names) {
+  return @($Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and ($Names -contains $n.GetCommandName()) }, $true) | Sort-Object { $_.Extent.StartOffset })
+}
+function Get-R4dContainer($Node) {
+  $p = $Node.Parent
+  while ($p) { if ($p -is [System.Management.Automation.Language.FunctionDefinitionAst]) { return $p.Name }; $p = $p.Parent }
+  return '(script body)'
+}
+# 守卫 = 包装函数的第一条语句：if (-not (Test-CslNoLaunchWriteAllowed -NoLaunch:$NoLaunch)) { ...; return ... }，且所有原始写调用都在它之后
+function Test-R4dGuardFirst($Ast, [string]$FnName, [string[]]$RawNames, [string]$GuardCall = 'Test-CslNoLaunchWriteAllowed -NoLaunch:$NoLaunch') {
+  $fn = Get-R4dFn $Ast $FnName
+  if (-not $fn) { return $false }
+  $stmts = @($fn.Body.EndBlock.Statements)
+  if ($stmts.Count -eq 0) { return $false }
+  $first = $stmts[0]
+  if (-not ($first -is [System.Management.Automation.Language.IfStatementAst]) -or $first.Clauses.Count -ne 1) { return $false }
+  if (($first.Clauses[0].Item1.Extent.Text -replace '\s+', ' ') -cne ('-not (' + $GuardCall + ')')) { return $false }
+  if (@($first.Clauses[0].Item2.FindAll({ param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst] }, $true)).Count -lt 1) { return $false }
+  $raw = @(Get-R4dCmds $fn $RawNames)
+  if ($raw.Count -lt 1) { return $false }
+  foreach ($c in $raw) { if ($c.Extent.StartOffset -lt $first.Extent.EndOffset) { return $false } }
+  return $true
+}
+$r4dTzRaw = @(Get-R4dCmds $r4dAst @('tzutil.exe'))
+$r4dTzBad = @($r4dTzRaw | Where-Object { (Get-R4dContainer $_) -ne 'Invoke-CslTzutilSet' })
+$r4dSetTz = @()
+foreach ($r4dScr in @(Get-ChildItem -LiteralPath $root -File | Where-Object { $_.Name -like 'claude-*.ps1' -or $_.Name -eq 'install.ps1' })) {
+  $r4dSa = [System.Management.Automation.Language.Parser]::ParseFile($r4dScr.FullName, [ref]$null, [ref]$null)
+  $r4dSetTz += @(Get-R4dCmds $r4dSa @('Set-TimeZone', 'tzutil', 'tzutil.exe') | Where-Object { $r4dScr.Name -ne 'claude-preflight.ps1' -or (Get-R4dContainer $_) -ne 'Invoke-CslTzutilSet' } | ForEach-Object { $r4dScr.Name })
+}
+Assert-True ($r4dTzRaw.Count -ge 1 -and $r4dTzBad.Count -eq 0 -and $r4dSetTz.Count -eq 0) "R4d [tzutil] tzutil.exe appears only inside Invoke-CslTzutilSet; no Set-TimeZone / other tzutil call in any entry script (outside=$($r4dTzBad.Count), other=$($r4dSetTz.Count))"
+Assert-True (Test-R4dGuardFirst $r4dAst 'Set-CslSystemTimeZone' @('Invoke-CslTzutilSet')) 'R4d [tzutil] Set-CslSystemTimeZone: first statement is the -NoLaunch guard (returns), before the Invoke-CslTzutilSet call'
+$r4dTzCalls = @(Get-R4dCmds $r4dAst @('Invoke-CslTzutilSet'))
+Assert-True ($r4dTzCalls.Count -eq 1 -and (Get-R4dContainer $r4dTzCalls[0]) -eq 'Set-CslSystemTimeZone') 'R4d [tzutil] Invoke-CslTzutilSet is called only from Set-CslSystemTimeZone'
+$r4dSelAll = @(Get-R4dCmds $r4dAst @('Ctl-SelectNode', 'Invoke-Ctl', 'Invoke-RestMethod', 'Invoke-WebRequest'))
+$r4dSelBad = @($r4dSelAll | Where-Object { (Get-R4dContainer $_) -ne 'Switch-CslClashNode' })
+Assert-True ($r4dSelAll.Count -eq 1 -and $r4dSelBad.Count -eq 0) "R4d [Ctl-SelectNode] the only Clash controller write call in claude-preflight.ps1 is Ctl-SelectNode inside Switch-CslClashNode (calls=$($r4dSelAll.Count), outside=$($r4dSelBad.Count))"
+Assert-True (Test-R4dGuardFirst $r4dAst 'Switch-CslClashNode' @('Ctl-SelectNode')) 'R4d [Ctl-SelectNode] Switch-CslClashNode: first statement is the -NoLaunch guard (returns), before the Ctl-SelectNode call'
+$r4dSaveAll = @(Get-R4dCmds $r4dAst @('Save-Learned'))
+$r4dSaveBad = @($r4dSaveAll | Where-Object { (Get-R4dContainer $_) -ne 'Save-CslLearnedGuarded' })
+Assert-True ($r4dSaveAll.Count -eq 1 -and $r4dSaveBad.Count -eq 0) "R4d [Save-Learned] the only Save-Learned call in claude-preflight.ps1 is inside Save-CslLearnedGuarded (calls=$($r4dSaveAll.Count), outside=$($r4dSaveBad.Count))"
+Assert-True (Test-R4dGuardFirst $r4dAst 'Save-CslLearnedGuarded' @('Save-Learned') 'Test-CslLearnWriteAllowed -NoLaunch:$NoLaunch -Relearn:$Relearn') 'R4d [Save-Learned] Save-CslLearnedGuarded: first statement is the -NoLaunch guard (returns; since the 15:25 revision the guard is Test-CslLearnWriteAllowed: -NoLaunch blocks unless -Relearn), before the Save-Learned call'
+$r4dGuardFn = Get-R4dFn $r4dAst 'Test-CslNoLaunchWriteAllowed'
+$r4dGuardBody = ''; if ($r4dGuardFn) { $r4dGuardBody = ($r4dGuardFn.Body.EndBlock.Statements | ForEach-Object { $_.Extent.Text }) -join ';' }
+Assert-True ($null -ne $r4dGuardFn -and $r4dGuardBody -eq 'return (-not $NoLaunch)') 'R4d [guard] Test-CslNoLaunchWriteAllowed is exactly: return (-not $NoLaunch)'
+# 每个调用点都必须带 -NoLaunch:$NoLaunch（缺了它，开关默认 $false = 允许写）
+$r4dSiteSpec = @(
+  @{ Callee = 'Save-CslLearnedGuarded'; Container = '(script body)'; Ord = 1; Label = 'Relearn'; Entry = 'Save-Learned' },
+  @{ Callee = 'Save-CslLearnedGuarded'; Container = '(script body)'; Ord = 2; Label = 'exit-IP learning'; Entry = 'Save-Learned' },
+  @{ Callee = 'Save-CslLearnedGuarded'; Container = 'Invoke-CslTimezoneStep'; Ord = 1; Label = 'timezone learning'; Entry = 'Save-Learned' },
+  @{ Callee = 'Save-CslLearnedGuarded'; Container = 'Invoke-CslNodeLock'; Ord = 1; Label = 'expectedNode learning'; Entry = 'Save-Learned' },
+  @{ Callee = 'Set-CslSystemTimeZone'; Container = 'Invoke-CslTimezoneStep'; Ord = 1; Label = 'timezone change'; Entry = 'tzutil' },
+  @{ Callee = 'Switch-CslClashNode'; Container = 'Invoke-CslNodeLock'; Ord = 1; Label = 'node switch'; Entry = 'Ctl-SelectNode' },
+  @{ Callee = 'Invoke-CslTimezoneStep'; Container = '(script body)'; Ord = 1; Label = 'section 2 (timezone step)'; Entry = 'tzutil' },
+  @{ Callee = 'Invoke-CslNodeLock'; Container = '(script body)'; Ord = 1; Label = 'section 3 (node lock step)'; Entry = 'Ctl-SelectNode' },
+  @{ Callee = 'Start-CslClashProcess'; Container = 'Invoke-CslClashStartStep'; Ord = 1; Label = 'Clash start'; Entry = 'Clash start' },
+  @{ Callee = 'Invoke-CslClashStartStep'; Container = '(script body)'; Ord = 1; Label = 'section 1 (Clash not running)'; Entry = 'Clash start' },
+  @{ Callee = 'Invoke-CslTunWaitStep'; Container = '(script body)'; Ord = 1; Label = 'section 1 (TUN wait)'; Entry = 'TUN wait' }
+)
+$r4dSiteExpect = @{ 'Save-CslLearnedGuarded' = 4; 'Set-CslSystemTimeZone' = 1; 'Switch-CslClashNode' = 1; 'Invoke-CslTimezoneStep' = 1; 'Invoke-CslNodeLock' = 1; 'Start-CslClashProcess' = 1; 'Invoke-CslClashStartStep' = 1; 'Invoke-CslTunWaitStep' = 1 }
+$r4dRelearnPass = @('Save-CslLearnedGuarded', 'Invoke-CslTimezoneStep', 'Invoke-CslNodeLock')
+foreach ($r4dSp in $r4dSiteSpec) {
+  $r4dAll = @(Get-R4dCmds $r4dAst @($r4dSp.Callee))
+  $r4dMine = @($r4dAll | Where-Object { (Get-R4dContainer $_) -eq $r4dSp.Container })
+  $r4dOk = $false
+  if ($r4dAll.Count -eq $r4dSiteExpect[$r4dSp.Callee] -and $r4dMine.Count -ge $r4dSp.Ord) {
+    $r4dEls = @($r4dMine[$r4dSp.Ord - 1].CommandElements)
+    foreach ($r4dEl in $r4dEls) {
+      if ($r4dEl -is [System.Management.Automation.Language.CommandParameterAst] -and $r4dEl.ParameterName -eq 'NoLaunch' -and $r4dEl.Argument -and $r4dEl.Argument.Extent.Text -eq '$NoLaunch') { $r4dOk = $true }
+    }
+  }
+  Assert-True $r4dOk ('R4d [{0}] call site {1} ({2}) of {3} passes -NoLaunch:$NoLaunch (calls found: {4}, expected: {5})' -f $r4dSp.Entry, $r4dSp.Label, $r4dSp.Container, $r4dSp.Callee, $r4dAll.Count, $r4dSiteExpect[$r4dSp.Callee])
+  if ($r4dRelearnPass -contains $r4dSp.Callee) {
+    $r4dOk2 = $false
+    if ($r4dAll.Count -eq $r4dSiteExpect[$r4dSp.Callee] -and $r4dMine.Count -ge $r4dSp.Ord) {
+      foreach ($r4dEl in @($r4dMine[$r4dSp.Ord - 1].CommandElements)) {
+        if ($r4dEl -is [System.Management.Automation.Language.CommandParameterAst] -and $r4dEl.ParameterName -eq 'Relearn' -and $r4dEl.Argument -and $r4dEl.Argument.Extent.Text -eq '$Relearn') { $r4dOk2 = $true }
+      }
+    }
+    Assert-True $r4dOk2 ('R4d [Relearn] call site {0} ({1}) of {2} passes -Relearn:$Relearn' -f $r4dSp.Label, $r4dSp.Container, $r4dSp.Callee)
+  }
+}
+# 启动分支：带 -NoLaunch 的分支是 if 链的第一个分支；启动 Claude / 拉起后台监控（监控会 PUT 切节点）只在后面的分支
+$r4dStartApp = @(Get-R4dCmds $r4dAst @('Start-ClaudeApp'))
+$r4dMonStart = @(Get-R4dCmds $r4dAst @('Start-Process') | Where-Object { $_.Extent.Text -match '\$monArgs' })
+$r4dLaunchOk = $false
+if ($r4dStartApp.Count -eq 1 -and $r4dMonStart.Count -eq 1) {
+  $r4dStartOff = $r4dStartApp[0].Extent.StartOffset
+  $r4dLaunchIf = @($r4dAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq '$NoLaunch' -and $n.Extent.StartOffset -lt $r4dStartOff -and $n.Extent.EndOffset -gt $r4dStartOff }, $true))
+  if ($r4dLaunchIf.Count -eq 1) {
+    $r4dLi = $r4dLaunchIf[0]
+    $r4dNlEnd = $r4dLi.Clauses[0].Item2.Extent.EndOffset
+    $r4dBoth = @(@($r4dStartApp) + @($r4dMonStart))
+    $r4dLaunchOk = (@($r4dBoth | Where-Object { $_.Extent.StartOffset -ge $r4dNlEnd -and $_.Extent.EndOffset -le $r4dLi.Extent.EndOffset }).Count -eq 2)
+  }
+}
+Assert-True $r4dLaunchOk 'R4d [monitor launch] the if ($NoLaunch) branch comes first; Start-ClaudeApp and the background-monitor Start-Process (monitor can PUT a node switch) only exist in the later branches'
+
+# ---- 15:25 修订：-Relearn 例外 / Load-Config -NoWrite / 不启动 Clash（静态）
+$r4dLg = Get-R4dFn $r4dAst 'Test-CslLearnWriteAllowed'
+$r4dLgBody = ''; if ($r4dLg) { $r4dLgBody = ($r4dLg.Body.EndBlock.Statements | ForEach-Object { $_.Extent.Text }) -join ';' }
+Assert-True ($null -ne $r4dLg -and $r4dLgBody -eq 'return ((-not $NoLaunch) -or $Relearn)') 'R4d [Relearn] Test-CslLearnWriteAllowed is exactly: return ((-not $NoLaunch) -or $Relearn)'
+$r4dNoRl = @()
+foreach ($r4dFnX in @('Set-CslSystemTimeZone', 'Invoke-CslTzutilSet', 'Switch-CslClashNode', 'Start-CslClashProcess', 'Invoke-CslClashStartStep', 'Test-CslNoLaunchWriteAllowed')) {
+  $r4dFx = Get-R4dFn $r4dAst $r4dFnX
+  if (-not $r4dFx) { $r4dNoRl += ($r4dFnX + '(missing)'); continue }
+  if (@($r4dFx.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) -contains 'Relearn') { $r4dNoRl += $r4dFnX }
+}
+Assert-True ($r4dNoRl.Count -eq 0) ("R4d [Relearn] -Relearn can never unlock tzutil / Ctl-SelectNode / Clash start: those wrappers and the plain -NoLaunch guard have no -Relearn parameter (offenders=[$($r4dNoRl -join ',')])")
+$r4dSpAll = @(Get-R4dCmds $r4dAst @('Start-Process'))
+$r4dSpClash = @($r4dSpAll | Where-Object { (Get-R4dContainer $_) -eq 'Start-CslClashProcess' })
+$r4dSpOther = @($r4dSpAll | Where-Object { (Get-R4dContainer $_) -ne 'Start-CslClashProcess' -and $_.Extent.Text -notmatch '\$monArgs' })
+Assert-True ($r4dSpClash.Count -eq 1 -and $r4dSpOther.Count -eq 0 -and $r4dSpAll.Count -eq 2) "R4d [Clash start] Start-Process appears only inside Start-CslClashProcess (and the monitor launch in the non-NoLaunch branch) (clash=$($r4dSpClash.Count), other=$($r4dSpOther.Count), total=$($r4dSpAll.Count))"
+Assert-True (Test-R4dGuardFirst $r4dAst 'Start-CslClashProcess' @('Start-Process')) 'R4d [Clash start] Start-CslClashProcess: first statement is the -NoLaunch guard (returns), before the Start-Process call'
+$r4dLcCalls = @(Get-R4dCmds $r4dAst @('Load-Config'))
+$r4dLcArgText = ''
+if ($r4dLcCalls.Count -eq 1) { foreach ($r4dEl in @($r4dLcCalls[0].CommandElements)) { if ($r4dEl -is [System.Management.Automation.Language.CommandParameterAst] -and $r4dEl.ParameterName -eq 'NoWrite' -and $r4dEl.Argument) { $r4dLcArgText = ($r4dEl.Argument.Extent.Text -replace '\s+', ' ') } } }
+Assert-True ($r4dLcCalls.Count -eq 1 -and $r4dLcArgText -ceq '($NoLaunch -and -not $Relearn)') ('R4d [Load-Config] preflight calls Load-Config -NoWrite:($NoLaunch -and -not $Relearn) (calls=' + $r4dLcCalls.Count + ', arg=[' + $r4dLcArgText + '])')
+$r4dCmAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'claude-common.ps1'), [ref]$null, [ref]$null)
+$r4dLcFn = Get-R4dFn $r4dCmAst 'Load-Config'
+$r4dLcParams = @(); if ($r4dLcFn) { $r4dLcParams = @($r4dLcFn.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) }
+$r4dLcWrite = @(); if ($r4dLcFn) { $r4dLcWrite = @($r4dLcFn.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Extent.Text -like '*WriteAllText*' }, $true)) }
+$r4dLcWriteOk = $false
+if ($r4dLcWrite.Count -eq 1) {
+  $r4dP = $r4dLcWrite[0].Parent
+  while ($r4dP -and -not ($r4dP -is [System.Management.Automation.Language.IfStatementAst])) { $r4dP = $r4dP.Parent }
+  if ($r4dP -and (($r4dP.Clauses[0].Item1.Extent.Text -replace '\s+', ' ') -ceq '$changed -and -not $NoWrite')) { $r4dLcWriteOk = $true }
+}
+Assert-True (($r4dLcParams -contains 'NoWrite') -and $r4dLcWriteOk) 'R4d [Load-Config] claude-common.ps1 Load-Config has a -NoWrite switch and its only WriteAllText sits under if ($changed -and -not $NoWrite)'
+$r4dLcOthers = @()
+foreach ($r4dOn in @('claude-monitor.ps1', 'claude-panel.ps1')) {
+  $r4dOa = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root $r4dOn), [ref]$null, [ref]$null)
+  foreach ($r4dOc in @(Get-R4dCmds $r4dOa @('Load-Config'))) { $r4dLcOthers += ('{0}:{1}' -f $r4dOn, @($r4dOc.CommandElements).Count) }
+}
+Assert-True ($r4dLcOthers.Count -ge 2 -and @($r4dLcOthers | Where-Object { $_ -notmatch ':1$' }).Count -eq 0) ("R4d [Load-Config] other callers (monitor, panel) call Load-Config with no arguments, so their behavior is unchanged (callers=[$($r4dLcOthers -join ',')])")
+
+# ---- 15:49 修订：-NoLaunch 且 Clash 未运行时不等 TUN（静态）
+$r4dTw = Get-R4dFn $r4dAst 'Invoke-CslTunWaitStep'
+$r4dTwOk = $false
+if ($r4dTw) {
+  $r4dTwSt = @($r4dTw.Body.EndBlock.Statements)
+  $r4dTwFirst = $null; if ($r4dTwSt.Count -gt 0) { $r4dTwFirst = $r4dTwSt[0] }
+  $r4dTwSleep = @(Get-R4dCmds $r4dTw @('Start-Sleep'))
+  if ($r4dTwFirst -is [System.Management.Automation.Language.IfStatementAst] -and $r4dTwFirst.Clauses.Count -eq 1 -and (($r4dTwFirst.Clauses[0].Item1.Extent.Text -replace '\s+', ' ') -ceq '$NoLaunch -and -not $VergeRunning') -and @($r4dTwFirst.Clauses[0].Item2.FindAll({ param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst] }, $true)).Count -ge 1 -and $r4dTwSleep.Count -eq 1 -and $r4dTwSleep[0].Extent.StartOffset -ge $r4dTwFirst.Extent.EndOffset) { $r4dTwOk = $true }
+}
+Assert-True $r4dTwOk 'R4d [TUN wait] Invoke-CslTunWaitStep: first statement is if ($NoLaunch -and -not $VergeRunning) { ...; return }, before its only Start-Sleep'
+$r4dBodyLoops = @($r4dAst.FindAll({ param($n) ($n -is [System.Management.Automation.Language.WhileStatementAst] -or $n -is [System.Management.Automation.Language.DoWhileStatementAst] -or $n -is [System.Management.Automation.Language.ForStatementAst]) -and (Get-R4dContainer $n) -eq '(script body)' -and @(Get-R4dCmds $n @('Start-Sleep', 'Get-ProxyCore', 'Get-TunAdapter')).Count -gt 0 }, $true))
+Assert-True ($r4dBodyLoops.Count -eq 0) "R4d [TUN wait] no TUN wait loop is left in the script body (loops with Start-Sleep / Get-ProxyCore / Get-TunAdapter outside functions: $($r4dBodyLoops.Count))"
+$r4dTwCalls = @(Get-R4dCmds $r4dAst @('Invoke-CslTunWaitStep'))
+$r4dTwArg1 = ''; if ($r4dTwCalls.Count -eq 1 -and @($r4dTwCalls[0].CommandElements).Count -ge 2) { $r4dTwArg1 = ($r4dTwCalls[0].CommandElements[1].Extent.Text -replace '\s+', ' ') }
+Assert-True ($r4dTwCalls.Count -eq 1 -and $r4dTwArg1 -ceq '([bool]$verge)') ("R4d [TUN wait] the script body calls Invoke-CslTunWaitStep once and passes ([bool]`$verge) as the Clash-running state (calls=$($r4dTwCalls.Count), arg1=[$r4dTwArg1])")
+$r4dPreText = [IO.File]::ReadAllText((Join-Path $root 'claude-preflight.ps1'))
+Assert-True ($r4dPreText.Contains('[重新学习] 将按当前环境重新记住出口 IP / 节点 / 时区') -and -not $r4dPreText.Contains('只报告，不写 preflight.json') -and $r4dPreText.Contains('-NoLaunch：只重新记住并写 preflight.json，不改时区、不切节点、不启动 Clash')) 'R4d [text] the -Relearn banner no longer claims -NoLaunch does not write preflight.json, and says it only re-learns (no tz change / node switch / Clash start)'
+$r4dPanel = [IO.File]::ReadAllText((Join-Path $root 'claude-panel.html'))
+Assert-True ($r4dPanel.Contains('以后正常启动时如有变化，会提醒并自动切回；本次只记录，不改时区、不切节点。')) 'R4d [text] panel relearn confirm: auto switch-back only on normal launch; this run only records, no timezone change, no node switch'
+Assert-True (-not $r4dPanel.Contains('以后发生变化会提醒并自动切回。')) 'R4d [text] panel relearn confirm: old wording implying this run switches back is gone'
+$r4dReadme = [IO.File]::ReadAllText((Join-Path $root 'README.md'))
+Assert-True ($r4dReadme.Contains('「记住当前环境」（面板以 `-NoLaunch -Relearn` 运行：只重新记住并写入 `preflight.json`，不改系统时区、不切节点、不启动 Clash）')) 'R4d [text] README: the panel "记住当前环境" button only re-learns and writes preflight.json (no timezone change, no node switch, no Clash start)'
+
+Write-Host '== R4d-2 in-process, stubs only: -NoLaunch never changes timezone / node / Clash / preflight.json ==' -ForegroundColor Cyan
+$r4dN = [ordered]@{
+  Setup = 'R4d setup: guarded write wrappers, step functions and Say-* extracted from claude-preflight.ps1; stubs installed'
+  A1 = 'R4d [Ctl-SelectNode] -NoLaunch, node-lock path (claudeGroup set, expectedNode differs from current): Ctl-SelectNode called 0 times'
+  A2 = 'R4d [Ctl-SelectNode] -NoLaunch, node-lock path: 0 non-GET controller requests (PUT/PATCH/POST), read-only GETs still happen'
+  A3 = 'R4d [Save-Learned] -NoLaunch, node-lock path: Save-Learned called 0 times'
+  A4 = 'R4d [Ctl-SelectNode] -NoLaunch, node-lock path: group stays on its node, skip is reported, mismatch still reported as net.node_lock FAIL, not switched'
+  A5 = 'R4d [Ctl-SelectNode] control without -NoLaunch (same scenario): Ctl-SelectNode called once, one PUT, group switched to expectedNode (stubs are wired)'
+  B1 = 'R4d [Ctl-SelectNode] -NoLaunch with pinMainGroup + mainGroup: 0 Ctl-SelectNode calls, 0 non-GET requests, groups unchanged'
+  B2 = 'R4d [Ctl-SelectNode] control without -NoLaunch with pinMainGroup + mainGroup: 2 Ctl-SelectNode calls, 2 PUTs'
+  C1 = 'R4d [Save-Learned] -NoLaunch, claudeGroup set and expectedNode empty: expectedNode not learned (0 Save-Learned, cfg.expectedNode stays empty), 0 selects'
+  C2 = 'R4d [Save-Learned] control without -NoLaunch: expectedNode learned (1 Save-Learned with key expectedNode = current node)'
+  D1 = 'R4d [tzutil] -NoLaunch, configured timezone differs from current: tzutil called 0 times, timezone unchanged, skip reported, mismatch reported as locale.system_tz FAIL'
+  D2 = 'R4d [tzutil] control without -NoLaunch: tzutil called once and the timezone is changed'
+  E0 = 'R4d [Save-Learned] true no-config path: Load-Config defaults (claudeGroup Claude, timezone and expectedNode empty) and preflight.json created by Load-Config only'
+  E1 = 'R4d [Save-Learned] true no-config path, -NoLaunch (timezone step + node-lock step): Save-Learned called 0 times (timezone and expectedNode not learned)'
+  E2 = 'R4d [tzutil] true no-config path, -NoLaunch: tzutil called 0 times'
+  E3 = 'R4d [Ctl-SelectNode] true no-config path, -NoLaunch: 0 Ctl-SelectNode calls, 0 non-GET controller requests'
+  E4 = 'R4d [Save-Learned] true no-config path, -NoLaunch: preflight.json bytes unchanged (.NET SHA256)'
+  E5 = 'R4d [Save-Learned] control, true no-config path without -NoLaunch: timezone and expectedNode are learned (2 Save-Learned calls) and preflight.json changes'
+  E6 = 'R4d [tzutil] control, true no-config path without -NoLaunch: learned timezone differs from current, tzutil called once'
+  G1 = 'R4d [guard] Test-CslNoLaunchWriteAllowed: allowed without -NoLaunch, denied with -NoLaunch'
+  G2 = 'R4d [Relearn] Test-CslLearnWriteAllowed truth table: allowed unless -NoLaunch; with -NoLaunch allowed only with -Relearn'
+  RL1 = 'R4d [Relearn] -NoLaunch -Relearn (panel Relearn button): Relearn clear + timezone + expectedNode learning writes happen (3 Save-Learned, preflight.json holds the learned values)'
+  RL2 = 'R4d [Relearn] -NoLaunch -Relearn: tzutil 0, Ctl-SelectNode 0, non-GET requests 0, tz change reported as skipped (Relearn never unlocks tz / node)'
+  RN1 = 'R4d [Relearn] -NoLaunch without -Relearn on an existing preflight.json: Relearn clear, timezone and expectedNode learning blocked (0 Save-Learned, bytes unchanged, expectedNode kept)'
+  RN2 = 'R4d [Relearn] -NoLaunch without -Relearn: tzutil 0, Ctl-SelectNode 0, non-GET requests 0, skips reported'
+  RC1 = 'R4d [Relearn] control without -NoLaunch: the same Relearn clear writes and learning still happen (behavior unchanged)'
+  LC1 = 'R4d [Load-Config] -NoWrite on a true no-config temp dir: preflight.json NOT created, defaults returned in memory'
+  LC2 = 'R4d [Load-Config] without -NoWrite on a true no-config temp dir: preflight.json created with the defaults (wiring proof, default behavior unchanged)'
+  LC3 = 'R4d [Load-Config] -NoWrite on a partial preflight.json: bytes unchanged, missing defaults filled in memory; without -NoWrite the file is rewritten'
+  LC4 = 'R4d [Load-Config] preflight -NoWrite expression: true only for -NoLaunch without -Relearn; -NoLaunch -Relearn on a no-config dir creates the file (writing allowed)'
+  CS1 = 'R4d [Clash start] -NoLaunch, Clash not running, clashExe exists: Start-Process called 0 times, skip reported, "Clash Verge 未运行" reported as net.clash_running FAIL'
+  CS2 = 'R4d [Clash start] control without -NoLaunch: Start-Process stub called once with clashExe, no FAIL (stub is wired)'
+  CS3 = 'R4d [Clash start] no clashExe found: 0 Start-Process calls and the "也没找到安装位置" FAIL, with and without -NoLaunch (behavior unchanged)'
+  TW1 = 'R4d [TUN wait] -NoLaunch, Clash not running: no TUN wait (0 Start-Sleep, 0 probes, inputs returned unchanged, Waited=false) and net.clash_running is reported as FAIL'
+  TW2 = 'R4d [TUN wait] control without -NoLaunch, Clash not running: the wait path is entered (15 stubbed Start-Sleep calls, Waited=true, TUN never up)'
+  TW3 = 'R4d [TUN wait] without -NoLaunch, TUN comes up on the first probe: the wait stops after 1 sleep and returns the adapter'
+  TW4 = 'R4d [TUN wait] -NoLaunch but Clash already running (TUN not ready): the read-only wait still happens (15 sleeps)'
+  CS4 = 'R4d [Clash start] Clash already running (TUN not ready): 0 Start-Process calls and no FAIL, with and without -NoLaunch'
+}
+$r4dFnNames = @('Invoke-CslTunWaitStep', 'Test-CslNoLaunchWriteAllowed', 'Test-CslLearnWriteAllowed', 'Start-CslClashProcess', 'Invoke-CslClashStartStep', 'Set-CslSystemTimeZone', 'Switch-CslClashNode', 'Save-CslLearnedGuarded', 'Invoke-CslTimezoneStep', 'Invoke-CslNodeLock', 'Add-Item', 'Say-Head', 'Say-Pass', 'Say-Info', 'Say-Fix', 'Say-Note', 'Say-Warn', 'Say-Fail')
+$r4dStubNames = @('Get-ProxyCore', 'Get-TunAdapter', 'Save-Learned', 'Ctl-SelectNode', 'Invoke-Ctl', 'Get-Trace', 'Invoke-Curl', 'Find-ClaudeApp', 'Find-ClashExe', 'Find-NpmGlobalDir')
+$r4dSaved = @{}
+foreach ($r4dFnN in $r4dStubNames) { $r4dSaved[$r4dFnN] = (Get-Item "function:$r4dFnN" -ErrorAction SilentlyContinue).ScriptBlock }
+$r4dRealSave = $r4dSaved['Save-Learned']
+$r4dSavedCfgPath = $script:CfgPath; $r4dSavedVergeDir = $script:VergeDir
+$r4dSavedItems = $script:Items; $r4dSavedHead = $script:CurrentHead
+$r4dTmp = Join-Path ([IO.Path]::GetTempPath()) ('csl-r4d-' + [guid]::NewGuid().ToString('N'))
+$r4dReady = $false; $r4dSetupErr = ''
+try {
+  try {
+    $r4dMissing = @()
+    foreach ($r4dFnN in $r4dFnNames) {
+      $r4dFa = Get-R4dFn $r4dAst $r4dFnN
+      if ($null -eq $r4dFa) { $r4dMissing += $r4dFnN } else { . ([scriptblock]::Create($r4dFa.Extent.Text)) }
+    }
+    if ($r4dMissing.Count -gt 0) { throw ('missing functions: ' + ($r4dMissing -join ',')) }
+    New-Item -ItemType Directory -Path $r4dTmp -Force | Out-Null
+    $script:R4dS = @{}
+    function Reset-R4dState([hashtable]$Now) {
+      $script:R4dS = @{ Sleep = 0; Probe = 0; Mihomo = $null; Tun = $null; ClashStart = 0; ClashStartPath = ''; Select = 0; CtlWrite = 0; CtlGet = 0; Save = 0; Tzutil = 0; SaveKeys = @(); SaveVals = @{}; Now = $Now; Passthrough = $false }
+      $script:Items = New-Object System.Collections.ArrayList
+    }
+    # 桩：控制器（假数据，不联网）、写操作计数器
+    function Invoke-Ctl($cfg, [string]$method, [string]$path, [string]$body = $null) {
+      if ($method -ne 'GET') {
+        $script:R4dS.CtlWrite++
+        $gw = [uri]::UnescapeDataString(($path -replace '^/proxies/', ''))
+        $script:R4dS.Now[$gw] = [string](($body | ConvertFrom-Json).name)
+        return @{ ok = $true; text = '' }
+      }
+      $script:R4dS.CtlGet++
+      if ($path -eq '/version') { return @{ ok = $true; text = '{"version":"fake-0.0"}' } }
+      if ($path -like '/proxies/*') {
+        $gr = [uri]::UnescapeDataString(($path -replace '^/proxies/', ''))
+        if ($script:R4dS.Now.ContainsKey($gr)) { return @{ ok = $true; text = (@{ name = $gr; now = $script:R4dS.Now[$gr] } | ConvertTo-Json -Compress) } }
+      }
+      return @{ ok = $false; text = $null }
+    }
+    function Ctl-SelectNode($cfg, [string]$group, [string]$node) {
+      $script:R4dS.Select++
+      if (-not $group -or -not $node) { return $false }
+      return (Invoke-Ctl $cfg 'PUT' ('/proxies/' + [uri]::EscapeDataString($group)) ('{"name":' + (ConvertTo-Json $node) + '}')).ok
+    }
+    function Save-Learned($cfg, [hashtable]$vals) {
+      $script:R4dS.Save++
+      foreach ($k in $vals.Keys) { $script:R4dS.SaveKeys += $k; $script:R4dS.SaveVals[$k] = $vals[$k] }
+      if ($script:R4dS.Passthrough -and $script:R4dRealSaveBlock) { & $script:R4dRealSaveBlock $cfg $vals } else { foreach ($k in $vals.Keys) { $cfg | Add-Member -NotePropertyName $k -NotePropertyValue $vals[$k] -Force } }
+    }
+    $script:R4dRealSaveBlock = $r4dRealSave
+    function Start-Sleep { param([int]$Seconds, [int]$Milliseconds) $script:R4dS.Sleep++ }
+    function Get-ProxyCore { $script:R4dS.Probe++; return $script:R4dS.Mihomo }
+    function Get-TunAdapter { return $script:R4dS.Tun }
+    function Start-Process { param([string]$FilePath, [string[]]$ArgumentList, $WindowStyle) $script:R4dS.ClashStart++; $script:R4dS.ClashStartPath = $FilePath }
+    function Invoke-CslTzutilSet([string]$WindowsTzId) { $script:R4dS.Tzutil++; return $WindowsTzId }
+    function Get-Trace([string]$url) { return @{ ip = '203.0.113.9'; loc = 'US'; colo = 'TST' } }
+    function Invoke-Curl([string[]]$curlArgs) { return '{"timezone":"Asia/Tokyo"}' }
+    function Find-ClaudeApp { @{ aumid = ''; exe = '' } }
+    function Find-ClashExe { '' }
+    function Find-NpmGlobalDir { '' }
+    function New-R4dCfg([hashtable]$Over) {
+      $c = [pscustomobject]@{ claudeGroup = 'Claude'; mainGroup = ''; pinMainGroup = $false; expectedNode = ''; timezone = ''; expectedTzIana = ''; controllerUrl = 'http://127.0.0.1:9'; controllerSecret = '' }
+      foreach ($k in $Over.Keys) { $c | Add-Member -NotePropertyName $k -NotePropertyValue $Over[$k] -Force }
+      return $c
+    }
+    function Invoke-R4dCapture([scriptblock]$Block) {
+      $all = @(& $Block 6>&1)
+      $txt = (@($all | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { [string]$_.MessageData })) -join "`n"
+      $val = @($all | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] })
+      return @{ Text = $txt; Value = $val }
+    }
+    function Get-R4dSha([string]$Path) {
+      $sha = [System.Security.Cryptography.SHA256]::Create()
+      if (-not (Test-Path -LiteralPath $Path)) { return '<missing>' }
+      try { return ([BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path)))).Replace('-', '') } finally { $sha.Dispose() }
+    }
+    function Test-R4dItem([string]$Level, [string]$Id) { return (@($script:Items | Where-Object { $_.Level -eq $Level -and $_.Id -eq $Id }).Count -ge 1) }
+    $r4dReady = $true
+  } catch { $r4dSetupErr = $_.Exception.Message }
+
+  if (-not $r4dReady) {
+    Assert-True $false ("$($r4dN.Setup) ($r4dSetupErr)")
+    Skip-CslDependents 'R4d functions / stubs' @($r4dN.Keys | Where-Object { $_ -ne 'Setup' } | ForEach-Object { $r4dN[$_] })
+  } else {
+    Assert-True $true $r4dN.Setup
+    # ---- G: 守卫函数本身
+    Assert-True ((Test-CslNoLaunchWriteAllowed) -and -not (Test-CslNoLaunchWriteAllowed -NoLaunch)) $r4dN.G1
+
+    # ---- A: 节点锁路径（claudeGroup 非空，expectedNode 已存在且与当前不同）
+    $cfgA = New-R4dCfg @{ expectedNode = 'NodeA' }
+    Reset-R4dState @{ Claude = 'NodeB' }
+    $rA = Invoke-R4dCapture { Invoke-CslNodeLock $cfgA -NoLaunch }
+    Assert-True ($script:R4dS.Select -eq 0) $r4dN.A1
+    Assert-True ($script:R4dS.CtlWrite -eq 0 -and $script:R4dS.CtlGet -ge 2) ("$($r4dN.A2) (writes=$($script:R4dS.CtlWrite), gets=$($script:R4dS.CtlGet))")
+    Assert-True ($script:R4dS.Save -eq 0) $r4dN.A3
+    Assert-True ($script:R4dS.Now['Claude'] -eq 'NodeB' -and $rA.Text.Contains('[NoLaunch] 已跳过切换节点') -and (Test-R4dItem 'FAIL' 'net.node_lock') -and ($rA.Value.Count -eq 1 -and $rA.Value[0] -eq $false)) $r4dN.A4
+    Reset-R4dState @{ Claude = 'NodeB' }
+    $rA2 = Invoke-R4dCapture { Invoke-CslNodeLock $cfgA }
+    Assert-True ($script:R4dS.Select -eq 1 -and $script:R4dS.CtlWrite -eq 1 -and $script:R4dS.Now['Claude'] -eq 'NodeA' -and ($rA2.Value.Count -eq 1 -and $rA2.Value[0] -eq $true)) $r4dN.A5
+
+    # ---- B: pinMainGroup + mainGroup
+    $cfgB = New-R4dCfg @{ expectedNode = 'NodeA'; pinMainGroup = $true; mainGroup = 'Main' }
+    Reset-R4dState @{ Claude = 'NodeB'; Main = 'NodeB' }
+    $rB = Invoke-R4dCapture { Invoke-CslNodeLock $cfgB -NoLaunch }
+    Assert-True ($script:R4dS.Select -eq 0 -and $script:R4dS.CtlWrite -eq 0 -and $script:R4dS.Now['Claude'] -eq 'NodeB' -and $script:R4dS.Now['Main'] -eq 'NodeB') $r4dN.B1
+    Reset-R4dState @{ Claude = 'NodeB'; Main = 'NodeB' }
+    $rB2 = Invoke-R4dCapture { Invoke-CslNodeLock $cfgB }
+    Assert-True ($script:R4dS.Select -eq 2 -and $script:R4dS.CtlWrite -eq 2 -and $script:R4dS.Now['Main'] -eq 'NodeA') $r4dN.B2
+
+    # ---- C: expectedNode 学习
+    $cfgC = New-R4dCfg @{ expectedNode = '' }
+    Reset-R4dState @{ Claude = 'NodeB' }
+    $rC = Invoke-R4dCapture { Invoke-CslNodeLock $cfgC -NoLaunch }
+    Assert-True ($script:R4dS.Save -eq 0 -and [string]$cfgC.expectedNode -eq '' -and $script:R4dS.Select -eq 0 -and $script:R4dS.CtlWrite -eq 0 -and $rC.Text.Contains('[NoLaunch] 已跳过')) $r4dN.C1
+    $cfgC2 = New-R4dCfg @{ expectedNode = '' }
+    Reset-R4dState @{ Claude = 'NodeB' }
+    $rC2 = Invoke-R4dCapture { Invoke-CslNodeLock $cfgC2 }
+    Assert-True ($script:R4dS.Save -eq 1 -and ($script:R4dS.SaveKeys -join ',') -eq 'expectedNode' -and [string]$script:R4dS.SaveVals['expectedNode'] -eq 'NodeB' -and [string]$cfgC2.expectedNode -eq 'NodeB') $r4dN.C2
+
+    # ---- D: 时区（已配置 timezone，与当前不同）
+    $cfgD = New-R4dCfg @{ timezone = 'Tokyo Standard Time' }
+    Reset-R4dState @{}
+    $rD = Invoke-R4dCapture { Invoke-CslTimezoneStep $cfgD 'Fake Standard Time' -NoLaunch }
+    Assert-True ($script:R4dS.Tzutil -eq 0 -and $script:R4dS.Save -eq 0 -and ($rD.Value.Count -eq 1 -and $rD.Value[0] -eq 'Fake Standard Time') -and $rD.Text.Contains('[NoLaunch] 已跳过改时区') -and (Test-R4dItem 'FAIL' 'locale.system_tz')) $r4dN.D1
+    Reset-R4dState @{}
+    $rD2 = Invoke-R4dCapture { Invoke-CslTimezoneStep $cfgD 'Fake Standard Time' }
+    Assert-True ($script:R4dS.Tzutil -eq 1 -and ($rD2.Value.Count -eq 1 -and $rD2.Value[0] -eq 'Tokyo Standard Time')) $r4dN.D2
+
+    # ---- E: 真无配置路径（没有 preflight.json，Load-Config 只在临时目录里建默认文件；Save-Learned 桩直通到真函数，只写这个临时文件）
+    $script:CfgPath = Join-Path $r4dTmp 'preflight.json'; $script:VergeDir = $r4dTmp
+    $cfgE = Load-Config
+    $r4dShaE0 = ''; if (Test-Path -LiteralPath $script:CfgPath) { $r4dShaE0 = Get-R4dSha $script:CfgPath }
+    Assert-True ($cfgE.claudeGroup -eq 'Claude' -and [string]$cfgE.timezone -eq '' -and [string]$cfgE.expectedNode -eq '' -and $r4dShaE0 -ne '') $r4dN.E0
+    Reset-R4dState @{ Claude = 'NodeB' }
+    $script:R4dS.Passthrough = $true
+    $rE1 = Invoke-R4dCapture { $null = Invoke-CslTimezoneStep $cfgE 'Fake Standard Time' -NoLaunch; $null = Invoke-CslNodeLock $cfgE -NoLaunch }
+    $r4dShaE1 = Get-R4dSha $script:CfgPath
+    Assert-True ($script:R4dS.Save -eq 0) $r4dN.E1
+    Assert-True ($script:R4dS.Tzutil -eq 0) $r4dN.E2
+    Assert-True ($script:R4dS.Select -eq 0 -and $script:R4dS.CtlWrite -eq 0) $r4dN.E3
+    Assert-True ($r4dShaE1 -eq $r4dShaE0) $r4dN.E4
+    $cfgE2 = Load-Config
+    Reset-R4dState @{ Claude = 'NodeB' }
+    $script:R4dS.Passthrough = $true
+    $rE2 = Invoke-R4dCapture { $null = Invoke-CslTimezoneStep $cfgE2 'Fake Standard Time'; $null = Invoke-CslNodeLock $cfgE2 }
+    $r4dShaE2 = Get-R4dSha $script:CfgPath
+    Assert-True ($script:R4dS.Save -eq 2 -and ($script:R4dS.SaveKeys -contains 'timezone') -and ($script:R4dS.SaveKeys -contains 'expectedNode') -and $r4dShaE2 -ne $r4dShaE0) $r4dN.E5
+    Assert-True ($script:R4dS.Tzutil -eq 1) $r4dN.E6
+
+    # ---- 15:25 修订：-Relearn 例外、Load-Config -NoWrite、不启动 Clash
+    Assert-True ((Test-CslLearnWriteAllowed) -and (Test-CslLearnWriteAllowed -Relearn) -and -not (Test-CslLearnWriteAllowed -NoLaunch) -and (Test-CslLearnWriteAllowed -NoLaunch -Relearn)) $r4dN.G2
+    $r4dNwSb = $null
+    if ($r4dLcArgText) { $r4dNwSb = [scriptblock]::Create('param($NoLaunch, $Relearn) ' + $r4dLcArgText) }
+    $r4dNw = @{}
+    foreach ($r4dCombo in @(@($true, $false), @($true, $true), @($false, $false), @($false, $true))) {
+      $r4dNw[('{0}/{1}' -f $r4dCombo[0], $r4dCombo[1])] = $(if ($r4dNwSb) { [bool](& $r4dNwSb $r4dCombo[0] $r4dCombo[1]) } else { $null })
+    }
+    $r4dSeedFull = '{"claudeGroup":"Claude","expectedNode":"NodeZ","timezone":"Tokyo Standard Time","expectedIp":"203.0.113.1","expectedLoc":"US"}'
+    $r4dClear = @{ expectedIp = ''; expectedLoc = ''; expectedNode = ''; timezone = ''; expectedTzIana = '' }
+    $r4dUtf8 = New-Object System.Text.UTF8Encoding($false)
+
+    # LC: Load-Config -NoWrite
+    $r4dDirF = Join-Path $r4dTmp 'lc-nowrite'; New-Item -ItemType Directory -Path $r4dDirF -Force | Out-Null
+    $script:CfgPath = Join-Path $r4dDirF 'preflight.json'; $script:VergeDir = $r4dDirF
+    $cfgF = Load-Config -NoWrite
+    Assert-True (-not (Test-Path -LiteralPath $script:CfgPath) -and $cfgF.claudeGroup -eq 'Claude' -and ($cfgF.PSObject.Properties.Name -contains 'timezone') -and ($cfgF.PSObject.Properties.Name -contains 'envFixEnabled') -and [string]$cfgF.controllerUrl -ne '') $r4dN.LC1
+    $r4dDirG = Join-Path $r4dTmp 'lc-write'; New-Item -ItemType Directory -Path $r4dDirG -Force | Out-Null
+    $script:CfgPath = Join-Path $r4dDirG 'preflight.json'; $script:VergeDir = $r4dDirG
+    $cfgG = Load-Config
+    $r4dGj = $null; if (Test-Path -LiteralPath $script:CfgPath) { $r4dGj = Get-Content -LiteralPath $script:CfgPath -Raw -Encoding UTF8 | ConvertFrom-Json }
+    Assert-True ($null -ne $r4dGj -and $r4dGj.claudeGroup -eq 'Claude' -and ($r4dGj.PSObject.Properties.Name -contains 'envFixEnabled')) $r4dN.LC2
+    $r4dDirH = Join-Path $r4dTmp 'lc-partial'; New-Item -ItemType Directory -Path $r4dDirH -Force | Out-Null
+    $script:CfgPath = Join-Path $r4dDirH 'preflight.json'; $script:VergeDir = $r4dDirH
+    [IO.File]::WriteAllText($script:CfgPath, '{"claudeGroup":"Mine"}', $r4dUtf8)
+    $r4dShaH0 = Get-R4dSha $script:CfgPath
+    $cfgH = Load-Config -NoWrite
+    $r4dShaH1 = Get-R4dSha $script:CfgPath
+    $cfgH2 = Load-Config
+    $r4dShaH2 = Get-R4dSha $script:CfgPath
+    Assert-True ($r4dShaH1 -eq $r4dShaH0 -and $cfgH.claudeGroup -eq 'Mine' -and ($cfgH.PSObject.Properties.Name -contains 'timezone') -and $r4dShaH2 -ne $r4dShaH0) $r4dN.LC3
+    $r4dDirI = Join-Path $r4dTmp 'lc-relearn'; New-Item -ItemType Directory -Path $r4dDirI -Force | Out-Null
+    $script:CfgPath = Join-Path $r4dDirI 'preflight.json'; $script:VergeDir = $r4dDirI
+    $cfgI = Load-Config -NoWrite:([bool]$r4dNw['True/True'])
+    Assert-True ($r4dNw['True/False'] -eq $true -and $r4dNw['True/True'] -eq $false -and $r4dNw['False/False'] -eq $false -and $r4dNw['False/True'] -eq $false -and (Test-Path -LiteralPath $script:CfgPath)) $r4dN.LC4
+
+    # RL: -NoLaunch -Relearn（面板「重新学习」）：写 preflight.json 允许，tz / 节点仍不动
+    $r4dDirJ = Join-Path $r4dTmp 'relearn-pos'; New-Item -ItemType Directory -Path $r4dDirJ -Force | Out-Null
+    $script:CfgPath = Join-Path $r4dDirJ 'preflight.json'; $script:VergeDir = $r4dDirJ
+    [IO.File]::WriteAllText($script:CfgPath, $r4dSeedFull, $r4dUtf8)
+    $cfgJ = Load-Config -NoWrite:([bool]$r4dNw['True/True'])
+    $r4dShaJ0 = Get-R4dSha $script:CfgPath
+    Reset-R4dState @{ Claude = 'NodeB' }
+    $script:R4dS.Passthrough = $true
+    $rJ = Invoke-R4dCapture { $null = Save-CslLearnedGuarded $cfgJ $r4dClear '' 'skip' -NoLaunch -Relearn; $null = Invoke-CslTimezoneStep $cfgJ 'Fake Standard Time' -NoLaunch -Relearn; $null = Invoke-CslNodeLock $cfgJ -NoLaunch -Relearn }
+    $r4dJj = $null; if (Test-Path -LiteralPath $script:CfgPath) { $r4dJj = Get-Content -LiteralPath $script:CfgPath -Raw -Encoding UTF8 | ConvertFrom-Json }
+    Assert-True ($script:R4dS.Save -eq 3 -and ($script:R4dS.SaveKeys -contains 'timezone') -and ($script:R4dS.SaveKeys -contains 'expectedNode') -and $null -ne $r4dJj -and $r4dJj.timezone -eq 'Tokyo Standard Time' -and $r4dJj.expectedNode -eq 'NodeB' -and (Get-R4dSha $script:CfgPath) -ne $r4dShaJ0) $r4dN.RL1
+    Assert-True ($script:R4dS.Tzutil -eq 0 -and $script:R4dS.Select -eq 0 -and $script:R4dS.CtlWrite -eq 0 -and $rJ.Text.Contains('[NoLaunch] 已跳过改时区')) $r4dN.RL2
+
+    # RN: -NoLaunch 不带 -Relearn：一切自动学习与写入拦截
+    $r4dDirK = Join-Path $r4dTmp 'relearn-neg'; New-Item -ItemType Directory -Path $r4dDirK -Force | Out-Null
+    $script:CfgPath = Join-Path $r4dDirK 'preflight.json'; $script:VergeDir = $r4dDirK
+    [IO.File]::WriteAllText($script:CfgPath, $r4dSeedFull, $r4dUtf8)
+    $r4dShaK0 = Get-R4dSha $script:CfgPath
+    $cfgK = Load-Config -NoWrite:([bool]$r4dNw['True/False'])
+    Reset-R4dState @{ Claude = 'NodeB' }
+    $script:R4dS.Passthrough = $true
+    $rK = Invoke-R4dCapture { $null = Save-CslLearnedGuarded $cfgK $r4dClear '' 'skip' -NoLaunch; $null = Invoke-CslTimezoneStep $cfgK 'Fake Standard Time' -NoLaunch; $null = Invoke-CslNodeLock $cfgK -NoLaunch }
+    Assert-True ($script:R4dS.Save -eq 0 -and (Get-R4dSha $script:CfgPath) -eq $r4dShaK0 -and [string]$cfgK.expectedNode -eq 'NodeZ' -and [string]$cfgK.timezone -eq 'Tokyo Standard Time') $r4dN.RN1
+    Assert-True ($script:R4dS.Tzutil -eq 0 -and $script:R4dS.Select -eq 0 -and $script:R4dS.CtlWrite -eq 0 -and $rK.Text.Contains('[NoLaunch] 已跳过改时区') -and $rK.Text.Contains('[NoLaunch] 已跳过切换节点')) $r4dN.RN2
+    # RC: 对照，不带 -NoLaunch
+    $r4dDirL = Join-Path $r4dTmp 'relearn-ctl'; New-Item -ItemType Directory -Path $r4dDirL -Force | Out-Null
+    $script:CfgPath = Join-Path $r4dDirL 'preflight.json'; $script:VergeDir = $r4dDirL
+    [IO.File]::WriteAllText($script:CfgPath, $r4dSeedFull, $r4dUtf8)
+    $r4dShaL0 = Get-R4dSha $script:CfgPath
+    $cfgL = Load-Config
+    Reset-R4dState @{ Claude = 'NodeB' }
+    $script:R4dS.Passthrough = $true
+    $rL = Invoke-R4dCapture { $null = Save-CslLearnedGuarded $cfgL $r4dClear '' 'skip' -Relearn; $null = Invoke-CslTimezoneStep $cfgL 'Fake Standard Time' -Relearn; $null = Invoke-CslNodeLock $cfgL -Relearn }
+    Assert-True ($script:R4dS.Save -eq 3 -and (Get-R4dSha $script:CfgPath) -ne $r4dShaL0 -and [string]$cfgL.expectedNode -eq 'NodeB') $r4dN.RC1
+
+    # CS: Clash 未运行
+    $r4dClashExe = Join-Path $r4dTmp 'fake-clash.exe'; [IO.File]::WriteAllText($r4dClashExe, 'not an executable; Start-Process is a stub', $r4dUtf8)
+    $cfgCS = New-R4dCfg @{ clashExe = $r4dClashExe }
+    Reset-R4dState @{}
+    $rCS1 = Invoke-R4dCapture { Invoke-CslClashStartStep $cfgCS $false -NoLaunch }
+    Assert-True ($script:R4dS.ClashStart -eq 0 -and $rCS1.Text.Contains('[NoLaunch] 已跳过启动 Clash') -and $rCS1.Text.Contains('Clash Verge 未运行') -and (Test-R4dItem 'FAIL' 'net.clash_running')) $r4dN.CS1
+    Reset-R4dState @{}
+    $rCS2 = Invoke-R4dCapture { Invoke-CslClashStartStep $cfgCS $false }
+    Assert-True ($script:R4dS.ClashStart -eq 1 -and $script:R4dS.ClashStartPath -eq $r4dClashExe -and -not (Test-R4dItem 'FAIL' 'net.clash_running') -and $rCS2.Text.Contains('正在启动')) $r4dN.CS2
+    $cfgCS0 = New-R4dCfg @{ clashExe = '' }
+    Reset-R4dState @{}
+    $rCS3a = Invoke-R4dCapture { Invoke-CslClashStartStep $cfgCS0 $false -NoLaunch }
+    $r4dCs3a = ($script:R4dS.ClashStart -eq 0 -and $rCS3a.Text.Contains('也没找到安装位置') -and (Test-R4dItem 'FAIL' 'net.clash_running'))
+    Reset-R4dState @{}
+    $rCS3b = Invoke-R4dCapture { Invoke-CslClashStartStep $cfgCS0 $false }
+    Assert-True ($r4dCs3a -and $script:R4dS.ClashStart -eq 0 -and $rCS3b.Text.Contains('也没找到安装位置') -and (Test-R4dItem 'FAIL' 'net.clash_running')) $r4dN.CS3
+    Reset-R4dState @{}
+    $rCS4a = Invoke-R4dCapture { Invoke-CslClashStartStep $cfgCS $true -NoLaunch }
+    $r4dCs4a = ($script:R4dS.ClashStart -eq 0 -and -not (Test-R4dItem 'FAIL' 'net.clash_running'))
+    Reset-R4dState @{}
+    $rCS4b = Invoke-R4dCapture { Invoke-CslClashStartStep $cfgCS $true }
+    Assert-True ($r4dCs4a -and $script:R4dS.ClashStart -eq 0 -and -not (Test-R4dItem 'FAIL' 'net.clash_running') -and $rCS4b.Text.Contains('已运行')) $r4dN.CS4
+
+    # ---- 15:49 修订：-NoLaunch 且 Clash 未运行时不等 TUN
+    Reset-R4dState @{}
+    $rTw1 = Invoke-R4dCapture { Invoke-CslClashStartStep $cfgCS $false -NoLaunch; $script:r4dTwv1 = Invoke-CslTunWaitStep $false 'M0' 'T0' -NoLaunch }
+    $r4dTwv = $script:r4dTwv1
+    Assert-True ($script:R4dS.Sleep -eq 0 -and $script:R4dS.Probe -eq 0 -and $r4dTwv.Waited -eq $false -and $r4dTwv.Mihomo -eq 'M0' -and $r4dTwv.Tun -eq 'T0' -and $script:R4dS.ClashStart -eq 0 -and (Test-R4dItem 'FAIL' 'net.clash_running') -and $rTw1.Text.Contains('已跳过等待 TUN')) $r4dN.TW1
+    Reset-R4dState @{}
+    $null = Invoke-R4dCapture { Invoke-CslClashStartStep $cfgCS $false; $script:r4dTwv2 = Invoke-CslTunWaitStep $false $null $null }
+    Assert-True ($script:R4dS.Sleep -eq 15 -and $script:R4dS.Probe -eq 15 -and $script:r4dTwv2.Waited -eq $true -and $null -eq $script:r4dTwv2.Tun -and $script:R4dS.ClashStart -eq 1) $r4dN.TW2
+    Reset-R4dState @{}
+    $script:R4dS.Mihomo = 'MIH'; $script:R4dS.Tun = [pscustomobject]@{ Name = 'FakeTun'; Status = 'Up' }
+    $null = Invoke-R4dCapture { $script:r4dTwv3 = Invoke-CslTunWaitStep $false $null $null }
+    Assert-True ($script:R4dS.Sleep -eq 1 -and $script:r4dTwv3.Waited -eq $true -and $script:r4dTwv3.Tun.Name -eq 'FakeTun' -and $script:r4dTwv3.Mihomo -eq 'MIH') $r4dN.TW3
+    Reset-R4dState @{}
+    $null = Invoke-R4dCapture { $script:r4dTwv4 = Invoke-CslTunWaitStep $true $null $null -NoLaunch }
+    Assert-True ($script:R4dS.Sleep -eq 15 -and $script:r4dTwv4.Waited -eq $true) $r4dN.TW4
+  }
+} finally {
+  $script:CfgPath = $r4dSavedCfgPath; $script:VergeDir = $r4dSavedVergeDir
+  $script:Items = $r4dSavedItems; $script:CurrentHead = $r4dSavedHead
+  foreach ($r4dFnN in $r4dStubNames) {
+    if ($r4dSaved[$r4dFnN]) { Set-Item "function:script:$r4dFnN" $r4dSaved[$r4dFnN] } else { Remove-Item "function:$r4dFnN" -ErrorAction SilentlyContinue }
+  }
+  Remove-Item 'function:Invoke-CslTzutilSet' -ErrorAction SilentlyContinue
+  Remove-Item 'function:Start-Process' -ErrorAction SilentlyContinue
+  Remove-Item 'function:Start-Sleep' -ErrorAction SilentlyContinue
+  try { Remove-Item -LiteralPath $r4dTmp -Recurse -Force -ErrorAction SilentlyContinue } catch {}
 }
 
 Write-Host ''

@@ -115,7 +115,8 @@ function Get-CslEnvFixSettings($Cfg) {
   return @{ enabled = [bool]$enabled; keep = @($keep) }
 }
 
-function Load-Config {
+function Load-Config([switch]$NoWrite) {
+  # -NoWrite（R4d）：首次运行 / 补默认值时只在内存里补，不创建也不改写配置文件；默认不带，所有其他调用方行为不变
   # 留空的项会自动检测，或在第一次运行时自动记住
   $defaults = [ordered]@{
     expectedIp          = ''
@@ -148,7 +149,7 @@ function Load-Config {
   foreach ($k in @($defaults.Keys)) {
     if (-not ($cfg.PSObject.Properties.Name -contains $k)) { $cfg | Add-Member -NotePropertyName $k -NotePropertyValue $defaults[$k] -Force; $changed = $true }
   }
-  if ($changed) { try { [IO.File]::WriteAllText($script:CfgPath, ($cfg | ConvertTo-Json), $script:Utf8NoBom) } catch {} }
+  if ($changed -and -not $NoWrite) { try { [IO.File]::WriteAllText($script:CfgPath, ($cfg | ConvertTo-Json), $script:Utf8NoBom) } catch {} }
 
   # 以下为运行时自动检测，不写回配置文件
   $rt = Read-VergeRuntime
