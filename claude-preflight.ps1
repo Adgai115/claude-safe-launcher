@@ -15,7 +15,7 @@ Claude 桌面版 启动前检查 + 自动设置（v4.0.0）
 -NoPause  : 结束时不等待按键；单独使用时不提示也不自动修复
 
 .PARAMETER NoLaunch
--NoLaunch : 只检查，不启动/不切换 Claude，也不启动后台监控（测试用）。R4d：带 -NoLaunch 时从不改时区（不调用 tzutil）、不向 Clash 发任何写请求（不切节点）、不启动 Clash、不改 Clash 配置文件，与是否带 -Relearn 无关；只读检查和报告照常，被跳过的动作会以「[NoLaunch] 已跳过…」报告（Clash 未运行只报告）。写 preflight.json（学习时区 / expectedNode / 出口 IP 与地区、首次写默认值）只在显式带 -Relearn 时允许（面板「重新学习」就是 -NoLaunch -Relearn）；带 -NoLaunch 不带 -Relearn 时一切自动学习和写入都拦截，默认值只留在内存。与 claudeGroup / pinMainGroup / mainGroup 怎么配、有没有 preflight.json 都无关。
+-NoLaunch : 只检查，不启动/不切换 Claude，也不启动后台监控（测试用）。R4d：带 -NoLaunch 时从不改时区（不调用 tzutil）、不向 Clash 发任何写请求（不切节点）、不启动 Clash（Clash 未运行时也不等待 TUN，立即报告）、不改 Clash 配置文件，与是否带 -Relearn 无关；只读检查和报告照常，被跳过的动作会以「[NoLaunch] 已跳过…」报告（Clash 未运行只报告）。写 preflight.json（学习时区 / expectedNode / 出口 IP 与地区、首次写默认值）只在显式带 -Relearn 时允许（面板「重新学习」就是 -NoLaunch -Relearn）；带 -NoLaunch 不带 -Relearn 时一切自动学习和写入都拦截，默认值只留在内存。与 claudeGroup / pinMainGroup / mainGroup 怎么配、有没有 preflight.json 都无关。
 
 .PARAMETER Relearn
 -Relearn  : 忘掉记住的出口 IP / 节点 / 时区，按当前环境重新记住（与 -NoLaunch 同用时，只有显式 -Relearn 才允许写 preflight.json；仍不改时区、不切节点、不启动 Clash）
@@ -113,7 +113,7 @@ if ($Json -or $JsonPath) {
 # 所有「写」入口只经由下面的包装函数，每个包装函数的第一条语句就是 -NoLaunch 守卫（带 -NoLaunch 时只报告“已跳过”，不执行）：
 #   改时区 tzutil /s                  → Set-CslSystemTimeZone  → Invoke-CslTzutilSet
 #   Clash 控制器写请求（PUT 切节点）   → Switch-CslClashNode    → Ctl-SelectNode
-#   启动 Clash                         → Start-CslClashProcess  → Start-Process（-NoLaunch 一律不启动，与 -Relearn 无关）
+#   启动 Clash                         → Start-CslClashProcess  → Start-Process（-NoLaunch 一律不启动，与 -Relearn 无关；Clash 未运行时 Invoke-CslTunWaitStep 也不等 TUN）
 #   学习 / 清空 preflight.json         → Save-CslLearnedGuarded → Save-Learned（守卫是 Test-CslLearnWriteAllowed：带 -NoLaunch 时只有显式 -Relearn 才放行）
 #   首次写默认值                       → Load-Config -NoWrite:($NoLaunch -and -not $Relearn)（claude-common.ps1，默认行为不变）
 # 改时区 / 切节点 / 启动 Clash 在 -NoLaunch 下无论带不带 -Relearn 都不做。
@@ -147,6 +147,18 @@ function Invoke-CslClashStartStep($cfg, [bool]$VergeRunning, [switch]$NoLaunch) 
   $exeOk = [bool]($cfg.clashExe -and (Test-Path $cfg.clashExe))
   if ($exeOk -and (Start-CslClashProcess ([string]$cfg.clashExe) -NoLaunch:$NoLaunch)) { return }
   Say-Fail $(if ($exeOk) { 'Clash Verge 未运行（-NoLaunch 不启动 Clash，只报告；去掉 -NoLaunch 才会自动启动）' } else { 'Clash Verge 未运行，也没找到安装位置（可在 preflight.json 里填写 clashExe）' }) -Id 'net.clash_running'
+}
+# 等 TUN / 代理内核就绪（最多 15×2 = 30 秒）。带 -NoLaunch 且 Clash Verge 未运行时不等（-NoLaunch 不会启动 Clash，等也等不来），
+# 直接返回当前状态，让「Clash Verge 未运行」(net.clash_running) 等失败项立刻上报；不带 -NoLaunch、或 Clash 已运行时照旧等待。
+function Invoke-CslTunWaitStep([bool]$VergeRunning, $Mihomo, $Tun, [switch]$NoLaunch) {
+  if ($NoLaunch -and -not $VergeRunning) { Say-Info '[NoLaunch] Clash 未运行：已跳过等待 TUN（最多 30 秒）'; return @{ Mihomo = $Mihomo; Tun = $Tun; Waited = $false } }
+  for ($i = 0; $i -lt 15; $i++) {
+    Start-Sleep -Seconds 2
+    $Mihomo = Get-ProxyCore
+    $Tun = Get-TunAdapter
+    if ($Mihomo -and $Tun -and $Tun.Status -eq 'Up') { break }
+  }
+  return @{ Mihomo = $Mihomo; Tun = $Tun; Waited = $true }
 }
 function Save-CslLearnedGuarded($cfg, [hashtable]$Vals, [string]$DoneText, [string]$SkipText, [switch]$NoLaunch, [switch]$Relearn) {
   if (-not (Test-CslLearnWriteAllowed -NoLaunch:$NoLaunch -Relearn:$Relearn)) { Write-Host ("  [信息] [NoLaunch] 已跳过（不学习、不写 preflight.json；加 -Relearn 才会学习）：{0}" -f $SkipText) -ForegroundColor Gray; return $false }
@@ -440,7 +452,7 @@ function Invoke-CslPreflightScoring($Items, $Catalog, [switch]$HideIp, [string[]
 
 Write-Host '==============================================' -ForegroundColor Cyan
 Write-Host '   Claude 桌面版 启动前检查 v4.0.0' -ForegroundColor Cyan
-if ($Relearn) { Write-Host ('   [重新学习] 将按当前环境重新记住出口 IP / 节点 / 时区' + $(if ($NoLaunch) { '（-NoLaunch：只报告，不写 preflight.json）' } else { '' })) -ForegroundColor Cyan }
+if ($Relearn) { Write-Host ('   [重新学习] 将按当前环境重新记住出口 IP / 节点 / 时区' + $(if ($NoLaunch) { '（-NoLaunch：只重新记住并写 preflight.json，不改时区、不切节点、不启动 Clash）' } else { '' })) -ForegroundColor Cyan }
 Write-Host ("   " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + $(if ($NoLaunch) { '   [NoLaunch 测试模式]' } else { '' })) -ForegroundColor Cyan
 Write-Host '==============================================' -ForegroundColor Cyan
 
@@ -454,19 +466,15 @@ if ($script:CslNodeHostsInfo.ok) { Say-Info ('已从 Clash 运行配置读取 {0
 $mihomo = Get-ProxyCore
 $verge  = Get-Process -Name 'clash-verge' -ErrorAction SilentlyContinue
 $tun = Get-TunAdapter
+$tunWaited = $true
 if (-not ($mihomo -and $tun -and $tun.Status -eq 'Up')) {
   Invoke-CslClashStartStep $cfg ([bool]$verge) -NoLaunch:$NoLaunch
-  $deadline = (Get-Date).AddSeconds(30)
-  while ((Get-Date) -lt $deadline) {
-    Start-Sleep -Seconds 2
-    $mihomo = Get-ProxyCore
-    $tun = Get-TunAdapter
-    if ($mihomo -and $tun -and $tun.Status -eq 'Up') { break }
-  }
+  $tunWait = Invoke-CslTunWaitStep ([bool]$verge) $mihomo $tun -NoLaunch:$NoLaunch
+  $mihomo = $tunWait.Mihomo; $tun = $tunWait.Tun; $tunWaited = [bool]$tunWait.Waited
 }
 if ($mihomo) { Say-Pass "代理内核 $(@($mihomo)[0].ProcessName) 运行中 (PID $(@($mihomo)[0].Id))" } else { Say-Fail '代理内核 (mihomo) 未运行' -Id 'net.mihomo_core' }
 if ($tun -and $tun.Status -eq 'Up') { Say-Pass "TUN 网卡 $($tun.Name) 已启用" }
-else { Say-Fail '30 秒内 TUN 网卡未启用。请在 Clash Verge 里打开「虚拟网卡模式 (TUN)」' -Id 'net.tun' }
+else { Say-Fail $(if ($tunWaited) { '30 秒内 TUN 网卡未启用。请在 Clash Verge 里打开「虚拟网卡模式 (TUN)」' } else { 'TUN 网卡未启用（Clash Verge 未运行；-NoLaunch 不启动 Clash，也不等待 TUN）' }) -Id 'net.tun' }
 
 # ---------- 2. 时区 ----------
 Say-Head '2. 系统时区'

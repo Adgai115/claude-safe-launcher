@@ -82,7 +82,7 @@ rules:
 
 之后每次运行都会和记住的值对比。出口 IP 发生变化时会阻止启动 Claude。
 
-换了节点或 IP 后，在面板里点「记住当前环境」，或：
+换了节点或 IP 后，在面板里点「记住当前环境」（面板以 `-NoLaunch -Relearn` 运行：只重新记住并写入 `preflight.json`，不改系统时区、不切节点、不启动 Clash），或：
 
 ```text
 # Windows
