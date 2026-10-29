@@ -696,6 +696,25 @@
       "containsIp": false
     },
     {
+      "id": "browser.check_parse",
+      "category": "auto",
+      "title": "browser-check.json 可解析",
+      "checks": "browser-check.json 能否解析为 JSON（面板浏览器检查结果的数据来源）",
+      "expected": "browser-check.json 可解析",
+      "severity": "should_fix",
+      "refDeduction": 3,
+      "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
+      "recheckMac": null,
+      "platforms": [
+        "win"
+      ],
+      "masking": "",
+      "notes": "文件存在但解析失败 → 建议修、扣 3；文件不存在不报告",
+      "fixType": "none",
+      "fixId": null,
+      "containsIp": false
+    },
+    {
       "id": "meta.unmapped",
       "category": "meta",
       "title": "未映射的检查项（内部保留）",
@@ -709,7 +728,7 @@
         "win"
       ],
       "masking": "",
-      "notes": "保留 id（不属于 32 条检查）；status 恒为 error；分数由 preflight 按原权重补扣",
+      "notes": "保留 id（不属于 33 条检查）；status 恒为 error；原因写在该行 notes；分数由 preflight 按原权重补扣",
       "fixType": "none",
       "fixId": null,
       "containsIp": false,

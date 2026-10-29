@@ -67,11 +67,11 @@ try {
 Write-Host '== Catalog load ==' -ForegroundColor Cyan
 $cat = Get-CslRulesCatalog
 Assert-Eq $cat.rulesVersion '4.0.0' 'rulesVersion'
-Assert-Eq @($cat.checks | Where-Object { ([string]$_.id) -notlike 'meta.*' }).Count 32 '32 real checks (meta.* reserved ids excluded)'
-Assert-Eq $cat.checks.Count 33 '33 catalog entries = 32 checks + reserved meta.unmapped'
+Assert-Eq @($cat.checks | Where-Object { ([string]$_.id) -notlike 'meta.*' }).Count 33 '33 real checks (32 + browser.check_parse; meta.* reserved ids excluded)'
+Assert-Eq $cat.checks.Count 34 '34 catalog entries = 33 checks + reserved meta.unmapped'
 Assert-Eq $cat.scoring.staticBrowserCap 20 'staticBrowserCap'
 $ids = @($cat.checks | ForEach-Object { [string]$_.id })
-Assert-Eq ($ids | Select-Object -Unique).Count 33 'unique ids'
+Assert-Eq ($ids | Select-Object -Unique).Count 34 'unique ids'
 $api = Get-CslRuleById -Catalog $cat -Id 'exit.api_anthropic'
 Assert-True ($null -ne $api) 'api rule exists'
 Assert-Eq $api.category 'proxy-net' 'api.anthropic category=proxy-net'
@@ -264,6 +264,7 @@ Assert-True (-not ($pfSrc -match "item\.\{0\}")) 'preflight has no item.N placeh
 $sayNames = @('Say-Fail', 'Say-Warn', 'Say-Note', 'Soft-BrowserWarn')
 $callAsts = @($pfAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and ($sayNames -contains $n.GetCommandName()) }, $true))
 $sites = New-Object System.Collections.ArrayList
+$parseSiteId = $null
 $badSites = New-Object System.Collections.ArrayList
 foreach ($ca in $callAsts) {
   $anc = $ca.Parent; $inFn = $false
@@ -276,11 +277,13 @@ foreach ($ca in $callAsts) {
       elseif ($k + 1 -lt $els.Count) { $idVal = $els[$k + 1].Extent.Text.Trim("'") }
     }
   }
+  if ($ca.Extent.Text -like '*browser-check.json 解析失败*') { $parseSiteId = $idVal }
   if ($idVal -and ($catIds -contains $idVal)) { [void]$sites.Add($idVal) } else { [void]$badSites.Add(("line {0}" -f $ca.Extent.StartLineNumber)) }
 }
 Assert-True ($sites.Count -ge 40) ("preflight check call sites found ($($sites.Count))")
 Assert-True ($badSites.Count -eq 0) ("every check call site has -Id with a valid catalog id (bad=[$($badSites -join ', ')])")
-$siteGolden = 'auto.webdriver:1,cfg.claude_cli:1,cfg.claude_desktop:1,cfg.env_relay_machine:1,cfg.env_relay_user:3,cfg.https_proxy:1,cfg.residue_claude:1,cfg.residue_scripts:1,exit.api_anthropic:3,exit.blocked_region:1,exit.edge_trace:1,exit.ip_risk_ipapi:2,exit.ip_risk_proxycheck:3,exit.local_ip:1,exit.three_way_ip:3,exit.webrtc_ipv6:1,exit.webrtc_srflx:2,locale.browser_lang_live:1,locale.browser_lang_static:1,locale.browser_tz_live:1,locale.system_lang:1,locale.system_tz:2,locale.tz_auto:1,net.browser_webrtc_chromium:2,net.browser_webrtc_firefox:2,net.clash_running:1,net.controller:1,net.dns_fakeip:2,net.ipv6_leak:1,net.mihomo_core:1,net.node_lock:3,net.tun:1'
+Assert-Eq $parseSiteId 'browser.check_parse' 'browser-check.json 解析失败 warning maps to browser.check_parse (product ruling; not exit.webrtc_srflx)'
+$siteGolden = 'auto.webdriver:1,browser.check_parse:1,cfg.claude_cli:1,cfg.claude_desktop:1,cfg.env_relay_machine:1,cfg.env_relay_user:3,cfg.https_proxy:1,cfg.residue_claude:1,cfg.residue_scripts:1,exit.api_anthropic:3,exit.blocked_region:1,exit.edge_trace:1,exit.ip_risk_ipapi:2,exit.ip_risk_proxycheck:3,exit.local_ip:1,exit.three_way_ip:3,exit.webrtc_ipv6:1,exit.webrtc_srflx:1,locale.browser_lang_live:1,locale.browser_lang_static:1,locale.browser_tz_live:1,locale.system_lang:1,locale.system_tz:2,locale.tz_auto:1,net.browser_webrtc_chromium:2,net.browser_webrtc_firefox:2,net.clash_running:1,net.controller:1,net.dns_fakeip:2,net.ipv6_leak:1,net.mihomo_core:1,net.node_lock:3,net.tun:1'
 $siteActual = (@($sites | Group-Object | Sort-Object Name | ForEach-Object { '{0}:{1}' -f $_.Name, $_.Count }) -join ',')
 Assert-Eq $siteActual $siteGolden 'call-site id set matches the reviewed golden list (id:count)'
 $usedIds = @($sites | Select-Object -Unique)
@@ -323,7 +326,10 @@ $mbRes = Invoke-CslPreflightScoring $bad $cat
 $mbRows = @($mbRes.checks)
 Assert-True (@($mbRows | Where-Object { $_.id -eq 'meta.unmapped' -and $_.status -ne 'error' }).Count -eq 0) 'every meta.unmapped row has status=error'
 Assert-True (@($mbRows | Where-Object { $_.id -ne 'meta.unmapped' -and $_.status -eq 'error' }).Count -eq 0) 'no other row has status=error'
-Assert-True (@($mbRows | Where-Object { $_.id -eq 'meta.unmapped' -and -not ([string]$_.current).Contains('未映射（') }).Count -eq 0) 'every meta.unmapped row states the reason in current'
+Assert-True (@($mbRows | Where-Object { $_.id -eq 'meta.unmapped' -and -not ([string]$_.notes).StartsWith('未映射：') }).Count -eq 0) 'every meta.unmapped row states the reason in notes'
+Assert-True (@($mbRows | Where-Object { $_.id -eq 'meta.unmapped' -and [string]$_.current -ne '' }).Count -eq 0) 'meta.unmapped rows keep current empty (no original text)'
+Assert-True (@($mbRows | Where-Object { $_.id -ne 'meta.unmapped' -and $null -ne $_.PSObject.Properties['notes'] }).Count -eq 0) 'only unmapped rows carry a notes field'
+Assert-True (@($mbRows | Where-Object { $_.id -eq 'meta.unmapped' -and (([string]$_.notes).Contains('item.') -or ([string]$_.notes).Contains('zz.not_in_catalog')) }).Count -eq 0) 'unmapped notes never echo the original id'
 $mbPayload = New-CslPreflightResult -ScoreResult $mbRes -Platform 'win' -Verdict 'blocked'
 $mbTmp = Join-Path ([IO.Path]::GetTempPath()) ("csl-unmapped-" + [guid]::NewGuid().ToString('n') + '.json')
 try {
@@ -339,6 +345,8 @@ Assert-Eq $mbDupNonMulti.Count 0 'R0: no duplicate ids in the JSON (only multi i
 Assert-Eq $mbRes.score 5 'score = 100 - all item weights (95), unmapped weights included'
 Assert-True (-not $mbRes.canLaunchSafely) 'unmapped FAIL still blocks launch'
 $muRule = Get-CslRuleById -Catalog $cat -Id 'meta.unmapped'
+$bcp = Get-CslRuleById -Catalog $cat -Id 'browser.check_parse'
+Assert-True ($null -ne $bcp -and $bcp.category -eq 'auto' -and $bcp.severity -eq 'should_fix' -and $bcp.refDeduction -eq 3 -and $bcp.fixType -eq 'none' -and $null -eq $bcp.fixId -and -not $bcp.multi -and ($cat.scoring.staticBrowserCheckIds -notcontains 'browser.check_parse')) 'catalog: browser.check_parse (auto, should_fix, deduction 3, fixType none, not static-capped)'
 Assert-True ($null -ne $muRule -and $muRule.multi -and $muRule.refDeduction -eq 0 -and $muRule.fixType -eq 'none' -and $null -eq $muRule.fixId) 'catalog reserves meta.unmapped (multi, no deduction, no fix)'
 
 Write-Host '== v4 part 2: fixId / severity / score unchanged ==' -ForegroundColor Cyan
@@ -427,6 +435,12 @@ $r0Golden = @(
     ) },
   @{ Name = 'S9-empty'; Score = 100; Can = $true; Items = @(
 
+    ) },
+  @{ Name = 'S10-browser-check-parse'; Score = 64; Can = $false; Items = @(
+      @('WARN', 'browser-check.json 解析失败', 3, 'browser.check_parse', 'browser.check_parse', 'failed', ''),
+      @('WARN', 'WebRTC 出口 IP 与期望不一致', 8, 'exit.webrtc_srflx', 'exit.webrtc_srflx', 'failed', ''),
+      @('NOTE', '浏览器语言与出口地区不一致', 0, 'locale.browser_lang_live', 'locale.browser_lang_live', 'info', ''),
+      @('FAIL', 'TUN 未启用', 25, 'net.tun', 'net.tun', 'failed', '')
     ) }
 )
 foreach ($g in $r0Golden) {

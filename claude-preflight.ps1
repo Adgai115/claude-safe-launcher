@@ -189,7 +189,7 @@ function Get-CslJsonCurrent([string]$Text) {
 # 检查项 → 规则评分输入（preflight-result.json 的 checks 由此而来）
 # 每个检查项带着调用点写死的真实规则 id（rules/checks.json）；映射是确定的，没有 item.N 占位。
 # 没有有效 id 的项（缺 id / 不在目录里 / 非 multi 规则重复出现）不丢、不编造 id：
-#   以保留 id `meta.unmapped`（目录里标 multi）、status=error 写进 JSON，原因写在 current（不回显原 id）；
+#   以保留 id `meta.unmapped`（目录里标 multi）、status=error 写进 JSON，原因写在该行的 notes（不回显原 id；current 留空）；
 #   同时记入 $script:CslUnmappedItems（Item / Id / Reason）。error 行在评分器里不扣分，
 #   所以由 Invoke-CslPreflightScoring 按原权重补扣，分数与 d025841 一致。
 # fixType / fixId 与 d025841 逐项一致：只有文本含「用户级」的失败项带 confirm + envfix.user-anthropic，其余一律 none / null。
@@ -221,10 +221,13 @@ function New-CslScoreMappedResults($Items, $Catalog = $null) {
     }
     $cur = Get-CslJsonCurrent ([string]$it.Text)
     $outId = $id
+    $note = ''
     if ($reason) {
       [void]$script:CslUnmappedItems.Add([pscustomobject]@{ Item = $it; Id = $id; Reason = $reason })
       $outId = 'meta.unmapped'; $st = 'error'
-      $cur = ('未映射（{0}）：{1}' -f $reason, $cur)
+      # 原因写进 notes（不回显原 id）；current 留空，不带任何原文
+      $cur = ''
+      $note = ('未映射：{0}' -f $reason)
     }
     [void]$mapped.Add([pscustomobject]@{
       id                   = $outId
@@ -237,6 +240,7 @@ function New-CslScoreMappedResults($Items, $Catalog = $null) {
       masked               = $true
       fixTypeOverride      = $fixTypeOv
       fixIdOverride        = $fixIdOv
+      notes                = $note
     })
   }
   return ,$mapped
@@ -648,7 +652,7 @@ if (-not (Test-Path -LiteralPath $bcPath)) {
   Say-Info '实时浏览器检查（WebRTC/时区/语言）请从检查面板运行；命令行模式跳过，不扣分'
 } else {
   $raw = $null; try { $raw = [IO.File]::ReadAllText($bcPath, [Text.Encoding]::UTF8) } catch {}
-  $bc = $null; if ($raw) { try { $bc = $raw | ConvertFrom-Json } catch { Say-Warn 'browser-check.json 解析失败' 3 -Id 'exit.webrtc_srflx' } }
+  $bc = $null; if ($raw) { try { $bc = $raw | ConvertFrom-Json } catch { Say-Warn 'browser-check.json 解析失败' 3 -Id 'browser.check_parse' } }
   if ($bc) {
     $ts = $null
     if ($bc.ts) {

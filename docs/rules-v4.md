@@ -14,7 +14,7 @@
 
 运行结果 `status` 另含 **`error`**（检查未能完成：超时/配置不可读）：扣分恒 0；任一 `must_fix` 为 `error` 则 `verdict=blocked`。详见 `docs/preflight-json-schema.md`（FROZEN candidate v1）。
 
-## 分类与条数（32）
+## 分类与条数（33）
 
 产品裁定后：`api.anthropic.com` 连通归入 **代理与网络**（`category=proxy-net`，稳定 id 仍为 `exit.api_anthropic`）。
 
@@ -24,11 +24,11 @@
 | `exit` | 出口一致性 | 8 |
 | `locale` | 地区一致性 | 6 |
 | `cfg` | 本机配置 | 7 |
-| `auto` | 浏览器自动化痕迹 | 1 |
+| `auto` | 浏览器自动化痕迹 | 2 |
 
-（裁定前口头「9+9」在把 API 连通挪到代理与网络后变为 10+8；总条数仍为 32。）
+（裁定前口头「9+9」在把 API 连通挪到代理与网络后变为 10+8；总条数当时为 32；产品随后要求把 `browser-check.json` 解析失败单独成项（`browser.check_parse`，`auto`，扣 3），现为 33。）
 
-另有保留分类 `meta`，只含 `meta.unmapped`（`multi`，扣分 0，`fixType=none`）：preflight 遇到没有有效规则 id 的检查项时，以它、`status=error` 记入 JSON 并写明原因，不编造 id。它不计入上面的 32 条。
+另有保留分类 `meta`，只含 `meta.unmapped`（`multi`，扣分 0，`fixType=none`）：preflight 遇到没有有效规则 id 的检查项时，以它、`status=error` 记入 JSON 并把原因写进该行 `notes`（`current` 留空），不编造 id。它不计入上面的 33 条。
 
 ## 参考评分（不挡启动）
 
