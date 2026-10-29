@@ -10,10 +10,14 @@ $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 # Restore Stop after dot-sourcing so non-terminating errors also hit the trap
 $ErrorActionPreference = 'Stop'
 # Any uncaught error counts as a failure
+# Counting rule (R3, same in all test files):
+#   (?m)^\s*FAIL(?!ED)\b   counts failed assertions; must equal "N assertion(s)" in the FAILED summary.
+#   (?m)^\s*UNCAUGHT\b     counts uncaught errors;    must equal "M uncaught error(s)".
+# The summary line starts with FAILED / ALL PASSED and matches neither regex.
 $script:Uncaught = 0
 trap {
   $script:Uncaught++
-  Write-Host ("  FAIL  uncaught error: {0} (line {1})" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber) -ForegroundColor Red
+  Write-Host ("  UNCAUGHT  {0} (line {1})" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber) -ForegroundColor Red
   continue
 }
 
