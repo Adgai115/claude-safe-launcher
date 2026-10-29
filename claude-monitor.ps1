@@ -1,11 +1,39 @@
 ﻿<#
-  Claude 运行期间后台监控（由 claude-preflight.ps1 在启动 Claude 后隐藏运行）
-  每 monitorIntervalMin 分钟检查：Claude 边缘看到的出口 IP、Claude 策略组节点。
-  变化时：尝试切回 → 仍不对则弹出提醒；monitorKillOnChange=true 时关闭 Claude。
-  Claude 退出后自动结束。单实例（互斥锁）。
-  测试: powershell -NoProfile -ExecutionPolicy Bypass -File claude-monitor.ps1 -Once -DryRun
+.SYNOPSIS
+Claude 运行期间后台监控（由 claude-preflight.ps1 在启动 Claude 后隐藏运行）
+
+.DESCRIPTION
+每 monitorIntervalMin 分钟检查：Claude 边缘看到的出口 IP、Claude 策略组节点。
+变化时：尝试切回 → 仍不对则弹出提醒；monitorKillOnChange=true 时关闭 Claude。
+Claude 退出后自动结束。单实例（互斥锁）。
+-Help（或 -?）只打印本帮助后立即以退出码 0 退出：不加载配置、不拿互斥锁、不检查、不写 preflight.log、不访问网络或 Clash。
+
+.PARAMETER Once
+-Once   : 只检查一次就退出，并把结果打印到屏幕（测试用）
+
+.PARAMETER DryRun
+-DryRun : 只列出将要执行的动作，不切换节点、不关闭 Claude（测试用）
+
+.PARAMETER HideIp
+-HideIp : 监控写进 preflight.log 的行、-Once 屏幕输出和提醒文字里的公网出口 IP 遮成 <出口IP>（fake-ip 和内网地址保留）；由 claude-preflight.ps1 -HideIp 传入
+
+.PARAMETER Help
+-Help   : 只打印本帮助后 exit 0（等同 -?）：不加载配置、不启动监控、不写日志、不访问网络或 Clash
+
+.EXAMPLE
+powershell -NoProfile -ExecutionPolicy Bypass -File claude-monitor.ps1 -Once -DryRun
+检查一次并只打印将执行的动作，不改任何东西。
+
+.EXAMPLE
+powershell -NoProfile -ExecutionPolicy Bypass -File claude-monitor.ps1 -Help
+只打印帮助，退出码 0；不启动监控。
 #>
-param([switch]$Once, [switch]$DryRun, [switch]$HideIp)
+param([switch]$Once, [switch]$DryRun, [switch]$HideIp, [switch]$Help)
+# R4c: -Help 只打印帮助后 exit 0。必须是 param() 之后的第一条语句：在加载配置、任何检查、写日志/JSON、启动监控、网络/Clash 调用之前退出。
+if ($Help) {
+  try { Get-Help -Name $MyInvocation.MyCommand.Path -Full | Out-String -Width 110 | Write-Host } catch { Write-Host '（帮助不可用：请查看脚本开头的注释式帮助）' }
+  exit 0
+}
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-common.ps1')
 $cfg = Load-Config
 $tag = '[monitor]' + $(if ($DryRun) { '[DryRun]' } else { '' })

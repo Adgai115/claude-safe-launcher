@@ -23,6 +23,12 @@ trap {
 }
 
 $script:Fail = 0
+# R4c test-hardening: a failed setup step is exactly 1 FAIL (the setup assertion); the assertions that depend on it are
+# listed by name as SKIP (not PASS, not FAIL) and the run can never end as ALL PASSED while any SKIP exists.
+$script:Skipped = New-Object System.Collections.ArrayList
+function Skip-CslDependents([string]$Setup, [string[]]$Names) {
+  foreach ($n in $Names) { Write-Host ("  SKIP  {0} (skipped: setup failed: {1})" -f $n, $Setup) -ForegroundColor Yellow; [void]$script:Skipped.Add($n) }
+}
 function Assert-True($cond, $msg) {
   if ($cond) { Write-Host "  PASS  $msg" -ForegroundColor Green }
   else { Write-Host "  FAIL  $msg" -ForegroundColor Red; $script:Fail++ }
@@ -983,50 +989,73 @@ if ($fnAst) {
 Write-Host '== R2: real -UndoFix CLI path prints names only (n2b) ==' -ForegroundColor Cyan
 # Run claude-preflight.ps1 -UndoFix in a child process on a temp copy of the scripts.
 # The child installs an in-memory store (CSL_TEST_* canaries only), so no registry or real variable is touched.
-$r2Dir = Join-Path $script:Root 'r2-undo-cli'
-New-Item -ItemType Directory -Path $r2Dir -Force | Out-Null
-Get-ChildItem -LiteralPath $repoDir -Filter 'claude-*.ps1' -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $r2Dir }
-Copy-Item -LiteralPath (Join-Path $repoDir 'rules') -Destination $r2Dir -Recurse
-$r2MemSrc = @([System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$null, [ref]$null).FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'New-MemStore' }, $true))[0].Extent.Text
-$r2Wrap = @(
-  'param([string]$Dir)',
-  'try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}',
-  '. (Join-Path $Dir ''claude-common.ps1'')',
-  '. (Join-Path $Dir ''claude-envfix.ps1'')',
-  $r2MemSrc,
-  '$r2s = New-MemStore',
-  '& $r2s.SetUserEntry -Name ''CSL_TEST_ANTHROPIC_R2_KEY'' -Value ''r2canary-Kq9vX''',
-  '& $r2s.SetUserEntry -Name ''CSL_TEST_ANTHROPIC_R2_URL'' -Value ''r2canary-Url7w''',
-  '$script:CslEnvStore = $r2s',
-  '$r2f = Invoke-CslEnvFix -Patterns @(''CSL_TEST_ANTHROPIC_R2_*'') -TestMode -Store $r2s',
-  'if (-not $r2f.ok) { Write-Host ''R2SETUP fix failed''; exit 9 }',
-  '. (Join-Path $Dir ''claude-preflight.ps1'') -UndoFix -UndoId $r2f.id -TestMode -NoLaunch -NoPause'
-) -join "`r`n"
-$r2WrapPath = Join-Path $r2Dir 'r2-wrap.ps1'
-[IO.File]::WriteAllText($r2WrapPath, $r2Wrap, (New-Object System.Text.UTF8Encoding($true)))
-$r2Exe = (Get-Process -Id $PID).Path
-$r2PrevEnc = $null
-try { $r2PrevEnc = [Console]::OutputEncoding; [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
+$r2DepNames = @(
+  'R2 -UndoFix CLI exit 0',
+  'R2 one 已恢复 line per restored variable',
+  'R2 已恢复 lines list every variable name',
+  'R2 已恢复 lines carry no value',
+  'R2 已恢复 lines carry no *',
+  'R2 已恢复 lines carry no =',
+  'R2 whole -UndoFix output carries no value'
+)
+$r2SetupOk = $false
+$r2SetupErr = ''
+$r2Out = @(); $r2Exit = $null
 try {
-  $r2Out = @(& $r2Exe -NoProfile -ExecutionPolicy Bypass -File $r2WrapPath -Dir $r2Dir | ForEach-Object { [string]$_ })
-  $r2Exit = $LASTEXITCODE
-} finally {
-  if ($null -ne $r2PrevEnc) { try { [Console]::OutputEncoding = $r2PrevEnc } catch {} }
+  $r2Dir = Join-Path $script:Root 'r2-undo-cli'
+  if ($env:CSL_TEST_FORCE_SETUP_FAIL -eq 'r2-undo-cli') { throw 'forced setup failure (CSL_TEST_FORCE_SETUP_FAIL=r2-undo-cli)' }
+  New-Item -ItemType Directory -Path $r2Dir -Force | Out-Null
+  Get-ChildItem -LiteralPath $repoDir -Filter 'claude-*.ps1' -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $r2Dir }
+  Copy-Item -LiteralPath (Join-Path $repoDir 'rules') -Destination $r2Dir -Recurse
+  $r2MemSrc = @([System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$null, [ref]$null).FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'New-MemStore' }, $true))[0].Extent.Text
+  $r2Wrap = @(
+    'param([string]$Dir)',
+    'try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}',
+    '. (Join-Path $Dir ''claude-common.ps1'')',
+    '. (Join-Path $Dir ''claude-envfix.ps1'')',
+    $r2MemSrc,
+    '$r2s = New-MemStore',
+    '& $r2s.SetUserEntry -Name ''CSL_TEST_ANTHROPIC_R2_KEY'' -Value ''r2canary-Kq9vX''',
+    '& $r2s.SetUserEntry -Name ''CSL_TEST_ANTHROPIC_R2_URL'' -Value ''r2canary-Url7w''',
+    '$script:CslEnvStore = $r2s',
+    '$r2f = Invoke-CslEnvFix -Patterns @(''CSL_TEST_ANTHROPIC_R2_*'') -TestMode -Store $r2s',
+    'if (-not $r2f.ok) { Write-Host ''R2SETUP fix failed''; exit 9 }',
+    '. (Join-Path $Dir ''claude-preflight.ps1'') -UndoFix -UndoId $r2f.id -TestMode -NoLaunch -NoPause'
+  ) -join "`r`n"
+  $r2WrapPath = Join-Path $r2Dir 'r2-wrap.ps1'
+  [IO.File]::WriteAllText($r2WrapPath, $r2Wrap, (New-Object System.Text.UTF8Encoding($true)))
+  $r2Exe = (Get-Process -Id $PID).Path
+  $r2PrevEnc = $null
+  try { $r2PrevEnc = [Console]::OutputEncoding; [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
+  try {
+    $r2Out = @(& $r2Exe -NoProfile -ExecutionPolicy Bypass -File $r2WrapPath -Dir $r2Dir | ForEach-Object { [string]$_ })
+    $r2Exit = $LASTEXITCODE
+  } finally {
+    if ($null -ne $r2PrevEnc) { try { [Console]::OutputEncoding = $r2PrevEnc } catch {} }
+  }
+  $r2SetupOk = $true
+} catch { $r2SetupErr = $_.Exception.Message }
+if (-not $r2SetupOk) {
+  Assert-True $false "R2 setup: scripts copied to r2-undo-cli and -UndoFix child run ($r2SetupErr)"
+  Skip-CslDependents 'R2 r2-undo-cli copy' $r2DepNames
+} else {
+  Assert-True $true 'R2 setup: scripts copied to r2-undo-cli and -UndoFix child run'
+  $r2Names = @('CSL_TEST_ANTHROPIC_R2_KEY', 'CSL_TEST_ANTHROPIC_R2_URL')
+  $r2Lines = @($r2Out | Where-Object { $_ -match '已恢复' })
+  $r2Text = $r2Lines -join "`n"
+  Assert-Eq $r2Exit 0 'R2 -UndoFix CLI exit 0'
+  Assert-Eq $r2Lines.Count 2 'R2 one 已恢复 line per restored variable'
+  Assert-True (@($r2Names | Where-Object { $r2Text -notmatch [regex]::Escape($_) }).Count -eq 0) 'R2 已恢复 lines list every variable name'
+  Assert-True ($r2Text -notmatch 'r2canary') 'R2 已恢复 lines carry no value'
+  Assert-True ($r2Text -notmatch '\*') 'R2 已恢复 lines carry no *'
+  Assert-True ($r2Text -notmatch '=') 'R2 已恢复 lines carry no ='
+  Assert-True ((($r2Out -join "`n") -notmatch 'r2canary')) 'R2 whole -UndoFix output carries no value'
 }
-$r2Names = @('CSL_TEST_ANTHROPIC_R2_KEY', 'CSL_TEST_ANTHROPIC_R2_URL')
-$r2Lines = @($r2Out | Where-Object { $_ -match '已恢复' })
-$r2Text = $r2Lines -join "`n"
-Assert-Eq $r2Exit 0 'R2 -UndoFix CLI exit 0'
-Assert-Eq $r2Lines.Count 2 'R2 one 已恢复 line per restored variable'
-Assert-True (@($r2Names | Where-Object { $r2Text -notmatch [regex]::Escape($_) }).Count -eq 0) 'R2 已恢复 lines list every variable name'
-Assert-True ($r2Text -notmatch 'r2canary') 'R2 已恢复 lines carry no value'
-Assert-True ($r2Text -notmatch '\*') 'R2 已恢复 lines carry no *'
-Assert-True ($r2Text -notmatch '=') 'R2 已恢复 lines carry no ='
-Assert-True ((($r2Out -join "`n") -notmatch 'r2canary')) 'R2 whole -UndoFix output carries no value'
 
 Remove-Item -LiteralPath $script:Root -Recurse -Force -ErrorAction SilentlyContinue
 
-if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {
+if ($script:Skipped.Count -gt 0) { Write-Host ("SKIPPED (setup failed): {0} assertion(s): {1}" -f $script:Skipped.Count, ($script:Skipped -join '; ')) -ForegroundColor Yellow }
+if ($script:Fail -gt 0 -or $script:Uncaught -gt 0 -or $script:Skipped.Count -gt 0) {
   Write-Host "FAILED: $($script:Fail) assertion(s), $($script:Uncaught) uncaught error(s)" -ForegroundColor Red
   exit 1
 }

@@ -23,6 +23,9 @@
 - JSON 文件改为显式开启（R4a）：`claude-preflight.ps1` 只有带 `-Json` 才写 `preflight-result.json`，不带就不生成也不覆盖（以前每次运行都写到脚本目录）；新增 `-JsonPath <文件路径>`，配合 `-Json` 把 JSON 写到指定文件，目标目录不存在就在任何检查之前报错退出（`CSL_JSON_ERROR=`，退出码 2，不自动创建），只给 `-JsonPath` 不给 `-Json` 同样报错退出（退出码 2，提示需配合 `-Json`，不写任何文件）。面板和 issue 导出不读这个文件，行为不变。`claude-rules.ps1` 新增 `Resolve-CslPreflightJsonPath` / `Save-CslPreflightResultJson`；`tests/rules.Tests.ps1` 新增 36 条断言（215 → 251）。
 - 测试（R2，n2b）：`tests/envfix.Tests.ps1` 新增一节，在子进程里走真实的 `claude-preflight.ps1 -UndoFix` 路径（临时目录里的脚本副本 + 内存变量表，只用 `CSL_TEST_*` 金丝雀），断言「已恢复」行只有变量名，不含值、`*` 和 `=`；envfix 断言数 292 → 299（Windows）。仅测试改动。
 - 测试加固（R3）：`tests/envfix.Tests.ps1` 里所有读取测试自己生成的备份文件的地方都先 `Test-Path`，文件缺失时跳过读取、每条依赖它的断言记一次失败（断言总数不变，不再连带未捕获报错）；三份测试的未捕获报错行前缀改为 `UNCAUGHT`，`(?m)^\s*FAIL(?!ED)\b` 只数断言失败、`(?m)^\s*UNCAUGHT\b` 只数未捕获报错，分别与汇总行的 N、M 一致；仅测试改动，无产品代码变化。
+- `-?` / `-Help` 不再跑预检（R4c）：`claude-preflight.ps1`、`claude-monitor.ps1`、`claude-panel.ps1`、`install.ps1` 的开头（`param()` 之前）都加了注释式帮助（.SYNOPSIS / .DESCRIPTION / .PARAMETER / .EXAMPLE），`Get-Help <脚本路径> -Full` 不执行脚本就能看到；新增 `-Help` 开关，只打印帮助后 `exit 0`，是 `param()` 之后的第一条语句：不加载配置、不跑任何检查、不写 preflight.json / preflight.log / preflight-result.json、不启动后台监控、不切换 Claude、不访问网络或 Clash。此前没有帮助块时 `-?` 会直接跑一次完整预检（所有版本都如此，不是 R4a 回归）。帮助内容和实际行为一致（例如 `-JsonPath` 必须配合 `-Json`、`-HideIp` 的 R4b 语义）。
+- 测试（R4c）：`tests/rules.Tests.ps1` 新增静态断言（每个入口脚本有帮助块且在 `param()` 之前、每个参数都有 .PARAMETER、`-Help` 分支是第一条语句并在 `Load-Config` 之前退出、入口脚本清单固定）和临时副本里的 `-Help` 实跑断言（退出码 0、打印帮助、不生成 preflight.json / preflight.log / preflight-result.json、目录前后一致）。
+- 测试加固（R4c）：`tests/envfix.Tests.ps1` 的 R2 `-UndoFix` 准备步骤（复制脚本到 r2-undo-cli 等）失败时，整段被捕获，记 1 条失败（准备失败本身），依赖它的 7 条断言以 `SKIP … (skipped: setup failed)` 列名跳过，整轮不再报 ALL PASSED（退出码 1，0 条 UNCAUGHT）。`rules.Tests.ps1` 的新一节同样处理。测试专用钩子 `CSL_TEST_FORCE_SETUP_FAIL`（`r2-undo-cli` / `r4c-help`）可人为让准备步骤失败，用于反向验证。
 
 ## v3.3.0（一期 · Windows）
 
