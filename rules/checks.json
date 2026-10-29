@@ -152,7 +152,8 @@
       "notes": "无策略组：severity=info、refDeduction=0、无修复按钮（运行时覆盖）",
       "fixType": "confirm",
       "fixId": "proxy.node-lock",
-      "containsIp": false
+      "containsIp": false,
+      "multi": true
     },
     {
       "id": "net.dns_fakeip",
@@ -211,7 +212,8 @@
       "notes": "计入浏览器静态 cap20；Mac 代码待对齐；标签「浏览器 · 配置目录名」",
       "fixType": "manual",
       "fixId": null,
-      "containsIp": false
+      "containsIp": false,
+      "multi": true
     },
     {
       "id": "net.browser_webrtc_firefox",
@@ -230,7 +232,8 @@
       "notes": "计入浏览器静态 cap20",
       "fixType": "manual",
       "fixId": null,
-      "containsIp": false
+      "containsIp": false,
+      "multi": true
     },
     {
       "id": "exit.api_anthropic",
@@ -455,7 +458,7 @@
       "category": "locale",
       "title": "系统界面语言",
       "checks": "UI culture",
-      "expected": "zh*=仅提示；其它通过",
+      "expected": "zh 开头：仅提示；其它通过",
       "severity": "info",
       "refDeduction": 0,
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
@@ -474,8 +477,8 @@
       "id": "locale.browser_lang_static",
       "category": "locale",
       "title": "浏览器 accept_languages",
-      "checks": "每配置：en* 永不报告；无地区码 vs 出口国语言表；有地区且非 en",
-      "expected": "与出口地区一致或 en*",
+      "checks": "每配置：en 开头永不报告；无地区码 vs 出口国语言表；有地区且非 en",
+      "expected": "与出口地区一致或 en 开头",
       "severity": "should_fix",
       "refDeduction": 0,
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
@@ -487,7 +490,8 @@
       "notes": "不符→建议修、扣 0",
       "fixType": "manual",
       "fixId": null,
-      "containsIp": false
+      "containsIp": false,
+      "multi": true
     },
     {
       "id": "locale.browser_tz_live",
@@ -513,7 +517,7 @@
       "category": "locale",
       "title": "面板浏览器语言",
       "checks": "同静态语言规则",
-      "expected": "与出口地区一致或 en*",
+      "expected": "与出口地区一致或 en 开头",
       "severity": "should_fix",
       "refDeduction": 0,
       "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
@@ -544,7 +548,8 @@
       "notes": "fixable: win；Mac v4 只给手动删除提示",
       "fixType": "confirm",
       "fixId": "envfix.user-anthropic",
-      "containsIp": false
+      "containsIp": false,
+      "multi": true
     },
     {
       "id": "cfg.env_relay_machine",
@@ -563,7 +568,8 @@
       "notes": "需管理员，不提权",
       "fixType": "none",
       "fixId": null,
-      "containsIp": false
+      "containsIp": false,
+      "multi": true
     },
     {
       "id": "cfg.https_proxy",
@@ -603,7 +609,8 @@
       "notes": "只报不删",
       "fixType": "manual",
       "fixId": null,
-      "containsIp": false
+      "containsIp": false,
+      "multi": true
     },
     {
       "id": "cfg.residue_scripts",

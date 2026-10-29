@@ -219,10 +219,10 @@ try {
     # screen/CLI text keeps the masked value (unchanged); proves the canary row is a real masked item
     Assert-True ($shown -like '*CSL_TEST_CANARY=*' -and $shown.Contains('*')) 'screen text still has NAME=masked'
     Assert-True (-not $shown.Contains($canaryVal)) 'screen text does not carry the raw canary'
-    [void]$canaryItems.Add([pscustomobject]@{ Level = 'FAIL'; Text = $shown; Weight = 25; Group = '9. 环境变量' })
+    [void]$canaryItems.Add([pscustomobject]@{ Level = 'FAIL'; Text = $shown; Weight = 25; Group = '9. 环境变量'; Id = 'cfg.env_relay_user' })
   }
   # an HTTPS_PROXY-style NAME=masked-url text goes through the same mapping
-  [void]$canaryItems.Add([pscustomobject]@{ Level = 'WARN'; Text = ('HTTPS_PROXY={0}' -f (Mask-Value -Value 'http://csl-canary-9f3a@127.0.0.1:7890' -Kind Url)); Weight = 5; Group = '9. 环境变量' })
+  [void]$canaryItems.Add([pscustomobject]@{ Level = 'WARN'; Text = ('HTTPS_PROXY={0}' -f (Mask-Value -Value 'http://csl-canary-9f3a@127.0.0.1:7890' -Kind Url)); Weight = 5; Group = '9. 环境变量'; Id = 'cfg.https_proxy' })
   $mapped = New-CslScoreMappedResults $canaryItems
   Assert-Eq @($mapped).Count 2 'mapping keeps one result per item'
   $cur0 = [string]@($mapped)[0].current
@@ -245,8 +245,8 @@ try {
   Assert-True (-not $jsonRaw.Contains($canaryVal)) 'JSON file has no canary value'
   Assert-True (-not $jsonRaw.Contains('*')) 'JSON file has no *'
   Assert-True ($jsonRaw.Contains('CSL_TEST_CANARY')) 'JSON file has the variable name'
-  $canaryRow = @(($jsonRaw | ConvertFrom-Json).checks | Where-Object id -eq 'item.1')[0]
-  Assert-Eq $canaryRow.current '用户级 CSL_TEST_CANARY：已设置' 'JSON checks[item.1].current = name + status only'
+  $canaryRow = @(($jsonRaw | ConvertFrom-Json).checks | Where-Object id -eq 'cfg.env_relay_user')[0]
+  Assert-Eq $canaryRow.current '用户级 CSL_TEST_CANARY：已设置' 'JSON checks[cfg.env_relay_user].current = name + status only'
   Assert-Eq $canaryRow.fixId 'envfix.user-anthropic' 'env item keeps fixId in JSON'
 }
 finally {
@@ -254,6 +254,94 @@ finally {
   Remove-Item -LiteralPath $jsonTmp -Force -ErrorAction SilentlyContinue
 }
 Assert-Eq ([string][Environment]::GetEnvironmentVariable($canaryName)) ([string]$prevCanary) 'canary variable cleaned up (restored to previous state)'
+
+Write-Host '== v4 part 2: real rule ids, no item.N placeholders ==' -ForegroundColor Cyan
+$catIds = @($cat.checks | ForEach-Object { [string]$_.id })
+$pfSrc = [IO.File]::ReadAllText((Join-Path $root 'claude-preflight.ps1'))
+Assert-True (-not ($pfSrc -match "item\.\{0\}")) 'preflight has no item.N placeholder id'
+# 每个 Say-Fail / Say-Warn / Say-Note / Soft-BrowserWarn 调用点都必须带 -Id <目录里的真实 id>（函数定义内部的转发调用除外）
+$sayNames = @('Say-Fail', 'Say-Warn', 'Say-Note', 'Soft-BrowserWarn')
+$callAsts = @($pfAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and ($sayNames -contains $n.GetCommandName()) }, $true))
+$sites = New-Object System.Collections.ArrayList
+$badSites = New-Object System.Collections.ArrayList
+foreach ($ca in $callAsts) {
+  $anc = $ca.Parent; $inFn = $false
+  while ($anc) { if ($anc -is [System.Management.Automation.Language.FunctionDefinitionAst]) { $inFn = $true; break }; $anc = $anc.Parent }
+  if ($inFn) { continue }
+  $els = @($ca.CommandElements); $idVal = $null
+  for ($k = 0; $k -lt $els.Count; $k++) {
+    if ($els[$k] -is [System.Management.Automation.Language.CommandParameterAst] -and $els[$k].ParameterName -eq 'Id') {
+      if ($els[$k].Argument) { $idVal = $els[$k].Argument.Extent.Text.Trim("'") }
+      elseif ($k + 1 -lt $els.Count) { $idVal = $els[$k + 1].Extent.Text.Trim("'") }
+    }
+  }
+  if ($idVal -and ($catIds -contains $idVal)) { [void]$sites.Add($idVal) } else { [void]$badSites.Add(("line {0}" -f $ca.Extent.StartLineNumber)) }
+}
+Assert-True ($sites.Count -ge 40) ("preflight check call sites found ($($sites.Count))")
+Assert-True ($badSites.Count -eq 0) ("every check call site has -Id with a valid catalog id (bad=[$($badSites -join ', ')])")
+$usedIds = @($sites | Select-Object -Unique)
+$multiIds = @($cat.checks | Where-Object { $_.PSObject.Properties['multi'] -and $_.multi } | ForEach-Object { [string]$_.id } | Sort-Object)
+Assert-Eq ($multiIds -join ',') 'cfg.env_relay_machine,cfg.env_relay_user,cfg.residue_claude,locale.browser_lang_static,net.browser_webrtc_chromium,net.browser_webrtc_firefox,net.node_lock' 'catalog multi ids (one row per profile/group/variable/file)'
+
+function New-TestItem($lvl, $txt, $w, $id) { [pscustomobject]@{ Level = $lvl; Text = $txt; Weight = $w; Group = 'test'; Id = $id } }
+$synth = @($usedIds | ForEach-Object { New-TestItem 'WARN' ('synthetic ' + $_) 5 $_ })
+$m1 = New-CslScoreMappedResults $synth -Catalog $cat
+Assert-Eq @($m1).Count $usedIds.Count 'every id used by preflight maps to one result'
+Assert-Eq @($script:CslUnmappedItems).Count 0 'no unmapped items for real ids'
+$m1ids = @($m1 | ForEach-Object { [string]$_.id })
+Assert-True (@($m1ids | Where-Object { $catIds -notcontains $_ }).Count -eq 0) 'all emitted ids are catalog ids'
+Assert-Eq (@($m1ids | Select-Object -Unique).Count) $m1ids.Count 'no id emitted twice (non-multi)'
+$m2 = New-CslScoreMappedResults $synth -Catalog $cat
+Assert-Eq ((@($m2 | ForEach-Object { $_.id }) -join '|')) (($m1ids) -join '|') 'mapping is deterministic'
+Assert-True (@($m1ids | Where-Object { $_ -like 'item.*' }).Count -eq 0) 'no item.N ids emitted'
+$sc1 = Get-CslRulesScore -Catalog $cat -Results $m1
+Assert-True (@($sc1.checks | Where-Object { -not $_.category -or -not $_.title -or $_.title -eq $_.id }).Count -eq 0) 'emitted rows carry catalog category and title'
+Assert-True (-not (($sc1.checks | ConvertTo-Json -Depth 6).Contains('*'))) 'rows for every id: JSON has no *'
+Assert-True (@($sc1.checks | Where-Object { ([string]$_.current).Contains('=') -or ([string]$_.current).Contains('*') }).Count -eq 0) 'rows for every id: current has no = or *'
+
+Write-Host '== v4 part 2: unmapped / duplicate ids are explicit ==' -ForegroundColor Cyan
+$bad = @(
+  (New-TestItem 'FAIL' 'no id' 25 $null),
+  (New-TestItem 'WARN' 'legacy placeholder' 8 'item.1'),
+  (New-TestItem 'FAIL' 'first' 25 'net.tun'),
+  (New-TestItem 'FAIL' 'second (net.tun is not multi)' 25 'net.tun'),
+  (New-TestItem 'WARN' 'multi a' 6 'cfg.residue_claude'),
+  (New-TestItem 'WARN' 'multi b' 6 'cfg.residue_claude')
+)
+$mb = New-CslScoreMappedResults $bad -Catalog $cat
+$mbIds = @($mb | ForEach-Object { [string]$_.id })
+Assert-Eq ($mbIds -join ',') 'net.tun,cfg.residue_claude,cfg.residue_claude' 'only valid ids are emitted; multi ids may repeat'
+Assert-Eq @($script:CslUnmappedItems).Count 3 'no id / unknown id / duplicate non-multi → recorded as unmapped'
+Assert-True (@($script:CslUnmappedItems | Where-Object { [string]$_.Reason -eq '' }).Count -eq 0) 'each unmapped item has a reason'
+
+Write-Host '== v4 part 2: fixId / severity / score unchanged ==' -ForegroundColor Cyan
+$fx = @(
+  (New-TestItem 'FAIL' (Format-CslEnvUserItemText 'CSL_TEST_PART2' 'not-a-real-value') 25 'cfg.env_relay_user'),
+  (New-TestItem 'FAIL' 'env read error text' 25 'cfg.env_relay_user'),
+  (New-TestItem 'FAIL' 'clash' 25 'net.clash_running'),
+  (New-TestItem 'WARN' 'tz auto' 5 'locale.tz_auto'),
+  (New-TestItem 'FAIL' 'tz' 25 'locale.system_tz'),
+  (New-TestItem 'NOTE' 'machine only' 0 'cfg.env_relay_machine'),
+  (New-TestItem 'WARN' 'lang' 0 'locale.browser_lang_static')
+)
+$fxm = New-CslScoreMappedResults $fx -Catalog $cat
+$fxs = Get-CslRulesScore -Catalog $cat -Results $fxm
+$fxr = @($fxs.checks)
+Assert-Eq $fxr[0].fixId 'envfix.user-anthropic' 'user-level env item keeps fixId envfix.user-anthropic'
+Assert-Eq $fxr[0].fixType 'confirm' 'user-level env item keeps fixType confirm'
+Assert-Eq $fxr[0].current '用户级 CSL_TEST_PART2：已设置' 'user-level env item current = name + status only'
+Assert-True ($null -eq $fxr[1].fixId) 'env error row has no fixId'
+Assert-True ($null -eq $fxr[2].fixId -and $fxr[2].fixType -eq 'manual') 'net.clash_running (no confirm fix wired in preflight) → no fixId'
+Assert-True ($null -eq $fxr[4].fixId) 'locale.system_tz (no confirm fix wired in preflight) → no fixId'
+Assert-True (@($fxr | Where-Object { $_.fixId } ).Count -eq 1) 'exactly one row carries a fixId'
+Assert-Eq $fxr[5].fixType 'none' 'info row has fixType none'
+Assert-Eq $fxr[0].severity 'must_fix' 'FAIL keeps must_fix'
+Assert-Eq $fxr[3].severity 'should_fix' 'WARN keeps should_fix'
+Assert-Eq $fxr[5].severity 'info' 'NOTE keeps info'
+$scItems = @((New-TestItem 'FAIL' 'a' 25 'net.tun'), (New-TestItem 'WARN' 'b' 10 'net.dns_fakeip'), (New-TestItem 'NOTE' 'c' 0 'locale.system_lang'), (New-TestItem 'WARN' 'd' 0 'locale.browser_lang_static'))
+$scRes = Get-CslRulesScore -Catalog $cat -Results (New-CslScoreMappedResults $scItems -Catalog $cat)
+Assert-Eq $scRes.score 65 'score = 100 - sum of item weights (25+10), unchanged by real ids'
+Assert-True (-not $scRes.canLaunchSafely) 'must_fix failure still blocks launch'
 
 Write-Host ''
 if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {

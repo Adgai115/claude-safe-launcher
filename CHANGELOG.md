@@ -15,6 +15,10 @@
 - 修复回归：`claude-rules.ps1` 不再在脚本作用域设置 `Set-StrictMode -Version Latest`（dot-source 进 preflight 后严格模式泄漏到 `claude-common.ps1`，`Load-Config` 等在 CLI 中抛 PropertyNotFoundStrict）。新增断言锁定调用方不受严格模式影响。
 - **不在本批**：不改 `mac/`；issue 导出沿用 v3.3.0 已发布实现，v4 未改动；不改静默 Start-Process / tzutil 行为（标在规则 notes，后续 PR）。
 
+### v4.0.0（第 2 批 · 真实规则 id）
+
+- `claude-preflight.ps1`：评分与 `preflight-result.json` 的每条检查改用 `rules/checks.json` 的真实规则 id（如 `exit.api_anthropic`），取代 `item.N` 占位；每个检查调用点映射确定，无法映射的项显式处理（不写 JSON、分数照扣、屏幕提示）；`fixId` 与 names-only `current` 行为不变。目录新增可选 `multi`，并去掉 3 条 `expected` 里的 `*`。
+
 ## v3.3.0（一期 · Windows）
 
 - 新增「问题说明」导出：面板对不可一键修复的失败/警告项提供「复制问题说明」，页脚提供「复制全部问题」与「隐藏 IP」开关；整屏布局保持不变。

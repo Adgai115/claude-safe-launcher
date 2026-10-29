@@ -57,7 +57,7 @@ score = max(0, 100 − Σ 本次生效的 refDeduction)
 
 | 字段 | 含义 |
 |---|---|
-| `id` | 稳定 id（跨版本尽量不改） |
+| `id` | 稳定 id（跨版本尽量不改）；第 2 批起 preflight 的 JSON / 评分直接使用它（不再有 `item.N`） |
 | `category` | 上表五类之一 |
 | `title` | 短标题 |
 | `checks` / `expected` | 查什么 / 期望 |
@@ -65,6 +65,7 @@ score = max(0, 100 − Σ 本次生效的 refDeduction)
 | `refDeduction` | 参考扣分（失败时） |
 | `fixType` / `fixId` | `none` \| `confirm` \| `manual`；`confirm` 时 `fixId` 非空（面板只看 fixId） |
 | `containsIp` | `current`/`expected` 可能含出口或 WebRTC IP |
+| `multi` | 可选，`true` = 同一 id 允许在结果里出现多次（每个浏览器配置 / 变量 / 文件一行）；其余 id 重复出现视为无法映射 |
 | `recheckWin` / `recheckMac` | 修复后复检命令（可为 null） |
 | `platforms` | `win` / `mac` |
 | `masking` / `notes` | 脱敏约定与备注 |

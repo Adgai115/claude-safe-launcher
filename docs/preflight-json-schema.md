@@ -74,6 +74,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -Json -
 | `fixType` | enum `none` \| `confirm` \| `manual` | `confirm` = 确认框 + 备份 + 可撤销 |
 | `fixId` | string \| null | 修复动作 id；`none`/`manual` 时为 null；**面板只凭 `fixId` 是否非空显示修复按钮** |
 
+## `id`（v4.0.0 第 2 批起）
+
+`checks[].id` 是 `rules/checks.json` 里的**真实规则 id**（如 `exit.api_anthropic`），不再有 `item.N` 占位。`claude-preflight.ps1` 的每个检查调用点（`Say-Fail` / `Say-Warn` / `Say-Note` / `Soft-BrowserWarn`）写死一个 `-Id`，同一调用点永远映射到同一个 id（确定、与运行顺序无关）。
+
+- 只有失败 / 警告 / 提示项会写进 JSON；通过项和纯信息行不记录。
+- 同一个 id 只有目录里标 `"multi": true` 时才会出现多次（每个浏览器配置 / 变量 / 文件一行）：`net.node_lock`、`net.browser_webrtc_chromium`、`net.browser_webrtc_firefox`、`locale.browser_lang_static`、`cfg.env_relay_user`、`cfg.env_relay_machine`、`cfg.residue_claude`。
+- **无法映射**的项（没有 id、id 不在目录里、非 `multi` 的 id 重复）不写进 JSON：preflight 显式记下并在屏幕提示，分数照扣，本次不写 `preflight-result.json`。测试保证 preflight 自身不会产生这种项。
+- `browser-check.json` 解析失败的警告记在 `exit.webrtc_srflx`（该检查的数据来源）。
+- 行里的 `expected` / `title` / `category` 来自目录；`current` 仍只含名称与状态（无值、无 `*`、无 `=`）。
+- `fixId`：目录里 `fixType=confirm` 的规则，只有 preflight 真有对应确认修复时才带 `fixId`——目前只有用户级环境变量项的 `envfix.user-anthropic`；`net.clash_running` / `net.node_lock` / `locale.system_tz` 失败时 `fixType` 降为 `manual`、`fixId` 为 null（修复动作接入后再放开）。
+
 已知 `fixId`（confirm）：
 
 | fixId | check id |
