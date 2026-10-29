@@ -188,8 +188,11 @@ function Get-CslJsonCurrent([string]$Text) {
 
 # 检查项 → 规则评分输入（preflight-result.json 的 checks 由此而来）
 # 每个检查项带着调用点写死的真实规则 id（rules/checks.json）；映射是确定的，没有 item.N 占位。
-# 没有有效 id 的项（缺 id / 不在目录里 / 非 multi 规则重复出现）不写进 JSON：记入 $script:CslUnmappedItems，
-# 由调用方显式处理（preflight：分数照扣、不写 JSON、屏幕上提示）。同一个 id 只有目录里标 "multi": true 才允许出现多次。
+# 没有有效 id 的项（缺 id / 不在目录里 / 非 multi 规则重复出现）不丢、不编造 id：
+#   以保留 id `meta.unmapped`（目录里标 multi）、status=error 写进 JSON，原因写在 current（不回显原 id）；
+#   同时记入 $script:CslUnmappedItems（Item / Id / Reason）。error 行在评分器里不扣分，
+#   所以由 Invoke-CslPreflightScoring 按原权重补扣，分数与 d025841 一致。
+# fixType / fixId 与 d025841 逐项一致：只有文本含「用户级」的失败项带 confirm + envfix.user-anthropic，其余一律 none / null。
 function New-CslScoreMappedResults($Items, $Catalog = $null) {
   $script:CslUnmappedItems = New-Object System.Collections.ArrayList
   $mapped = New-Object System.Collections.ArrayList
@@ -200,37 +203,35 @@ function New-CslScoreMappedResults($Items, $Catalog = $null) {
     $id = [string](Get-CslPsProp $it 'Id')
     $rule = $null
     if ($Catalog -and $id) { $rule = Get-CslRuleById -Catalog $Catalog -Id $id }
+    $reason = ''
     if (-not $rule) {
-      $why = $(if ($id) { 'id 不在 rules/checks.json 里' } else { '检查项没有规则 id' })
-      [void]$script:CslUnmappedItems.Add([pscustomobject]@{ Item = $it; Id = $id; Reason = $why })
-      continue
+      $reason = $(if ($id) { 'id 不在 rules/checks.json 里' } else { '检查项没有规则 id' })
+    } else {
+      $multi = $false; $mv = Get-CslPsProp $rule 'multi'; if ($null -ne $mv) { $multi = [bool]$mv }
+      if ($seen.ContainsKey($id) -and -not $multi) { $reason = '规则 id 重复出现，但目录没有标 multi' }
+      else { $seen[$id] = $true }
     }
-    $multi = $false; $mv = Get-CslPsProp $rule 'multi'; if ($null -ne $mv) { $multi = [bool]$mv }
-    if ($seen.ContainsKey($id) -and -not $multi) {
-      [void]$script:CslUnmappedItems.Add([pscustomobject]@{ Item = $it; Id = $id; Reason = '规则 id 重复出现，但目录没有标 multi' })
-      continue
-    }
-    $seen[$id] = $true
     $sev = 'info'; $st = 'info'
     if ($it.Level -eq 'FAIL') { $sev = 'must_fix'; $st = 'failed' }
     elseif ($it.Level -eq 'WARN') { $sev = 'should_fix'; $st = 'failed' }
     elseif ($it.Level -eq 'NOTE') { $sev = 'info'; $st = 'info' }
-    # fixType / fixId 维持 v4 第 1 批的实际行为：只有「用户级」环境变量失败项带 envfix.user-anthropic。
-    # 目录里标 confirm 但 preflight 没有对应确认修复的规则（clash.start / proxy.node-lock / locale.timezone）降为 manual，不带 fixId。
-    $fixTypeOv = $null; $fixIdOv = $null
-    if ($id -eq 'cfg.env_relay_user' -and [string]$it.Text -match '用户级' -and $st -eq 'failed') {
+    $fixTypeOv = 'none'; $fixIdOv = $null
+    if ([string]$it.Text -match '用户级' -and $st -eq 'failed') {
       $fixTypeOv = 'confirm'; $fixIdOv = 'envfix.user-anthropic'
-    } elseif ($st -ne 'failed') {
-      $fixTypeOv = 'none'
-    } elseif ([string](Get-CslPsProp $rule 'fixType') -eq 'confirm') {
-      $fixTypeOv = 'manual'
+    }
+    $cur = Get-CslJsonCurrent ([string]$it.Text)
+    $outId = $id
+    if ($reason) {
+      [void]$script:CslUnmappedItems.Add([pscustomobject]@{ Item = $it; Id = $id; Reason = $reason })
+      $outId = 'meta.unmapped'; $st = 'error'
+      $cur = ('未映射（{0}）：{1}' -f $reason, $cur)
     }
     [void]$mapped.Add([pscustomobject]@{
-      id                   = $id
+      id                   = $outId
       status               = $st
       severityOverride     = $sev
       refDeductionOverride = [int]$it.Weight
-      current              = (Get-CslJsonCurrent ([string]$it.Text))
+      current              = $cur
       expected             = ''
       recheck              = 'powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause'
       masked               = $true
@@ -239,6 +240,17 @@ function New-CslScoreMappedResults($Items, $Catalog = $null) {
     })
   }
   return ,$mapped
+}
+
+# 评分单一入口（preflight 与测试共用）：映射 → Get-CslRulesScore → 补扣未映射项的原权重
+function Invoke-CslPreflightScoring($Items, $Catalog) {
+  $mapped = New-CslScoreMappedResults @($Items) -Catalog $Catalog
+  $res = Get-CslRulesScore -Catalog $Catalog -Results $mapped
+  $extra = 0
+  foreach ($u in $script:CslUnmappedItems) { $extra += [int]$u.Item.Weight }
+  if ($extra -gt 0) { $res.score = [int][Math]::Max(0, [int]$res.score - $extra) }
+  $script:CslScoreMapped = $mapped
+  return $res
 }
 
 Write-Host '==============================================' -ForegroundColor Cyan
@@ -708,21 +720,17 @@ $fails = @($script:Items | Where-Object Level -eq 'FAIL')
 $warns = @($script:Items | Where-Object Level -eq 'WARN')
 $notes = @($script:Items | Where-Object Level -eq 'NOTE')
 
-# Map checks (each carries its real rules/checks.json id) → rules Results (weights already include Soft-BrowserWarn cap)
+# Map checks (each carries its real rules/checks.json id; unmapped ones become meta.unmapped / status=error) → score (weights already include Soft-BrowserWarn cap)
 $script:CslRulesCatalog = $null
 $script:CslScoreResult = $null
 $script:CslScoreMapped = @()
 $script:CslUnmappedItems = New-Object System.Collections.ArrayList
 try {
   $script:CslRulesCatalog = Get-CslRulesCatalog
-  $script:CslScoreMapped = New-CslScoreMappedResults @($script:Items) -Catalog $script:CslRulesCatalog
-  $script:CslScoreResult = Get-CslRulesScore -Catalog $script:CslRulesCatalog -Results $script:CslScoreMapped
+  $script:CslScoreResult = Invoke-CslPreflightScoring @($script:Items) $script:CslRulesCatalog
   $score = [int]$script:CslScoreResult.score
-  # 没有有效规则 id 的项：不写进 JSON，但分数照扣（不让它悄悄变好），并在屏幕上提示
   if ($script:CslUnmappedItems.Count -gt 0) {
-    $unW = 0; foreach ($u in $script:CslUnmappedItems) { $unW += [int]$u.Item.Weight }
-    $score = [Math]::Max(0, $score - $unW)
-    Write-Host ("  [提示] 内部：{0} 条检查项没有有效的规则 id（{1}），分数照扣，本次不写 preflight-result.json" -f $script:CslUnmappedItems.Count, $script:CslUnmappedItems[0].Reason) -ForegroundColor DarkGray
+    Write-Host ("  [提示] 内部：{0} 条检查项没有有效的规则 id（{1}），JSON 里记为 meta.unmapped / status=error，分数照扣" -f $script:CslUnmappedItems.Count, $script:CslUnmappedItems[0].Reason) -ForegroundColor DarkGray
   }
 } catch {
   # Catalog missing → fall back to sum of weights (should not happen in a full checkout)
@@ -752,7 +760,7 @@ if ($ExportIssues) {
 
 # Structured JSON (always written; -Json also prints path marker for machines/CI)
 try {
-  if ($script:CslScoreResult -and $script:CslUnmappedItems.Count -eq 0) {
+  if ($script:CslScoreResult) {
     $verdict = $(if ($fails.Count -eq 0) { 'ok' } elseif ($Force) { 'force' } else { 'blocked' })
     $payload = New-CslPreflightResult -ScoreResult $script:CslScoreResult -Platform 'win' -Verdict $verdict
     $outJson = Join-Path $script:Root 'preflight-result.json'

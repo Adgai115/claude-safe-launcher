@@ -80,10 +80,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -Json -
 
 - 只有失败 / 警告 / 提示项会写进 JSON；通过项和纯信息行不记录。
 - 同一个 id 只有目录里标 `"multi": true` 时才会出现多次（每个浏览器配置 / 变量 / 文件一行）：`net.node_lock`、`net.browser_webrtc_chromium`、`net.browser_webrtc_firefox`、`locale.browser_lang_static`、`cfg.env_relay_user`、`cfg.env_relay_machine`、`cfg.residue_claude`。
-- **无法映射**的项（没有 id、id 不在目录里、非 `multi` 的 id 重复）不写进 JSON：preflight 显式记下并在屏幕提示，分数照扣，本次不写 `preflight-result.json`。测试保证 preflight 自身不会产生这种项。
+- **无法映射**的项（没有 id、id 不在目录里、非 `multi` 的 id 重复）**不丢、也不编造 id**：以目录里的保留 id **`meta.unmapped`**（`category=meta`，`multi: true`，不属于那 32 条检查）、**`status=error`** 写进 JSON，原因写在 `current`（形如「未映射（id 不在 rules/checks.json 里）：…」，不回显原 id，所以 JSON 里 `item.` 出现 0 次）。`error` 行评分器不扣分，但 `severity` 仍随原级别（FAIL → `must_fix`，所以仍会 `canLaunchSafely=false` / `verdict=blocked`）；分数由 preflight 按原权重补扣，与 d025841 一致。屏幕上同时提示。测试保证 preflight 自身不会产生这种项。
+- 验收（R0）：JSON 里每个 `id` 都在 `rules/checks.json` 里；除 `multi` 外无重复；`item.` 出现 0 次；同样的输入下，`score`、`canLaunchSafely`、每项 `status`、`fixId` 与 d025841 一致，只有 `id` 字段的值不同（唯一例外：未映射项按上条记为 `error`）。
 - `browser-check.json` 解析失败的警告记在 `exit.webrtc_srflx`（该检查的数据来源）。
 - 行里的 `expected` / `title` / `category` 来自目录；`current` 仍只含名称与状态（无值、无 `*`、无 `=`）。
-- `fixId`：目录里 `fixType=confirm` 的规则，只有 preflight 真有对应确认修复时才带 `fixId`——目前只有用户级环境变量项的 `envfix.user-anthropic`；`net.clash_running` / `net.node_lock` / `locale.system_tz` 失败时 `fixType` 降为 `manual`、`fixId` 为 null（修复动作接入后再放开）。
+- `fixId`：目录里 `fixType=confirm` 的规则，只有 preflight 真有对应确认修复时才带 `fixId`——目前只有文本含「用户级」的失败项（用户级环境变量）带 `fixType=confirm` + `envfix.user-anthropic`，与 d025841 的规则一模一样（不再看 id）；其余所有行 `fixType=none`、`fixId=null`——包括 `net.clash_running` / `net.node_lock` / `locale.system_tz`（和 d025841 一样；这些确认修复接入后再放开）。
 
 已知 `fixId`（confirm）：
 

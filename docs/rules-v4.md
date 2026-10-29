@@ -28,6 +28,8 @@
 
 （裁定前口头「9+9」在把 API 连通挪到代理与网络后变为 10+8；总条数仍为 32。）
 
+另有保留分类 `meta`，只含 `meta.unmapped`（`multi`，扣分 0，`fixType=none`）：preflight 遇到没有有效规则 id 的检查项时，以它、`status=error` 记入 JSON 并写明原因，不编造 id。它不计入上面的 32 条。
+
 ## 参考评分（不挡启动）
 
 ```

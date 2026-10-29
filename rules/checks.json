@@ -21,6 +21,10 @@
     {
       "id": "auto",
       "titleZh": "浏览器自动化痕迹"
+    },
+    {
+      "id": "meta",
+      "titleZh": "内部（保留）"
     }
   ],
   "severityEnum": {
@@ -690,6 +694,26 @@
       "fixType": "manual",
       "fixId": null,
       "containsIp": false
+    },
+    {
+      "id": "meta.unmapped",
+      "category": "meta",
+      "title": "未映射的检查项（内部保留）",
+      "checks": "preflight 内部：检查项没有有效的规则 id 时记在这里，不编造 id",
+      "expected": "不应出现；出现即代码缺陷，原因写在 current",
+      "severity": "info",
+      "refDeduction": 0,
+      "recheckWin": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
+      "recheckMac": null,
+      "platforms": [
+        "win"
+      ],
+      "masking": "",
+      "notes": "保留 id（不属于 32 条检查）；status 恒为 error；分数由 preflight 按原权重补扣",
+      "fixType": "none",
+      "fixId": null,
+      "containsIp": false,
+      "multi": true
     }
   ],
   "statusEnum": {
