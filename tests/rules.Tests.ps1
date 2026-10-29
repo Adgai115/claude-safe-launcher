@@ -639,6 +639,8 @@ Assert-Eq ([regex]::Matches($r4aPf, 'Save-CslPreflightResultJson\s+-Result\s+\$p
 Assert-Eq ([regex]::Matches($r4aPf, 'Write-CslPreflightResultJson').Count) 0 'R4a preflight has no direct Write-CslPreflightResultJson call'
 Assert-True ($r4aPf -match '\[string\]\$JsonPath') 'R4a preflight has -JsonPath parameter'
 Assert-True ($r4aPf -match '-JsonPath <') 'R4a -? help documents -JsonPath'
+$r4aHelp = @($r4aPf -split "`r?`n" | Where-Object { $_ -match '^\s*-JsonPath <' })
+Assert-True ($r4aHelp.Count -eq 1 -and $r4aHelp[0] -match '不给 -Json 也报错退出' -and $r4aHelp[0] -notmatch '忽略') 'R4a -? help says -JsonPath must be used with -Json (error, not ignored)'
 
 Write-Host ''
 if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {
