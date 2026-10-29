@@ -11,10 +11,14 @@ $script:OnWindows = ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 # claude-common.ps1 sets Continue when dot-sourced; restore Stop so non-terminating errors also hit the trap
 $ErrorActionPreference = 'Stop'
 # Any uncaught error counts as a failure (no more "error but ALL PASSED")
+# Counting rule (R3, same in all test files):
+#   (?m)^\s*FAIL(?!ED)\b   counts failed assertions; must equal "N assertion(s)" in the FAILED summary.
+#   (?m)^\s*UNCAUGHT\b     counts uncaught errors;    must equal "M uncaught error(s)".
+# The summary line starts with FAILED / ALL PASSED and matches neither regex.
 $script:Uncaught = 0
 trap {
   $script:Uncaught++
-  Write-Host ("  FAIL  uncaught error: {0} (line {1})" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber) -ForegroundColor Red
+  Write-Host ("  UNCAUGHT  {0} (line {1})" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber) -ForegroundColor Red
   continue
 }
 
@@ -26,6 +30,11 @@ function Assert-True($cond, $msg) {
 function Assert-Eq($a, $b, $msg) {
   if ("$a" -eq "$b") { Write-Host "  PASS  $msg" -ForegroundColor Green }
   else { Write-Host "  FAIL  $msg (got=[$a] expected=[$b])" -ForegroundColor Red; $script:Fail++ }
+}
+# R3: a test-generated file that is missing must fail cleanly (no uncaught error) and keep the assertion count:
+# record one FAIL per dependent assertion instead of reading the file.
+function Write-CslSkippedRead([string[]]$Names) {
+  foreach ($n in $Names) { Assert-True $false ("$n (file missing, read skipped)") }
 }
 
 # A fresh MemStore stands for a different machine. Since v3.3.0 a conflict-skipped entry stays
@@ -507,12 +516,16 @@ $uSkip = Invoke-CslEnvUndo -Id $fSkip.id -Store $store -DefaultConflictDecision 
 Assert-True ($uSkip.exitCode -eq 3 -or -not $uSkip.ok) 'skip-retain undo conflict'
 $skipPath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $fSkip.id)
 Assert-True (Test-Path -LiteralPath $skipPath) 'skip-retain backup exists after undo'
-$skipJson = Get-Content -LiteralPath $skipPath -Raw -Encoding UTF8 | ConvertFrom-Json
-Assert-True (-not [bool]$skipJson.undone) 'skip-retain backup stays undoable (skipped entry open)'
-Assert-True (@($skipJson.skipped).Count -ge 1) 'skip-retain recorded skipped names'
-Assert-True (@($skipJson.skipped) -contains 'CSL_TEST_ANTHROPIC_KEEPVAL') 'skip-retain skipped name listed'
-$beforeVal = @($skipJson.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPVAL')[0].before
-Assert-Eq $beforeVal 'precious-orig-xxxx' 'skip-retain original value kept in file'
+if (Test-Path -LiteralPath $skipPath) {
+  $skipJson = Get-Content -LiteralPath $skipPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  Assert-True (-not [bool]$skipJson.undone) 'skip-retain backup stays undoable (skipped entry open)'
+  Assert-True (@($skipJson.skipped).Count -ge 1) 'skip-retain recorded skipped names'
+  Assert-True (@($skipJson.skipped) -contains 'CSL_TEST_ANTHROPIC_KEEPVAL') 'skip-retain skipped name listed'
+  $beforeVal = @($skipJson.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPVAL')[0].before
+  Assert-Eq $beforeVal 'precious-orig-xxxx' 'skip-retain original value kept in file'
+} else {
+  Write-CslSkippedRead @('skip-retain backup stays undoable (skipped entry open)', 'skip-retain recorded skipped names', 'skip-retain skipped name listed', 'skip-retain original value kept in file')
+}
 # exceed keep with many more fixes (disjoint vars so chain stays separate)
 $prevKeep = $script:CslEnvBackupKeep
 $script:CslEnvBackupKeep = 10
@@ -527,8 +540,12 @@ try {
   $script:CslEnvBackupKeep = $prevKeep
 }
 Assert-True (Test-Path -LiteralPath $skipPath) 'skip-retain backup survived prune'
-$skipJson2 = Get-Content -LiteralPath $skipPath -Raw -Encoding UTF8 | ConvertFrom-Json
-Assert-Eq @($skipJson2.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPVAL')[0].before 'precious-orig-xxxx' 'skip-retain value intact after prune'
+if (Test-Path -LiteralPath $skipPath) {
+  $skipJson2 = Get-Content -LiteralPath $skipPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  Assert-Eq @($skipJson2.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPVAL')[0].before 'precious-orig-xxxx' 'skip-retain value intact after prune'
+} else {
+  Write-CslSkippedRead @('skip-retain value intact after prune')
+}
 Clear-TestBackups
 
 Write-Host '== Wildcard patterns enumerate machine-level names (hint only) ==' -ForegroundColor Cyan
@@ -592,13 +609,17 @@ Assert-Eq (& $pe.GetUserEntry 'CSL_TEST_ANTHROPIC_PE_A').Value 'pe-a0' 'first un
 Assert-Eq (& $pe.GetUserEntry 'CSL_TEST_ANTHROPIC_PE_B').Value 'pe-bX' 'first undo left B'
 Assert-True ([string]$peU1.hint -match ('-UndoFix -UndoId ' + [regex]::Escape($peFix.id))) 'hint tells how to retry the skipped variable'
 $pePath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $peFix.id)
-$peJ1 = Get-Content -LiteralPath $pePath -Raw -Encoding UTF8 | ConvertFrom-Json
-$peA1 = @($peJ1.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_PE_A')[0]
-$peB1 = @($peJ1.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_PE_B')[0]
-Assert-True (-not [bool]$peJ1.undone) 'backup not fully undone after skip'
-Assert-True ([bool]$peA1.undone) 'entry A marked undone'
-Assert-True (-not [bool]$peB1.undone) 'entry B still open'
-Assert-Eq (@($peJ1.skipped) -join ',') 'CSL_TEST_ANTHROPIC_PE_B' 'skipped lists only B'
+if (Test-Path -LiteralPath $pePath) {
+  $peJ1 = Get-Content -LiteralPath $pePath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $peA1 = @($peJ1.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_PE_A')[0]
+  $peB1 = @($peJ1.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_PE_B')[0]
+  Assert-True (-not [bool]$peJ1.undone) 'backup not fully undone after skip'
+  Assert-True ([bool]$peA1.undone) 'entry A marked undone'
+  Assert-True (-not [bool]$peB1.undone) 'entry B still open'
+  Assert-Eq (@($peJ1.skipped) -join ',') 'CSL_TEST_ANTHROPIC_PE_B' 'skipped lists only B'
+} else {
+  Write-CslSkippedRead @('backup not fully undone after skip', 'entry A marked undone', 'entry B still open', 'skipped lists only B')
+}
 $peList = @(Get-CslEnvFixList | Where-Object { $_.id -eq $peFix.id })[0]
 Assert-True ($peList.partiallyUndone -and -not $peList.undone) 'list reports partially undone'
 # user resolves the conflict (B back to the fixed state), and changes A afterwards
@@ -609,9 +630,13 @@ Assert-True ($peU2.ok -and $peU2.exitCode -eq 0 -and -not $peU2.alreadyUndone) '
 Assert-Eq (& $pe.GetUserEntry 'CSL_TEST_ANTHROPIC_PE_B').Value 'pe-b0' 'second undo restored B'
 Assert-Eq (& $pe.GetUserEntry 'CSL_TEST_ANTHROPIC_PE_A').Value 'pe-a-user' 'second undo did not touch A again'
 Assert-Eq (@($peU2.restored | ForEach-Object { $_.name }) -join ',') 'CSL_TEST_ANTHROPIC_PE_B' 'second undo restored only B'
-$peJ2 = Get-Content -LiteralPath $pePath -Raw -Encoding UTF8 | ConvertFrom-Json
-Assert-True ([bool]$peJ2.undone) 'backup fully undone after second undo'
-Assert-Eq @($peJ2.skipped).Count 0 'skipped cleared once B undone'
+if (Test-Path -LiteralPath $pePath) {
+  $peJ2 = Get-Content -LiteralPath $pePath -Raw -Encoding UTF8 | ConvertFrom-Json
+  Assert-True ([bool]$peJ2.undone) 'backup fully undone after second undo'
+  Assert-Eq @($peJ2.skipped).Count 0 'skipped cleared once B undone'
+} else {
+  Write-CslSkippedRead @('backup fully undone after second undo', 'skipped cleared once B undone')
+}
 $peU3 = Invoke-CslEnvUndo -Id $peFix.id -NoPause -Store $pe
 Assert-True $peU3.alreadyUndone 'third undo reports already undone'
 # legacy backups: file-level undone only (no entry flags) still count as fully undone
@@ -619,11 +644,15 @@ $lgStore = New-MemStore
 & $lgStore.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_PE_LEGACY' -Value 'lg0'
 $lgFix = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_PE_LEGACY') -TestMode -Store $lgStore
 $lgPath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $lgFix.id)
-$lgJ = Get-Content -LiteralPath $lgPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$lgJ.undone = $true
-[IO.File]::WriteAllText($lgPath, ($lgJ | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
-$lgU = Invoke-CslEnvUndo -Id $lgFix.id -NoPause -Store $lgStore
-Assert-True ($lgU.alreadyUndone -and $null -eq (& $lgStore.GetUserEntry 'CSL_TEST_ANTHROPIC_PE_LEGACY')) 'legacy file-level undone still already undone, no change'
+if (Test-Path -LiteralPath $lgPath) {
+  $lgJ = Get-Content -LiteralPath $lgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $lgJ.undone = $true
+  [IO.File]::WriteAllText($lgPath, ($lgJ | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+  $lgU = Invoke-CslEnvUndo -Id $lgFix.id -NoPause -Store $lgStore
+  Assert-True ($lgU.alreadyUndone -and $null -eq (& $lgStore.GetUserEntry 'CSL_TEST_ANTHROPIC_PE_LEGACY')) 'legacy file-level undone still already undone, no change'
+} else {
+  Write-CslSkippedRead @('legacy file-level undone still already undone, no change')
+}
 Clear-TestBackups
 
 Write-Host '== Preflight undo conflict print skips null/empty ==' -ForegroundColor Cyan
@@ -775,7 +804,7 @@ function Get-CslTestSha256([string]$Path) {
   try { return ([BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path)))).Replace('-', '') }
   finally { $sha.Dispose() }
 }
-$crHash = Get-CslTestSha256 $crPath
+$crHash = $(if (Test-Path -LiteralPath $crPath) { Get-CslTestSha256 $crPath } else { '' })
 Assert-True ($crHash -match '^[0-9A-F]{64}$') 'corrupt backup sha256 computed'
 $storeC = New-MemStore
 $prevKeepC = $script:CslEnvBackupKeep
@@ -856,12 +885,16 @@ $storeNl = New-MemStore
 & $storeNl.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_NULLENT' -Value 'nullent-orig'
 $fNl = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_NULLENT') -TestMode -Store $storeNl
 $nlPath = Join-Path $nlDir ("envfix-{0}.json" -f $fNl.id)
-$nlJson = Get-Content -LiteralPath $nlPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$nlJson.entries = @($null) + @($nlJson.entries)
-[IO.File]::WriteAllText($nlPath, ($nlJson | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
-$uncBefore3 = $script:Uncaught
-$uNl = Invoke-CslEnvUndo -Id $fNl.id -NoPause -TestMode -Store $storeNl
-Assert-True ($uNl.ok -and ((& $storeNl.GetUserEntry 'CSL_TEST_ANTHROPIC_NULLENT').Value -eq 'nullent-orig') -and ($script:Uncaught -eq $uncBefore3)) 'undo with a null element in entries restores, no error'
+if (Test-Path -LiteralPath $nlPath) {
+  $nlJson = Get-Content -LiteralPath $nlPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $nlJson.entries = @($null) + @($nlJson.entries)
+  [IO.File]::WriteAllText($nlPath, ($nlJson | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+  $uncBefore3 = $script:Uncaught
+  $uNl = Invoke-CslEnvUndo -Id $fNl.id -NoPause -TestMode -Store $storeNl
+  Assert-True ($uNl.ok -and ((& $storeNl.GetUserEntry 'CSL_TEST_ANTHROPIC_NULLENT').Value -eq 'nullent-orig') -and ($script:Uncaught -eq $uncBefore3)) 'undo with a null element in entries restores, no error'
+} else {
+  Write-CslSkippedRead @('undo with a null element in entries restores, no error')
+}
 
 Write-Host '== v3.3.0 envFixEnabled / envFixKeep settings ==' -ForegroundColor Cyan
 $dflt = Get-CslEnvFixSettings ([pscustomobject]@{ monitorIntervalMin = 5 })
@@ -887,8 +920,13 @@ Assert-Eq ($pRem -join ',') 'CSL_TEST_ANTHROPIC_AUTH_TOKEN' 'plan: only non-kept
 $fK = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_*') -TestMode -Store $storeK -Keep @('CSL_TEST_ANTHROPIC_BASE*')
 Assert-True ($fK.ok -and ((& $storeK.GetUserEntry 'CSL_TEST_ANTHROPIC_BASE_URL').Value -eq 'https://keep.example')) 'apply: envFixKeep (wildcard) variable kept'
 Assert-True ($null -eq (& $storeK.GetUserEntry 'CSL_TEST_ANTHROPIC_AUTH_TOKEN')) 'apply: non-kept variable removed'
-$kBak = Get-Content -LiteralPath (Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $fK.id)) -Raw -Encoding UTF8 | ConvertFrom-Json
-Assert-Eq ((@($kBak.entries) | Where-Object { $null -ne $_ } | ForEach-Object { $_.name }) -join ',') 'CSL_TEST_ANTHROPIC_AUTH_TOKEN' 'backup holds only the removed variable'
+$kPath = Join-Path (Get-CslEnvBackupDir) ("envfix-{0}.json" -f $fK.id)
+if (Test-Path -LiteralPath $kPath) {
+  $kBak = Get-Content -LiteralPath $kPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  Assert-Eq ((@($kBak.entries) | Where-Object { $null -ne $_ } | ForEach-Object { $_.name }) -join ',') 'CSL_TEST_ANTHROPIC_AUTH_TOKEN' 'backup holds only the removed variable'
+} else {
+  Write-CslSkippedRead @('backup holds only the removed variable')
+}
 $storeK2 = New-MemStore
 & $storeK2.SetUserEntry -Name 'CSL_TEST_ANTHROPIC_BASE_URL' -Value 'https://keep.example'
 $fK2 = Invoke-CslEnvFix -Patterns @('CSL_TEST_ANTHROPIC_*') -TestMode -Store $storeK2 -Keep @('CSL_TEST_ANTHROPIC_BASE_URL')
