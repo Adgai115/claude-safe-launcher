@@ -527,8 +527,13 @@ try {
   $script:CslEnvBackupKeep = $prevKeep
 }
 Assert-True (Test-Path -LiteralPath $skipPath) 'skip-retain backup survived prune'
-$skipJson2 = Get-Content -LiteralPath $skipPath -Raw -Encoding UTF8 | ConvertFrom-Json
-Assert-Eq @($skipJson2.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPVAL')[0].before 'precious-orig-xxxx' 'skip-retain value intact after prune'
+# R3: guard the read. A missing backup is already a FAIL above; skip Get-Content (no uncaught error) and record the dependent check as FAIL so the assertion count stays constant.
+if (Test-Path -LiteralPath $skipPath) {
+  $skipJson2 = Get-Content -LiteralPath $skipPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  Assert-Eq @($skipJson2.entries | Where-Object name -eq 'CSL_TEST_ANTHROPIC_KEEPVAL')[0].before 'precious-orig-xxxx' 'skip-retain value intact after prune'
+} else {
+  Assert-True $false 'skip-retain value intact after prune (backup file missing, read skipped)'
+}
 Clear-TestBackups
 
 Write-Host '== Wildcard patterns enumerate machine-level names (hint only) ==' -ForegroundColor Cyan

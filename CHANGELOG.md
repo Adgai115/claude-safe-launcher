@@ -18,6 +18,7 @@
 ### v4.0.0（第 2 批 · 真实规则 id）
 
 - `claude-preflight.ps1`：评分与 `preflight-result.json` 的每条检查改用 `rules/checks.json` 的真实规则 id（如 `exit.api_anthropic`），取代 `item.N` 占位；每个检查调用点映射确定，无法映射的项以保留 id `meta.unmapped`（目录新增，`multi`）、`status=error` 写进 JSON 并写明原因（不编造 id，分数按原权重照扣）；`score` / `canLaunchSafely` / 每项 `status` 与 `fixId` 与 d025841 一致（只有 `id` 值不同；`fixType` 也恢复为 d025841 的 none，仅「用户级」失败项为 confirm）；`current` 仍只含名称与状态。目录新增可选 `multi`，并去掉 3 条 `expected` 里的 `*`。目录新增 `browser.check_parse`（`auto`，`should_fix`，扣 3）承接「browser-check.json 解析失败」警告（产品裁定，不再用 `exit.webrtc_srflx`）；未映射项的原因写进该行 `notes`，`current` 留空；`claude-rules.ps1` 的行新增可选 `notes` 字段（仅调用方给出时才有）。
+- 测试加固（R3）：`tests/envfix.Tests.ps1` 读 skip-retain 备份前加 `Test-Path` 保护，备份缺失时跳过 `Get-Content` 并记为失败（不再连带未捕获报错）；三份测试的汇总都已把未捕获报错计入失败（退出码 1），仅测试改动，无产品代码变化。
 
 ## v3.3.0（一期 · Windows）
 
