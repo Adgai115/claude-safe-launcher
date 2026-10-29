@@ -160,14 +160,15 @@ if ($FixEnv) {
 # FAIL = 必须修（默认扣 25）  WARN = 建议修（默认扣 8）  NOTE = 不用管（0 分）
 $script:Items = New-Object System.Collections.ArrayList
 $script:CurrentHead = ''
-function Add-Item($level, $t, $w) { [void]$script:Items.Add([pscustomobject]@{ Level = $level; Text = $t; Weight = $w; Group = $script:CurrentHead }) }
+# Id = rules/checks.json 的真实规则 id（Say-Fail / Say-Warn / Say-Note 调用点必须传 -Id；测试静态检查）
+function Add-Item($level, $t, $w, $id = $null) { [void]$script:Items.Add([pscustomobject]@{ Level = $level; Text = $t; Weight = $w; Group = $script:CurrentHead; Id = $id }) }
 function Say-Head($t) { $script:CurrentHead = [string]$t; Write-Host ''; Write-Host "== $($t)" -ForegroundColor Cyan }
 function Say-Pass($t) { Write-Host "  [通过] $($t)" -ForegroundColor Green }
 function Say-Info($t) { Write-Host "  [信息] $($t)" -ForegroundColor Gray }
 function Say-Fix($t)  { Write-Host "  [修复] $($t)" -ForegroundColor Yellow }
-function Say-Note($t) { Write-Host "  [提示] $($t)" -ForegroundColor DarkGray; Add-Item 'NOTE' $t 0 }
-function Say-Warn($t, $w = 8)  { Write-Host "  [警告] $($t)" -ForegroundColor Yellow; Add-Item 'WARN' $t $w }
-function Say-Fail($t, $w = 25) { Write-Host "  [失败] $($t)" -ForegroundColor Red; Add-Item 'FAIL' $t $w }
+function Say-Note($t, $Id = $null) { Write-Host "  [提示] $($t)" -ForegroundColor DarkGray; Add-Item 'NOTE' $t 0 $Id }
+function Say-Warn($t, $w = 8, $Id = $null)  { Write-Host "  [警告] $($t)" -ForegroundColor Yellow; Add-Item 'WARN' $t $w $Id }
+function Say-Fail($t, $w = 25, $Id = $null) { Write-Host "  [失败] $($t)" -ForegroundColor Red; Add-Item 'FAIL' $t $w $Id }
 
 # 用户级中转变量的检查项文本（显示给人看，含打码值；JSON 不用这条文本，见 Get-CslJsonCurrent）
 function Format-CslEnvUserItemText($Name, $Value) {
@@ -186,33 +187,74 @@ function Get-CslJsonCurrent([string]$Text) {
 }
 
 # 检查项 → 规则评分输入（preflight-result.json 的 checks 由此而来）
-function New-CslScoreMappedResults($Items) {
+# 每个检查项带着调用点写死的真实规则 id（rules/checks.json）；映射是确定的，没有 item.N 占位。
+# 没有有效 id 的项（缺 id / 不在目录里 / 非 multi 规则重复出现）不丢、不编造 id：
+#   以保留 id `meta.unmapped`（目录里标 multi）、status=error 写进 JSON，原因写在该行的 notes（不回显原 id；current 留空）；
+#   同时记入 $script:CslUnmappedItems（Item / Id / Reason）。error 行在评分器里不扣分，
+#   所以由 Invoke-CslPreflightScoring 按原权重补扣，分数与 d025841 一致。
+# fixType / fixId 与 d025841 逐项一致：只有文本含「用户级」的失败项带 confirm + envfix.user-anthropic，其余一律 none / null。
+function New-CslScoreMappedResults($Items, $Catalog = $null) {
+  $script:CslUnmappedItems = New-Object System.Collections.ArrayList
   $mapped = New-Object System.Collections.ArrayList
-  $ix = 0
+  if ($null -eq $Catalog) { try { $Catalog = Get-CslRulesCatalog } catch { $Catalog = $null } }
+  $seen = @{}
   foreach ($it in @($Items)) {
-    $ix++
+    if ($null -eq $it) { continue }
+    $id = [string](Get-CslPsProp $it 'Id')
+    $rule = $null
+    if ($Catalog -and $id) { $rule = Get-CslRuleById -Catalog $Catalog -Id $id }
+    $reason = ''
+    if (-not $rule) {
+      $reason = $(if ($id) { 'id 不在 rules/checks.json 里' } else { '检查项没有规则 id' })
+    } else {
+      $multi = $false; $mv = Get-CslPsProp $rule 'multi'; if ($null -ne $mv) { $multi = [bool]$mv }
+      if ($seen.ContainsKey($id) -and -not $multi) { $reason = '规则 id 重复出现，但目录没有标 multi' }
+      else { $seen[$id] = $true }
+    }
     $sev = 'info'; $st = 'info'
     if ($it.Level -eq 'FAIL') { $sev = 'must_fix'; $st = 'failed' }
     elseif ($it.Level -eq 'WARN') { $sev = 'should_fix'; $st = 'failed' }
     elseif ($it.Level -eq 'NOTE') { $sev = 'info'; $st = 'info' }
-    $fixTypeOv = $null; $fixIdOv = $null
+    $fixTypeOv = 'none'; $fixIdOv = $null
     if ([string]$it.Text -match '用户级' -and $st -eq 'failed') {
       $fixTypeOv = 'confirm'; $fixIdOv = 'envfix.user-anthropic'
     }
+    $cur = Get-CslJsonCurrent ([string]$it.Text)
+    $outId = $id
+    $note = ''
+    if ($reason) {
+      [void]$script:CslUnmappedItems.Add([pscustomobject]@{ Item = $it; Id = $id; Reason = $reason })
+      $outId = 'meta.unmapped'; $st = 'error'
+      # 原因写进 notes（不回显原 id）；current 留空，不带任何原文
+      $cur = ''
+      $note = ('未映射：{0}' -f $reason)
+    }
     [void]$mapped.Add([pscustomobject]@{
-      id                   = ('item.{0}' -f $ix)
+      id                   = $outId
       status               = $st
       severityOverride     = $sev
       refDeductionOverride = [int]$it.Weight
-      current              = (Get-CslJsonCurrent ([string]$it.Text))
+      current              = $cur
       expected             = ''
       recheck              = 'powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause'
       masked               = $true
       fixTypeOverride      = $fixTypeOv
       fixIdOverride        = $fixIdOv
+      notes                = $note
     })
   }
   return ,$mapped
+}
+
+# 评分单一入口（preflight 与测试共用）：映射 → Get-CslRulesScore → 补扣未映射项的原权重
+function Invoke-CslPreflightScoring($Items, $Catalog) {
+  $mapped = New-CslScoreMappedResults @($Items) -Catalog $Catalog
+  $res = Get-CslRulesScore -Catalog $Catalog -Results $mapped
+  $extra = 0
+  foreach ($u in $script:CslUnmappedItems) { $extra += [int]$u.Item.Weight }
+  if ($extra -gt 0) { $res.score = [int][Math]::Max(0, [int]$res.score - $extra) }
+  $script:CslScoreMapped = $mapped
+  return $res
 }
 
 Write-Host '==============================================' -ForegroundColor Cyan
@@ -229,7 +271,7 @@ $tun = Get-TunAdapter
 if (-not ($mihomo -and $tun -and $tun.Status -eq 'Up')) {
   if (-not $verge) {
     if ($cfg.clashExe -and (Test-Path $cfg.clashExe)) { Say-Fix "Clash Verge 未运行，正在启动: $($cfg.clashExe)"; Start-Process -FilePath $cfg.clashExe | Out-Null }
-    else { Say-Fail "Clash Verge 未运行，也没找到安装位置（可在 preflight.json 里填写 clashExe）" }
+    else { Say-Fail "Clash Verge 未运行，也没找到安装位置（可在 preflight.json 里填写 clashExe）" -Id 'net.clash_running' }
   } else { Say-Info 'Clash Verge 已运行，但 TUN 未就绪，等待中…' }
   $deadline = (Get-Date).AddSeconds(30)
   while ((Get-Date) -lt $deadline) {
@@ -239,9 +281,9 @@ if (-not ($mihomo -and $tun -and $tun.Status -eq 'Up')) {
     if ($mihomo -and $tun -and $tun.Status -eq 'Up') { break }
   }
 }
-if ($mihomo) { Say-Pass "代理内核 $(@($mihomo)[0].ProcessName) 运行中 (PID $(@($mihomo)[0].Id))" } else { Say-Fail '代理内核 (mihomo) 未运行' }
+if ($mihomo) { Say-Pass "代理内核 $(@($mihomo)[0].ProcessName) 运行中 (PID $(@($mihomo)[0].Id))" } else { Say-Fail '代理内核 (mihomo) 未运行' -Id 'net.mihomo_core' }
 if ($tun -and $tun.Status -eq 'Up') { Say-Pass "TUN 网卡 $($tun.Name) 已启用" }
-else { Say-Fail '30 秒内 TUN 网卡未启用。请在 Clash Verge 里打开「虚拟网卡模式 (TUN)」' }
+else { Say-Fail '30 秒内 TUN 网卡未启用。请在 Clash Verge 里打开「虚拟网卡模式 (TUN)」' -Id 'net.tun' }
 
 # ---------- 2. 时区 ----------
 Say-Head '2. 系统时区'
@@ -251,23 +293,23 @@ if (-not $cfg.timezone) {
   if ($tr0['ip']) { try { $iana = ((Invoke-Curl @('-m','12',"https://ipinfo.io/$($tr0['ip'])/json")) | ConvertFrom-Json).timezone } catch {} }
   $win = Convert-IanaToWindows $iana
   if ($win) { Save-Learned $cfg @{ timezone = $win; expectedTzIana = [string]$iana }; Say-Fix "首次运行：按出口 IP 所在地（$($iana)）设定目标时区 $($win)" }
-  else { Say-Note "无法按出口 IP 判断时区（$($iana)），跳过时区检查；可在 preflight.json 里手动填写 timezone" }
+  else { Say-Note "无法按出口 IP 判断时区（$($iana)），跳过时区检查；可在 preflight.json 里手动填写 timezone" -Id 'locale.system_tz' }
 }
 if ($cfg.timezone -and $tz -ne $cfg.timezone) {
   Say-Fix "当前时区 $($tz)，正在改为 $($cfg.timezone)"
   & tzutil.exe /s "$($cfg.timezone)" 2>&1 | Out-Null
   $tz = (& tzutil.exe /g).Trim()
 }
-if (-not $cfg.timezone) { } elseif ($tz -eq $cfg.timezone) { Say-Pass "时区: $($tz)" } else { Say-Fail "时区修改失败，当前仍为 $($tz)" }
+if (-not $cfg.timezone) { } elseif ($tz -eq $cfg.timezone) { Say-Pass "时区: $($tz)" } else { Say-Fail "时区修改失败，当前仍为 $($tz)" -Id 'locale.system_tz' }
 $tzAuto = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\tzautoupdate' -ErrorAction SilentlyContinue).Start
 if ($tzAuto -eq 4) { Say-Pass '自动设置时区已关闭 (tzautoupdate Start=4)' }
-else { Say-Warn "自动设置时区未关闭 (Start=$($tzAuto))，时区可能被系统改回" 5 }
+else { Say-Warn "自动设置时区未关闭 (Start=$($tzAuto))，时区可能被系统改回" 5 -Id 'locale.tz_auto' }
 
 # ---------- 3. 节点锁定（mihomo 外部控制器） ----------
 Say-Head '3. 节点锁定'
 $ctlVer = Ctl-Get $cfg '/version'
 if (-not $ctlVer) {
-  Say-Warn "外部控制器 $($cfg.controllerUrl) 无法连接，无法确认/自动切回节点（请完全退出并重新打开 Clash Verge 使控制器生效）" 10
+  Say-Warn "外部控制器 $($cfg.controllerUrl) 无法连接，无法确认/自动切回节点（请完全退出并重新打开 Clash Verge 使控制器生效）" 10 -Id 'net.controller'
 } else {
   Say-Pass "外部控制器已连接 (mihomo $($ctlVer.version))"
   $groups = @(); if ($cfg.claudeGroup) { $groups += $cfg.claudeGroup }
@@ -279,7 +321,7 @@ if (-not $ctlVer) {
   $switched = $false
   foreach ($g in $groups) {
     $info = Ctl-GetGroup $cfg $g
-    if (-not $info) { Say-Note "Clash 里没有名为 $($g) 的策略组，跳过节点锁定（建议给 Claude 建一个专用分组，见 README）"; continue }
+    if (-not $info) { Say-Note "Clash 里没有名为 $($g) 的策略组，跳过节点锁定（建议给 Claude 建一个专用分组，见 README）" -Id 'net.node_lock'; continue }
     if (-not $cfg.expectedNode) { Say-Info "$($g) 组 → $($info.now)（未设置锁定节点）"; continue }
     if ($info.now -eq $cfg.expectedNode) { Say-Pass "$($g) 组 → $($info.now)" }
     else {
@@ -287,8 +329,8 @@ if (-not $ctlVer) {
       if (Ctl-SelectNode $cfg $g $cfg.expectedNode) {
         $after = Ctl-GetGroup $cfg $g
         if ($after.now -eq $cfg.expectedNode) { Say-Pass "$($g) 组已切回 $($after.now)"; $switched = $true }
-        else { Say-Fail "$($g) 组切换后仍为 $($after.now)" }
-      } else { Say-Fail "$($g) 组切换请求失败" }
+        else { Say-Fail "$($g) 组切换后仍为 $($after.now)" -Id 'net.node_lock' }
+      } else { Say-Fail "$($g) 组切换请求失败" -Id 'net.node_lock' }
     }
   }
   if ($switched) { Say-Info '已切换节点，等待 3 秒后重新测 IP…'; Start-Sleep -Seconds 3 }
@@ -301,31 +343,31 @@ try { $ipinfo = (Invoke-Curl @('-m','12','https://ipinfo.io/json')) | ConvertFro
 if ($ipinfo -and $ipinfo.ip) { $localIp = $ipinfo.ip; Say-Info "本机实测(ipinfo): $($ipinfo.ip) $($ipinfo.country) $($ipinfo.city) / $($ipinfo.org)" }
 else {
   $localIp = (Invoke-Curl @('-4','-m','12','https://api.ipify.org')).Trim()
-  if ($localIp) { Say-Info "本机实测(ipify): $($localIp)" } else { Say-Warn '本机实测 IP 查询失败（ipinfo / ipify 都无响应）' 5 }
+  if ($localIp) { Say-Info "本机实测(ipify): $($localIp)" } else { Say-Warn '本机实测 IP 查询失败（ipinfo / ipify 都无响应）' 5 -Id 'exit.local_ip' }
 }
 $edge = @()
 foreach ($u in @('https://claude.ai/cdn-cgi/trace', 'https://api.anthropic.com/cdn-cgi/trace')) {
   $tr = Get-Trace $u
   $hostName = ([uri]$u).Host
   if ($tr['ip']) { $edge += [pscustomobject]@{ Host = $hostName; Ip = $tr['ip']; Loc = $tr['loc']; Colo = $tr['colo'] }; Say-Info "Claude 边缘($($hostName)): ip=$($tr['ip']) loc=$($tr['loc']) colo=$($tr['colo'])" }
-  elseif ($hostName -eq 'claude.ai') { Say-Fail '无法访问 claude.ai/cdn-cgi/trace' }
+  elseif ($hostName -eq 'claude.ai') { Say-Fail '无法访问 claude.ai/cdn-cgi/trace' -Id 'exit.edge_trace' }
   else { Say-Info "$($hostName) 不提供 trace（忽略）" }
 }
 $blocked = '^(CN|HK|MO|RU|KP|IR|CU|SY|BY)$'
 $edgeLoc = $(if ($edge.Count) { $edge[0].Loc } else { '' })
-if ($edgeLoc -and $edgeLoc -match $blocked) { Say-Fail "Claude 看到你位于 $($edgeLoc)，这是 Claude 不支持的地区，请检查代理规则是否让 Claude 走了代理" }
+if ($edgeLoc -and $edgeLoc -match $blocked) { Say-Fail "Claude 看到你位于 $($edgeLoc)，这是 Claude 不支持的地区，请检查代理规则是否让 Claude 走了代理" -Id 'exit.blocked_region' }
 if (-not $cfg.expectedIp) {
   $ips = @(@($edge | ForEach-Object { $_.Ip }) + @($localIp) | Where-Object { $_ } | Select-Object -Unique)
   if ($edge.Count -and $edgeLoc -notmatch $blocked -and $ips.Count -eq 1) { Save-Learned $cfg @{ expectedIp = $ips[0]; expectedLoc = $edgeLoc }; Say-Fix "首次运行：记住当前出口 IP $($ips[0])（$($edgeLoc)），以后变化会提醒" }
-  elseif ($ips.Count -gt 1) { Say-Warn ("各方看到的出口 IP 不一致，暂不记住: " + ($ips -join ', ')) 10 }
-  elseif (-not $edge.Count) { Say-Warn '测不到 Claude 看到的出口 IP，暂不记住' 10 }
+  elseif ($ips.Count -gt 1) { Say-Warn ("各方看到的出口 IP 不一致，暂不记住: " + ($ips -join ', ')) 10 -Id 'exit.three_way_ip' }
+  elseif (-not $edge.Count) { Say-Warn '测不到 Claude 看到的出口 IP，暂不记住' 10 -Id 'exit.three_way_ip' }
 }
 if ($cfg.expectedIp) { Say-Info "期望: $($cfg.expectedIp) loc=$($cfg.expectedLoc)" }
 $all = @(); if ($cfg.expectedIp) { $all = @($edge | ForEach-Object { $_.Ip }); if ($localIp) { $all += $localIp } }
 $bad = @($all | Where-Object { $_ -ne $cfg.expectedIp })
 $badLoc = @($edge | Where-Object { $_.Loc -ne $cfg.expectedLoc })
 if ($all.Count -gt 0 -and $bad.Count -eq 0 -and $badLoc.Count -eq 0) { Say-Pass "三方一致: $($cfg.expectedIp)" }
-elseif ($all.Count -gt 0) { Say-Fail ("IP 不一致: 本机=$($localIp) 边缘=" + (($edge | ForEach-Object { "$($_.Host):$($_.Ip)/$($_.Loc)" }) -join ',') + " 期望=$($cfg.expectedIp)") }
+elseif ($all.Count -gt 0) { Say-Fail ("IP 不一致: 本机=$($localIp) 边缘=" + (($edge | ForEach-Object { "$($_.Host):$($_.Ip)/$($_.Loc)" }) -join ',') + " 期望=$($cfg.expectedIp)") -Id 'exit.three_way_ip' }
 $exitIp = $(if ($edge.Count) { $edge[0].Ip } else { $localIp })
 
 # ---------- 5. IP 风险评分 ----------
@@ -337,29 +379,29 @@ $pcd = $null; if ($pc -and $pc.status -match 'ok|warning') { $pcd = $pc.$qip }
 if ($pcd) {
   $risk = [int]$pcd.risk
   $line = "proxycheck: risk=$($risk) proxy=$($pcd.proxy) type=$($pcd.type) / $($pcd.provider) $($pcd.organisation)"
-  if ($risk -ge [int]$cfg.failRisk) { Say-Fail "$($line)（≥ $($cfg.failRisk)）" }
-  elseif ($risk -ge [int]$cfg.warnRisk -or $pcd.proxy -eq 'yes') { Say-Warn "$($line)（风险偏高）" 10 }
+  if ($risk -ge [int]$cfg.failRisk) { Say-Fail "$($line)（≥ $($cfg.failRisk)）" -Id 'exit.ip_risk_proxycheck' }
+  elseif ($risk -ge [int]$cfg.warnRisk -or $pcd.proxy -eq 'yes') { Say-Warn "$($line)（风险偏高）" 10 -Id 'exit.ip_risk_proxycheck' }
   else { Say-Pass $line }
-} else { Say-Warn 'proxycheck.io 查询失败（可能被限流）' 3 }
+} else { Say-Warn 'proxycheck.io 查询失败（可能被限流）' 3 -Id 'exit.ip_risk_proxycheck' }
 $ia = $null
 try { $ia = (Invoke-Curl @('-m','12',"http://ip-api.com/json/$($qip)?fields=status,countryCode,isp,org,as,proxy,hosting,mobile")) | ConvertFrom-Json } catch {}
 if ($ia -and $ia.status -eq 'success') {
   $line = "ip-api: $($ia.countryCode) $($ia.isp) / $($ia.as) proxy=$($ia.proxy) hosting=$($ia.hosting)"
-  if ($ia.hosting -or $ia.proxy) { Say-Warn "$($line)（被标记为机房/代理）" 8 } else { Say-Pass $line }
-} else { Say-Note 'ip-api 查询失败（忽略）' }
+  if ($ia.hosting -or $ia.proxy) { Say-Warn "$($line)（被标记为机房/代理）" 8 -Id 'exit.ip_risk_ipapi' } else { Say-Pass $line }
+} else { Say-Note 'ip-api 查询失败（忽略）' -Id 'exit.ip_risk_ipapi' }
 
 # ---------- 6. DNS ----------
 Say-Head '6. DNS (fake-ip)'
 $dns = Resolve-DnsName api.anthropic.com -Type A -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress } | Select-Object -First 1
 if ($dns -and ($dns.IPAddress -like '198.18.*' -or $dns.IPAddress -like '198.19.*')) { Say-Pass "api.anthropic.com → $($dns.IPAddress)（fake-ip，由 Clash 接管）" }
-elseif ($dns) { Say-Warn "api.anthropic.com → $($dns.IPAddress)，不是 fake-ip，DNS 可能未被 Clash 接管" 10 }
-else { Say-Warn 'api.anthropic.com 解析失败' 5 }
+elseif ($dns) { Say-Warn "api.anthropic.com → $($dns.IPAddress)，不是 fake-ip，DNS 可能未被 Clash 接管" 10 -Id 'net.dns_fakeip' }
+else { Say-Warn 'api.anthropic.com 解析失败' 5 -Id 'net.dns_fakeip' }
 
 # ---------- 7. IPv6 ----------
 Say-Head '7. IPv6 泄露'
 $v6 = & curl.exe --noproxy '*' -6 -s -m 8 https://api64.ipify.org 2>$null
 if ($LASTEXITCODE -ne 0 -or -not $v6 -or ($v6 -notmatch ':')) { Say-Pass '无 IPv6 出口' }
-else { Say-Fail "存在 IPv6 出口: $($v6)，可能绕过代理暴露真实位置" }
+else { Say-Fail "存在 IPv6 出口: $($v6)，可能绕过代理暴露真实位置" -Id 'net.ipv6_leak' }
 
 # ---------- 8. Anthropic API ----------
 Say-Head '8. api.anthropic.com 连通性'
@@ -369,9 +411,9 @@ $body = ''; try { $body = [string](Get-Content $tmp -Raw -ErrorAction SilentlyCo
 Remove-Item $tmp -ErrorAction SilentlyContinue
 $bodyOne = ($body -replace '\s+', ' ')
 if ($code -in @('401','404','405')) { Say-Pass "HTTP $($code)（正常，未被地区封锁）" }
-elseif ($code -eq '403') { Say-Fail ("HTTP 403，疑似地区封锁: " + $bodyOne.Substring(0, [Math]::Min(120, $bodyOne.Length))) }
-elseif ($code -eq '000' -or -not $code) { Say-Fail '无法连接 api.anthropic.com' }
-else { Say-Warn "HTTP $($code)（非预期状态码）" 5 }
+elseif ($code -eq '403') { Say-Fail ("HTTP 403，疑似地区封锁: " + $bodyOne.Substring(0, [Math]::Min(120, $bodyOne.Length))) -Id 'exit.api_anthropic' }
+elseif ($code -eq '000' -or -not $code) { Say-Fail '无法连接 api.anthropic.com' -Id 'exit.api_anthropic' }
+else { Say-Warn "HTTP $($code)（非预期状态码）" 5 -Id 'exit.api_anthropic' }
 
 # ---------- 9. 环境变量 ----------
 Say-Head '9. 环境变量'
@@ -379,7 +421,7 @@ Say-Head '9. 环境变量'
 # 只读用户级注册表 / [Environment]::GetEnvironmentVariable(n,'User')，不把进程环境当真相
 $targets = Find-CslRelayEnvTargets -Patterns $script:FixPatterns -TestMode:$TestMode
 if (-not $targets.ok) {
-  Say-Fail $targets.error
+  Say-Fail $targets.error -Id 'cfg.env_relay_user'
 } else {
   $userNames = @($targets.user | ForEach-Object { $_.Name })
   $machNames = @($targets.machineOnly | ForEach-Object { $_.Name })
@@ -387,11 +429,11 @@ if (-not $targets.ok) {
     Say-Pass '没有匹配的第三方中转环境变量（用户级）'
   } else {
     foreach ($u in $targets.user) {
-      Say-Fail (Format-CslEnvUserItemText $u.Name $u.Value)
+      Say-Fail (Format-CslEnvUserItemText $u.Name $u.Value) -Id 'cfg.env_relay_user'
       Write-Host 'CSL_FIX_ID=envfix.user-anthropic' -ForegroundColor DarkGray
     }
     foreach ($m in $targets.machineOnly) {
-      Say-Note ("{0} 仅 Machine 级存在：需要管理员手动处理" -f $m.Name)
+      Say-Note ("{0} 仅 Machine 级存在：需要管理员手动处理" -f $m.Name) -Id 'cfg.env_relay_machine'
     }
     # 交互修复：显式 -FixEnv 已在上方短路。此处仅在有 TTY 且非 NoPause 时询问。
     # 纯 -NoPause 绝不自动修。envFixKeep 中的变量不进确认名单；envFixEnabled=false 不询问。
@@ -411,7 +453,7 @@ if (-not $targets.ok) {
         if ($fix.ok) {
           foreach ($a in @($fix.applied)) { if ($null -eq $a) { continue }; Say-Fix ("已删除用户级 {0}" -f $a.name) }
           if ($fix.id) { Say-Info ("备份 id={0}，可用 -UndoFix 撤销；新开的终端才会生效" -f $fix.id) }
-        } else { Say-Fail $fix.error }
+        } else { Say-Fail $fix.error -Id 'cfg.env_relay_user' }
       } else {
         Say-Info '可在面板点「修复」，或 CLI: -FixEnv（加 -DryRun 可预览）'
       }
@@ -421,7 +463,7 @@ if (-not $targets.ok) {
   }
 }
 $hp = [Environment]::GetEnvironmentVariable('HTTPS_PROXY','User'); if (-not $hp) { $hp = $env:HTTPS_PROXY }
-if ($hp) { Say-Pass ("HTTPS_PROXY={0}" -f (Mask-Value -Value $hp -Kind Url)) } else { Say-Warn "未设置 HTTPS_PROXY（建议 $($cfg.proxyUrl)）" 5 }
+if ($hp) { Say-Pass ("HTTPS_PROXY={0}" -f (Mask-Value -Value $hp -Kind Url)) } else { Say-Warn "未设置 HTTPS_PROXY（建议 $($cfg.proxyUrl)）" 5 -Id 'cfg.https_proxy' }
 
 # ---------- 10. 残留配置扫描（只报告，不删除，不显示值） ----------
 Say-Head '10. 第三方接口残留扫描'
@@ -442,34 +484,34 @@ foreach ($f in ($scan | Select-Object -Unique)) {
   $urls = [regex]::Matches($txt, 'https?://[A-Za-z0-9\.\-]+') | ForEach-Object { ([uri]$_.Value).Host } |
           Where-Object { $_ -match $hostRx } | Select-Object -Unique
   if ($urls) { $hits += ('第三方域名: ' + ($urls -join ',')) }
-  if ($hits.Count) { $residue++; Say-Warn "$($f) → $($hits -join '；')" 6 }
+  if ($hits.Count) { $residue++; Say-Warn "$($f) → $($hits -join '；')" 6 -Id 'cfg.residue_claude' }
 }
 if ($residue -eq 0) { Say-Pass 'Claude 配置文件中没有第三方接口 / API Key 残留' }
 $npmDir = $cfg.npmGlobalDir
 if ($npmDir -and (Test-Path $npmDir)) {
   $helpers = @(Get-ChildItem $npmDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^claude-(kimi|deepseek|model|models|multi)[\w\-]*\.(ps1|cmd|bat)$' } | ForEach-Object { $_.Name })
-  if ($helpers.Count) { Say-Warn ("$($npmDir) 有第三方模型切换脚本: " + ($helpers -join ', ') + "（运行后会让 Claude Code 走第三方接口；未删除）") 4 }
+  if ($helpers.Count) { Say-Warn ("$($npmDir) 有第三方模型切换脚本: " + ($helpers -join ', ') + "（运行后会让 Claude Code 走第三方接口；未删除）") 4 -Id 'cfg.residue_scripts' }
   else { Say-Pass '没有第三方模型切换脚本' }
 }
 
 # ---------- 11. 其他 ----------
 Say-Head '11. 其他'
 $ui = (Get-UICulture).Name
-if ($ui -match '^zh') { Say-Note "系统界面语言为 $($ui)（一般不影响，可忽略）" } else { Say-Pass "系统界面语言 $($ui)" }
-if ($cfg.claudeAumid -or ($cfg.claudeExe -and (Test-Path $cfg.claudeExe))) { Say-Pass 'Claude 桌面版已安装' } else { Say-Warn '没找到 Claude 桌面版（可在 preflight.json 里填写 claudeExe）' 5 }
-if (Get-Command claude -ErrorAction SilentlyContinue) { Say-Pass 'Claude Code CLI 已安装' } else { Say-Note '未找到 claude CLI（仅影响命令行版）' }
+if ($ui -match '^zh') { Say-Note "系统界面语言为 $($ui)（一般不影响，可忽略）" -Id 'locale.system_lang' } else { Say-Pass "系统界面语言 $($ui)" }
+if ($cfg.claudeAumid -or ($cfg.claudeExe -and (Test-Path $cfg.claudeExe))) { Say-Pass 'Claude 桌面版已安装' } else { Say-Warn '没找到 Claude 桌面版（可在 preflight.json 里填写 claudeExe）' 5 -Id 'cfg.claude_desktop' }
+if (Get-Command claude -ErrorAction SilentlyContinue) { Say-Pass 'Claude Code CLI 已安装' } else { Say-Note '未找到 claude CLI（仅影响命令行版）' -Id 'cfg.claude_cli' }
 
 
 # ---------- 12. 浏览器环境 ----------
 Say-Head '12. 浏览器环境'
 $script:BrowserStaticWarnUsed = 0
 $script:BrowserStaticWarnCap = 20
-function Soft-BrowserWarn([string]$t, [int]$w = 5) {
+function Soft-BrowserWarn([string]$t, [int]$w = 5, [string]$Id = '') {
   $left = $script:BrowserStaticWarnCap - $script:BrowserStaticWarnUsed
   if ($left -le 0) { Say-Info $t; return }
   $use = [Math]::Min($w, $left)
   $script:BrowserStaticWarnUsed += $use
-  Say-Warn $t $use
+  Say-Warn $t $use -Id $Id
 }
 function Read-PrefText([string]$path) {
   $tmp = Join-Path $env:TEMP ('csl-pref-' + [guid]::NewGuid().ToString('n'))
@@ -571,13 +613,13 @@ foreach ($b in $browserRoots) {
     if ($webrtc -eq 'disable_non_proxied_udp') {
       Say-Pass "${label}: WebRTC=disable_non_proxied_udp"
     } elseif ($webrtc) {
-      Soft-BrowserWarn "${label}: WebRTC=$webrtc（建议 disable_non_proxied_udp 或用扩展禁用）" 5
+      Soft-BrowserWarn "${label}: WebRTC=$webrtc（建议 disable_non_proxied_udp 或用扩展禁用）" 5 -Id 'net.browser_webrtc_chromium'
     } else {
-      Soft-BrowserWarn "${label}: 未设置 webrtc.ip_handling_policy，可能暴露真实/局域网 IP（建议 disable_non_proxied_udp）" 5
+      Soft-BrowserWarn "${label}: 未设置 webrtc.ip_handling_policy，可能暴露真实/局域网 IP（建议 disable_non_proxied_udp）" 5 -Id 'net.browser_webrtc_chromium'
     }
     if ($langs) {
       if (Test-LangMismatch $langs $cfg.expectedLoc) {
-        Say-Warn "${label}: 语言 $langs 与出口地区 $($cfg.expectedLoc) 不一致" 0
+        Say-Warn "${label}: 语言 $langs 与出口地区 $($cfg.expectedLoc) 不一致" 0 -Id 'locale.browser_lang_static'
       } else {
         Say-Info "${label}: 语言 $langs"
       }
@@ -598,9 +640,9 @@ if (Test-Path -LiteralPath $ffRoot) {
     $m = [regex]::Match($ptxt, 'user_pref\("media\.peerconnection\.enabled"\s*,\s*(true|false)\)')
     if ($m.Success) {
       if ($m.Groups[1].Value -eq 'false') { Say-Info "Firefox「$($fp.Name)」: WebRTC 已关闭" }
-      else { Soft-BrowserWarn "Firefox「$($fp.Name)」: media.peerconnection.enabled=true，可能暴露 IP" 5 }
+      else { Soft-BrowserWarn "Firefox「$($fp.Name)」: media.peerconnection.enabled=true，可能暴露 IP" 5 -Id 'net.browser_webrtc_firefox' }
     } else {
-      Soft-BrowserWarn "Firefox「$($fp.Name)」: 未关闭 media.peerconnection.enabled（默认开启）" 5
+      Soft-BrowserWarn "Firefox「$($fp.Name)」: 未关闭 media.peerconnection.enabled（默认开启）" 5 -Id 'net.browser_webrtc_firefox'
     }
   }
 }
@@ -610,7 +652,7 @@ if (-not (Test-Path -LiteralPath $bcPath)) {
   Say-Info '实时浏览器检查（WebRTC/时区/语言）请从检查面板运行；命令行模式跳过，不扣分'
 } else {
   $raw = $null; try { $raw = [IO.File]::ReadAllText($bcPath, [Text.Encoding]::UTF8) } catch {}
-  $bc = $null; if ($raw) { try { $bc = $raw | ConvertFrom-Json } catch { Say-Warn 'browser-check.json 解析失败' 3 } }
+  $bc = $null; if ($raw) { try { $bc = $raw | ConvertFrom-Json } catch { Say-Warn 'browser-check.json 解析失败' 3 -Id 'browser.check_parse' } }
   if ($bc) {
     $ts = $null
     if ($bc.ts) {
@@ -644,10 +686,10 @@ if (-not (Test-Path -LiteralPath $bcPath)) {
           $uniq = @($pubV4 | Select-Object -Unique)
           $bad = @($uniq | Where-Object { $expectIp -and $_ -ne $expectIp })
           if ($expectIp -and $bad.Count -eq 0) { Say-Pass "WebRTC 公网 IP 与出口一致: $($uniq[0])" }
-          elseif ($expectIp -and $bad.Count) { Say-Fail ("WebRTC 公网 IP 与出口不一致: WebRTC=" + ($uniq -join ',') + " 期望=$expectIp") }
+          elseif ($expectIp -and $bad.Count) { Say-Fail ("WebRTC 公网 IP 与出口不一致: WebRTC=" + ($uniq -join ',') + " 期望=$expectIp") -Id 'exit.webrtc_srflx' }
           else { Say-Info ("WebRTC 公网 IP: " + ($uniq -join ',')) }
         }
-        if ($pubV6.Count) { Say-Warn ("WebRTC 发现公网 IPv6: " + ($pubV6 -join ',') + "（可能绕过代理）") 8 }
+        if ($pubV6.Count) { Say-Warn ("WebRTC 发现公网 IPv6: " + ($pubV6 -join ',') + "（可能绕过代理）") 8 -Id 'exit.webrtc_ipv6' }
       }
       $mdns = @($hostC | Where-Object { $_ -match '\.local$' })
       if ($mdns.Count) { Say-Info ("WebRTC host 含 mDNS（正常）: " + ($mdns -join ',')) }
@@ -660,17 +702,17 @@ if (-not (Test-Path -LiteralPath $bcPath)) {
       }
       if ($btz -and $expectIana) {
         if ($btz -eq $expectIana) { Say-Pass "浏览器时区 $btz 与出口一致" }
-        else { Say-Warn "浏览器时区 $btz 与出口时区 $expectIana 不一致" 8 }
+        else { Say-Warn "浏览器时区 $btz 与出口时区 $expectIana 不一致" 8 -Id 'locale.browser_tz_live' }
       } elseif ($btz) { Say-Info "浏览器时区: $btz（尚未记住出口 IANA 时区）" }
 
       $blang = [string]$bc.language
       if ((-not $blang) -and $bc.languages) { $blang = [string](@($bc.languages)[0]) }
       if ($blang -and $cfg.expectedLoc) {
-        if (Test-LangMismatch $blang $cfg.expectedLoc) { Say-Warn "浏览器语言 $blang 与出口地区 $($cfg.expectedLoc) 不一致" 0 }
+        if (Test-LangMismatch $blang $cfg.expectedLoc) { Say-Warn "浏览器语言 $blang 与出口地区 $($cfg.expectedLoc) 不一致" 0 -Id 'locale.browser_lang_live' }
         else { Say-Pass "浏览器语言 $blang" }
       } elseif ($blang) { Say-Info "浏览器语言: $blang" }
 
-      if ($bc.webdriver -eq $true) { Say-Warn 'navigator.webdriver=true（自动化/被驱动环境）' 5 }
+      if ($bc.webdriver -eq $true) { Say-Warn 'navigator.webdriver=true（自动化/被驱动环境）' 5 -Id 'auto.webdriver' }
       else { Say-Pass 'navigator.webdriver 未开启' }
     }
   }
@@ -682,15 +724,18 @@ $fails = @($script:Items | Where-Object Level -eq 'FAIL')
 $warns = @($script:Items | Where-Object Level -eq 'WARN')
 $notes = @($script:Items | Where-Object Level -eq 'NOTE')
 
-# Map legacy Items → rules Results (weights already include Soft-BrowserWarn cap)
-$script:CslScoreMapped = New-CslScoreMappedResults @($script:Items)
-
+# Map checks (each carries its real rules/checks.json id; unmapped ones become meta.unmapped / status=error) → score (weights already include Soft-BrowserWarn cap)
 $script:CslRulesCatalog = $null
 $script:CslScoreResult = $null
+$script:CslScoreMapped = @()
+$script:CslUnmappedItems = New-Object System.Collections.ArrayList
 try {
   $script:CslRulesCatalog = Get-CslRulesCatalog
-  $script:CslScoreResult = Get-CslRulesScore -Catalog $script:CslRulesCatalog -Results $script:CslScoreMapped
+  $script:CslScoreResult = Invoke-CslPreflightScoring @($script:Items) $script:CslRulesCatalog
   $score = [int]$script:CslScoreResult.score
+  if ($script:CslUnmappedItems.Count -gt 0) {
+    Write-Host ("  [提示] 内部：{0} 条检查项没有有效的规则 id（{1}），JSON 里记为 meta.unmapped / status=error，分数照扣" -f $script:CslUnmappedItems.Count, $script:CslUnmappedItems[0].Reason) -ForegroundColor DarkGray
+  }
 } catch {
   # Catalog missing → fall back to sum of weights (should not happen in a full checkout)
   Write-Host ("  [提示] 规则评分模块不可用，回退权重求和: " + $_) -ForegroundColor DarkGray

@@ -73,7 +73,7 @@ function Resolve-CslFixId {
 .PARAMETER Results
   Array of hashtables / PSCustomObjects:
     id, status (passed|failed|error|info|skipped), [severityOverride], [refDeductionOverride],
-    current, expected, recheck, [masked], [fixTypeOverride], [fixIdOverride]
+    current, expected, recheck, [masked], [fixTypeOverride], [fixIdOverride], [notes]
 
   status=failed applies rule refDeduction (unless override / cap / hint-only).
   status=error → 0 deduction; if severity is must_fix, blocks canLaunchSafely.
@@ -163,6 +163,9 @@ function Get-CslRulesScore {
       refDeductionApplied  = 0
       isStaticBrowser      = [bool]$staticSet.ContainsKey($id)
     }
+    # optional per-row note (e.g. why an item could not be mapped); only present when the caller supplies one
+    $notesIn = Get-CslPsProp $r 'notes'
+    if ($null -ne $notesIn -and [string]$notesIn -ne '') { $row['notes'] = [string]$notesIn }
 
     if ($status -eq 'passed') {
       $passedCount++
