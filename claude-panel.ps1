@@ -1,7 +1,35 @@
-﻿# Claude 安全启动 · 主题面板（本地网页界面）
+﻿<#
+.SYNOPSIS
+Claude 安全启动 · 主题面板（本地网页界面）
+
+.DESCRIPTION
+在本机 127.0.0.1 / localhost 的固定端口上启动检查面板（只监听本机回环地址），并用 Edge / Chrome 打开；面板可「只检查」「检查并启动」，调用同目录 claude-preflight.ps1。
+端口已被占用（面板已在运行）时只重新打开窗口。
+-Help（或 -?）只打印本帮助后立即以退出码 0 退出：不监听端口、不打开浏览器、不写 panel.json / panel-server.log / preflight.log、不运行预检。
+
+.PARAMETER TestMode
+-TestMode : 目前脚本里没有使用此开关；面板的测试模式只由进程环境变量 CSL_PANEL_TESTMODE=1 开启（请求体无法开关）。
+
+.PARAMETER Help
+-Help : 只打印本帮助后 exit 0（等同 -?）：不监听端口、不打开浏览器、不写日志、不运行预检。
+
+.EXAMPLE
+powershell -NoProfile -ExecutionPolicy Bypass -File claude-panel.ps1
+打开检查面板。
+
+.EXAMPLE
+powershell -NoProfile -ExecutionPolicy Bypass -File claude-panel.ps1 -Help
+只打印帮助，退出码 0；不启动面板。
+#>
 param(
-  [switch]$TestMode
+  [switch]$TestMode,
+  [switch]$Help
 )
+# R4c: -Help 只打印帮助后 exit 0。必须是 param() 之后的第一条语句：在加载配置、任何检查、写日志/JSON、启动监控、网络/Clash 调用之前退出。
+if ($Help) {
+  try { Get-Help -Name $MyInvocation.MyCommand.Path -Full | Out-String -Width 110 | Write-Host } catch { Write-Host '（帮助不可用：请查看脚本开头的注释式帮助）' }
+  exit 0
+}
 $dir = $PSScriptRoot
 $pre = Join-Path $dir 'claude-preflight.ps1'
 $htmlPath = Join-Path $dir 'claude-panel.html'

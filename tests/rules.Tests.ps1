@@ -23,6 +23,12 @@ trap {
 }
 
 $script:Fail = 0
+# R4c test-hardening: a failed setup is 1 FAIL (counted by the setup assertion); the assertions that depend on it are
+# listed by name as SKIP (not PASS, not FAIL) and the run can never end as ALL PASSED while any SKIP exists.
+$script:Skipped = New-Object System.Collections.ArrayList
+function Skip-CslDependents([string]$Setup, [string[]]$Names) {
+  foreach ($n in $Names) { Write-Host ("  SKIP  {0} (skipped: setup failed: {1})" -f $n, $Setup) -ForegroundColor Yellow; [void]$script:Skipped.Add($n) }
+}
 function Assert-True($cond, $msg) {
   if ($cond) { Write-Host "  PASS  $msg" -ForegroundColor Green }
   else { Write-Host "  FAIL  $msg" -ForegroundColor Red; $script:Fail++ }
@@ -836,8 +842,155 @@ try {
   try { Remove-Item -LiteralPath $r4bMonBase -Recurse -Force -ErrorAction SilentlyContinue } catch {}
 }
 
+# ============================================================================
+# R4c: -? / -Help 只打印帮助，不跑预检（所有入口脚本都有注释式帮助）
+# ============================================================================
+Write-Host '== R4c-1 every entry script: comment-based help before param(), -Help exits first (static) ==' -ForegroundColor Cyan
+$r4cEntryNames = @('claude-monitor.ps1', 'claude-panel.ps1', 'claude-preflight.ps1', 'install.ps1')
+$r4cAll = @(Get-ChildItem -LiteralPath $root -File | Where-Object { $_.Name -like 'claude-*.ps1' -or $_.Name -eq 'install.ps1' } | Sort-Object Name)
+$r4cWithParam = @()
+foreach ($r4cF in $r4cAll) {
+  $r4cP = [System.Management.Automation.Language.Parser]::ParseFile($r4cF.FullName, [ref]$null, [ref]$null)
+  if ($null -ne $r4cP.ParamBlock) { $r4cWithParam += $r4cF.Name }
+}
+Assert-Eq ($r4cWithParam -join ',') ($r4cEntryNames -join ',') 'R4c entry scripts (those with a top-level param()) are exactly monitor, panel, preflight, install (new entry => add help + -Help + tests)'
+foreach ($r4cName in $r4cEntryNames) {
+  $r4cPath = Join-Path $root $r4cName
+  $r4cTok = $null; $r4cErr = $null
+  $r4cAst = [System.Management.Automation.Language.Parser]::ParseFile($r4cPath, [ref]$r4cTok, [ref]$r4cErr)
+  $r4cParamStart = $r4cAst.ParamBlock.Extent.StartOffset
+  $r4cHelpTok = @($r4cTok | Where-Object { $_.Kind -eq 'Comment' -and $_.Text.StartsWith('<#') -and $_.Text -match '(?m)^\s*\.SYNOPSIS' } | Select-Object -First 1)
+  $r4cFirstCode = @($r4cTok | Where-Object { $_.Kind -ne 'Comment' -and $_.Kind -ne 'NewLine' } | Select-Object -First 1)
+  $r4cHelpText = ''
+  $r4cHelpOk = ($r4cHelpTok.Count -eq 1 -and $r4cFirstCode.Count -eq 1 -and $r4cFirstCode[0].Extent.StartOffset -eq $r4cParamStart -and $r4cHelpTok[0].Extent.EndOffset -le $r4cParamStart)
+  if ($r4cHelpTok.Count -eq 1) { $r4cHelpText = $r4cHelpTok[0].Text }
+  $r4cHelpOk = $r4cHelpOk -and ($r4cHelpText -match '(?m)^\s*\.DESCRIPTION') -and ($r4cHelpText -match '(?m)^\s*\.EXAMPLE')
+  Assert-True $r4cHelpOk "R4c $r4cName has a comment-help block (.SYNOPSIS/.DESCRIPTION/.EXAMPLE) before param()"
+  $r4cParamNames = @($r4cAst.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+  $r4cDocumented = @([regex]::Matches($r4cHelpText, '(?m)^\s*\.PARAMETER\s+(\w+)') | ForEach-Object { $_.Groups[1].Value })
+  $r4cMissing = @($r4cParamNames | Where-Object { $r4cDocumented -notcontains $_ })
+  Assert-True ($r4cParamNames -contains 'Help' -and $r4cMissing.Count -eq 0) "R4c $r4cName has -Help and documents every parameter with .PARAMETER (undocumented: $($r4cMissing -join ','))"
+  # -Help branch = first statement after param(); its body only prints help and exits 0
+  $r4cFirst = $null
+  if ($r4cAst.EndBlock -and $r4cAst.EndBlock.Statements.Count -gt 0) { $r4cFirst = $r4cAst.EndBlock.Statements[0] }
+  $r4cFirstOk = $false
+  if ($r4cFirst -is [System.Management.Automation.Language.IfStatementAst] -and $r4cFirst.Clauses.Count -eq 1 -and $r4cFirst.Clauses[0].Item1.Extent.Text -eq '$Help') {
+    $r4cBody = $r4cFirst.Clauses[0].Item2
+    $r4cExits = @($r4cBody.FindAll({ param($n) $n -is [System.Management.Automation.Language.ExitStatementAst] }, $true))
+    $r4cCmds = @($r4cBody.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() })
+    $r4cBad = @($r4cCmds | Where-Object { @('Get-Help', 'Out-String', 'Write-Host') -notcontains $_ })
+    $r4cFirstOk = ($r4cExits.Count -eq 1 -and $r4cExits[0].Pipeline.Extent.Text -eq '0' -and $r4cBad.Count -eq 0)
+  }
+  Assert-True $r4cFirstOk "R4c $r4cName -Help branch is the first statement after param(), only prints help and exit 0 (before any check, config, file, network, monitor)"
+  $r4cH = $null
+  try { $r4cH = Get-Help -Name $r4cPath -Full -ErrorAction Stop } catch {}
+  Assert-True ($null -ne $r4cH -and -not [string]::IsNullOrWhiteSpace([string]$r4cH.Synopsis) -and @($r4cH.parameters.parameter).Count -ge 1) "R4c $r4cName Get-Help -Full reads the help statically (synopsis + parameters)"
+  if ($r4cName -eq 'claude-preflight.ps1' -or $r4cName -eq 'claude-monitor.ps1') {
+    $r4cCfgCalls = @($r4cAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Load-Config' }, $true) | Sort-Object { $_.Extent.StartOffset })
+    $r4cHelpIfs = @($r4cAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq '$Help' }, $true) | Sort-Object { $_.Extent.StartOffset })
+    Assert-True ($r4cHelpIfs.Count -ge 1 -and $r4cCfgCalls.Count -ge 1 -and $r4cHelpIfs[0].Extent.EndOffset -lt $r4cCfgCalls[0].Extent.StartOffset) "R4c $r4cName -Help exit comes before the first Load-Config"
+  }
+}
+$r4cPfHelp = [IO.File]::ReadAllText((Join-Path $root 'claude-preflight.ps1'))
+$r4cMonHelp = [IO.File]::ReadAllText((Join-Path $root 'claude-monitor.ps1'))
+$r4cHideRe = '(?s)\.PARAMETER HideIp\r?\n(.*?)(?=\r?\n\.[A-Z]|\r?\n#>)'
+$r4cPfHide = [regex]::Match($r4cPfHelp, $r4cHideRe).Groups[1].Value
+$r4cMonHide = [regex]::Match($r4cMonHelp, $r4cHideRe).Groups[1].Value
+Assert-True ($r4cPfHide.Contains('<出口IP>') -and $r4cPfHide.Contains('<节点>') -and $r4cPfHide.Contains('preflight.log') -and $r4cPfHide.Contains('监控')) 'R4c preflight -HideIp help states R4b semantics (screen + preflight.log + monitor lines masked as <出口IP>, node servers <节点>)'
+Assert-True ($r4cMonHide.Contains('<出口IP>') -and $r4cMonHide.Contains('preflight.log')) 'R4c monitor -HideIp help states the preflight.log / screen masking'
+
+Write-Host '== R4c-2 -Help in a temp copy: exit 0, prints help, writes nothing (child process, temp dir only) ==' -ForegroundColor Cyan
+# 守卫约束：实跑只在临时副本里用 -Help（预检另带 -NoLaunch -NoPause，监控另带 -Once -DryRun，面板不开浏览器）。
+function Get-CslDirSnapshot([string]$Dir) {
+  @(Get-ChildItem -LiteralPath $Dir -Recurse -Force -File | Sort-Object FullName | ForEach-Object { '{0}|{1}|{2}' -f $_.FullName.Substring($Dir.Length), $_.Length, $_.LastWriteTimeUtc.Ticks }) -join "`n"
+}
+function Invoke-CslHelpProbe([string]$ScriptPath, [string]$ExtraArgs) {
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = (Get-Process -Id $PID).Path
+  $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $ScriptPath + '" ' + $ExtraArgs
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
+  $psi.StandardErrorEncoding = New-Object System.Text.UTF8Encoding($false)
+  $psi.EnvironmentVariables['CSL_PANEL_NO_OPEN'] = '1'
+  $p = [System.Diagnostics.Process]::Start($psi)
+  $so = $p.StandardOutput.ReadToEndAsync()
+  $se = $p.StandardError.ReadToEndAsync()
+  $timedOut = $false
+  if (-not $p.WaitForExit(90000)) { $timedOut = $true; try { $p.Kill() } catch {}; try { [void]$p.WaitForExit(5000) } catch {} }
+  $code = if ($timedOut) { -1 } else { $p.ExitCode }
+  $out = ''
+  try { $out = $so.Result + $se.Result } catch {}
+  return @{ Exit = $code; Out = $out; TimedOut = $timedOut }
+}
+$r4cProbes = @(
+  @{ Name = 'claude-preflight.ps1'; Args = '-Help -NoLaunch -NoPause' },
+  @{ Name = 'claude-monitor.ps1'; Args = '-Help -Once -DryRun' },
+  @{ Name = 'claude-panel.ps1'; Args = '-Help' }
+)
+$r4cDynNames = @()
+foreach ($r4cPr in $r4cProbes) {
+  $r4cN = $r4cPr.Name
+  $r4cDynNames += @(
+    "R4c -Help $($r4cN): exit 0",
+    "R4c -Help $($r4cN): prints the help text",
+    "R4c -Help $($r4cN): seed preflight.json not modified",
+    "R4c -Help $($r4cN): no preflight.log created",
+    "R4c -Help $($r4cN): no preflight-result.json created",
+    "R4c -Help $($r4cN): temp copy unchanged (no file added or changed; no monitor / panel started)"
+  )
+}
+$r4cBase = Join-Path ([IO.Path]::GetTempPath()) ('csl-r4chelp-' + [guid]::NewGuid().ToString('n'))
+$r4cSetupOk = $false
+$r4cSetupErr = ''
+try {
+  try {
+    if ($env:CSL_TEST_FORCE_SETUP_FAIL -eq 'r4c-help') { throw 'forced setup failure (CSL_TEST_FORCE_SETUP_FAIL=r4c-help)' }
+    New-Item -ItemType Directory -Path $r4cBase -Force | Out-Null
+    foreach ($r4cPr in $r4cProbes) {
+      $r4cD = Join-Path $r4cBase ([IO.Path]::GetFileNameWithoutExtension($r4cPr.Name))
+      New-Item -ItemType Directory -Path $r4cD -Force | Out-Null
+      Get-ChildItem -LiteralPath $root -Filter 'claude-*.ps1' -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $r4cD }
+      Copy-Item -LiteralPath (Join-Path $root 'rules') -Destination $r4cD -Recurse
+      Copy-Item -LiteralPath (Join-Path $root 'claude-panel.html') -Destination $r4cD
+      # Safety seed: if -Help ever regresses, a real preflight in this copy must not learn/switch nodes or run tzutil.
+      # timezone = the current Windows zone (no change), claudeGroup '' (no node learning / PUT), no main group pin.
+      $r4cSeed = [ordered]@{ timezone = [TimeZoneInfo]::Local.Id; claudeGroup = ''; pinMainGroup = $false; mainGroup = '' }
+      [IO.File]::WriteAllText((Join-Path $r4cD 'preflight.json'), ($r4cSeed | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
+    }
+    $r4cSetupOk = $true
+  } catch { $r4cSetupErr = $_.Exception.Message }
+  if (-not $r4cSetupOk) {
+    Assert-True $false "R4c setup: temp copies of the entry scripts for -Help probes ($r4cSetupErr)"
+    Skip-CslDependents 'R4c temp copies' $r4cDynNames
+  } else {
+    Assert-True $true 'R4c setup: temp copies of the entry scripts for -Help probes'
+    foreach ($r4cPr in $r4cProbes) {
+      $r4cN = $r4cPr.Name
+      $r4cD = Join-Path $r4cBase ([IO.Path]::GetFileNameWithoutExtension($r4cN))
+      $r4cSyn = ([regex]::Match([IO.File]::ReadAllText((Join-Path $root $r4cN)), '(?m)^\.SYNOPSIS\r?\n(.+?)\r?$').Groups[1].Value).Trim()
+      $r4cSeedText = [IO.File]::ReadAllText((Join-Path $r4cD 'preflight.json'))
+      $r4cSnapBefore = Get-CslDirSnapshot $r4cD
+      $r4cRes = Invoke-CslHelpProbe (Join-Path $r4cD $r4cN) $r4cPr.Args
+      $r4cSnapAfter = Get-CslDirSnapshot $r4cD
+      Assert-True ((-not $r4cRes.TimedOut) -and $r4cRes.Exit -eq 0) "R4c -Help $($r4cN): exit 0"
+      Assert-True ($r4cSyn.Length -gt 0 -and $r4cRes.Out.Contains($r4cSyn)) "R4c -Help $($r4cN): prints the help text"
+      $r4cSeedAfter = ''
+      try { $r4cSeedAfter = [IO.File]::ReadAllText((Join-Path $r4cD 'preflight.json')) } catch {}
+      Assert-True ($r4cSeedAfter -ceq $r4cSeedText) "R4c -Help $($r4cN): seed preflight.json not modified"
+      Assert-True (-not (Test-Path -LiteralPath (Join-Path $r4cD 'preflight.log'))) "R4c -Help $($r4cN): no preflight.log created"
+      Assert-True (-not (Test-Path -LiteralPath (Join-Path $r4cD 'preflight-result.json'))) "R4c -Help $($r4cN): no preflight-result.json created"
+      Assert-True ($r4cSnapBefore -ceq $r4cSnapAfter) "R4c -Help $($r4cN): temp copy unchanged (no file added or changed; no monitor / panel started)"
+    }
+  }
+} finally {
+  try { Remove-Item -LiteralPath $r4cBase -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+}
+
 Write-Host ''
-if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {
+if ($script:Skipped.Count -gt 0) { Write-Host ("SKIPPED (setup failed): {0} assertion(s): {1}" -f $script:Skipped.Count, ($script:Skipped -join '; ')) -ForegroundColor Yellow }
+if ($script:Fail -gt 0 -or $script:Uncaught -gt 0 -or $script:Skipped.Count -gt 0) {
   Write-Host "FAILED: $($script:Fail) assertion(s), $($script:Uncaught) uncaught error(s)" -ForegroundColor Red
   exit 1
 }

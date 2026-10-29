@@ -1,4 +1,80 @@
-﻿param(
+﻿<#
+.SYNOPSIS
+Claude 桌面版 启动前检查 + 自动设置（v4.0.0）
+
+.DESCRIPTION
+检查网络 / 出口 / 时区 / 环境变量等是否适合启动 Claude 桌面版；可按需自动修复，检查通过后启动 Claude 并拉起后台监控（-NoLaunch 时都不做）。
+-Help（或 -?）只打印本帮助后立即以退出码 0 退出：不加载配置、不做任何检查、不写 preflight.json / preflight.log / preflight-result.json、不启动后台监控、不切换 Claude、不访问网络或 Clash。
+配置文件：同目录 preflight.json（可用 fixVarPatterns；controllerSecret 不会被打印）。
+依赖：同目录 claude-common.ps1、claude-envfix.ps1、claude-issueexport.ps1、claude-monitor.ps1、claude-rules.ps1。
+
+.PARAMETER Force
+-Force    : 即使有「必须修」项也启动 Claude
+
+.PARAMETER NoPause
+-NoPause  : 结束时不等待按键；单独使用时不提示也不自动修复
+
+.PARAMETER NoLaunch
+-NoLaunch : 只检查，不启动/不切换 Claude，也不启动后台监控（测试用）
+
+.PARAMETER Relearn
+-Relearn  : 忘掉记住的出口 IP / 节点 / 时区，按当前环境重新记住
+
+.PARAMETER TestMode
+-TestMode : 仅允许操作 CSL_TEST_ 前缀变量；测试请配合 -FixVarPattern 'CSL_TEST_ANTHROPIC_*'
+
+.PARAMETER DryRun
+-DryRun   : 只列出将要修改的变量名和动作，不写系统、不写备份
+
+.PARAMETER FixEnv
+-FixEnv   : 一键清除匹配的用户级中转变量；先列出变量名和动作（不显示值）并问 y/N，回答 y 才修改（v3.3.0 起）
+
+.PARAMETER Yes
+-Yes      : 配合 -FixEnv 跳过 y/N 确认，直接修复（脚本/无人值守用）
+
+.PARAMETER UndoFix
+-UndoFix [-UndoId <id>] : 撤销一次修复（默认最近一次）；冲突时 -NoPause 跳过并返回非 0
+
+.PARAMETER UndoId
+-UndoId <id> : 配合 -UndoFix，指定要撤销的那一次修复（默认最近一次）
+
+.PARAMETER ListFixes
+-ListFixes : 列出可撤销操作（脱敏）
+
+.PARAMETER FixVarPattern
+-FixVarPattern <通配符...> : 限定要检测/修复的用户级变量名（默认 ANTHROPIC_* 列表）
+
+.PARAMETER FailAtIndex
+-FailAtIndex <n> : （仅 -TestMode）使第 n 个变量变更抛错，用于验证整单回滚；非 TestMode 警告并忽略
+
+.PARAMETER ExportIssues
+-ExportIssues : 检查结束后打印可复制的「问题说明」（脱敏四段结构）；建议配合 -NoLaunch -NoPause
+
+.PARAMETER HideIp
+-HideIp : 出口 IP / WebRTC IP 也脱敏：-ExportIssues 的问题说明省略 IP 提示行；preflight-result.json 的 current 同样遮罩（containsIp 照样标 true）；屏幕输出和 preflight.log 里的公网出口 IP / WebRTC IP 也遮成 <出口IP>（fake-ip 和内网地址保留）；后台监控写进 preflight.log 的行同样遮罩。节点地址（Clash 运行配置里的 server）不论加不加都在问题说明和 JSON 里遮成 <节点>
+
+.PARAMETER Json
+-Json     : 写出 preflight-result.json（UTF-8 无 BOM）并在末尾打印 CSL_JSON_PATH=…；评分走 claude-rules.ps1。不带 -Json 就不写也不覆盖这个文件（v4.0.0 起）
+
+.PARAMETER JsonPath
+-JsonPath <文件路径> : 配合 -Json，把 JSON 写到指定文件（默认脚本目录的 preflight-result.json）；目标目录必须已存在，不存在就报错退出（不自动创建）；只给 -JsonPath 不给 -Json 也报错退出（退出码 2，不写文件）
+
+.PARAMETER Help
+-Help : 只打印本帮助后 exit 0（等同 -?）：不加载配置、不跑任何检查、不写日志和 JSON、不启动后台监控、不切换 Claude、不访问网络或 Clash
+
+.EXAMPLE
+powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause
+只检查，不启动 Claude，不写 preflight-result.json。
+
+.EXAMPLE
+powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause -Json -JsonPath C:\Temp\x.json
+只检查，并把结构化结果写到 C:\Temp\x.json（-JsonPath 必须配合 -Json）。
+
+.EXAMPLE
+powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -Help
+只打印帮助，退出码 0；不做任何检查。
+#>
+param(
   [switch]$Force,
   [switch]$NoPause,
   [switch]$NoLaunch,
@@ -15,30 +91,14 @@
   [switch]$ExportIssues,
   [switch]$HideIp,
   [switch]$Json,
-  [string]$JsonPath
+  [string]$JsonPath,
+  [switch]$Help
 )
-<#
-  Claude 桌面版 启动前检查 + 自动设置（v3.3.0）
-  用法: powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 [选项]
-  -Force    : 即使有「必须修」项也启动 Claude
-  -NoPause  : 结束时不等待按键；单独使用时不提示也不自动修复
-  -NoLaunch : 只检查，不启动/不切换 Claude，也不启动后台监控（测试用）
-  -Relearn  : 忘掉记住的出口 IP / 节点 / 时区，按当前环境重新记住
-  -FixVarPattern <通配符...> : 限定要检测/修复的用户级变量名（默认 ANTHROPIC_* 列表）
-  -FixEnv   : 一键清除匹配的用户级中转变量；先列出变量名和动作（不显示值）并问 y/N，回答 y 才修改（v3.3.0 起）
-  -Yes      : 配合 -FixEnv 跳过 y/N 确认，直接修复（脚本/无人值守用）
-  -DryRun   : 只列出将要修改的变量名和动作，不写系统、不写备份
-  -UndoFix [-UndoId <id>] : 撤销一次修复（默认最近一次）；冲突时 -NoPause 跳过并返回非 0
-  -ListFixes : 列出可撤销操作（脱敏）
-  -TestMode : 仅允许操作 CSL_TEST_ 前缀变量；测试请配合 -FixVarPattern 'CSL_TEST_ANTHROPIC_*'
-  -FailAtIndex <n> : （仅 -TestMode）使第 n 个变量变更抛错，用于验证整单回滚；非 TestMode 警告并忽略
-  -ExportIssues : 检查结束后打印可复制的「问题说明」（脱敏四段结构）；建议配合 -NoLaunch -NoPause
-  -HideIp : 出口 IP / WebRTC IP 也脱敏：-ExportIssues 的问题说明省略 IP 提示行；preflight-result.json 的 current 同样遮罩（containsIp 照样标 true）；屏幕输出和 preflight.log 里的公网出口 IP / WebRTC IP 也遮成 <出口IP>（fake-ip 和内网地址保留）。节点地址（Clash 运行配置里的 server）不论加不加都在问题说明和 JSON 里遮成 <节点>
-  -Json     : 写出 preflight-result.json（UTF-8 无 BOM）并在末尾打印 CSL_JSON_PATH=…；评分走 claude-rules.ps1。不带 -Json 就不写也不覆盖这个文件（v4.0.0 起）
-  -JsonPath <文件路径> : 配合 -Json，把 JSON 写到指定文件（默认脚本目录的 preflight-result.json）；目标目录必须已存在，不存在就报错退出（不自动创建）；只给 -JsonPath 不给 -Json 也报错退出（退出码 2，不写文件）
-  配置文件  : 同目录 preflight.json（可用 fixVarPatterns；controllerSecret 不会被打印）
-  依赖      : 同目录 claude-common.ps1、claude-envfix.ps1、claude-issueexport.ps1、claude-monitor.ps1、claude-rules.ps1
-#>
+# R4c: -Help 只打印帮助后 exit 0。必须是 param() 之后的第一条语句：在加载配置、任何检查、写日志/JSON、启动监控、网络/Clash 调用之前退出。
+if ($Help) {
+  try { Get-Help -Name $MyInvocation.MyCommand.Path -Full | Out-String -Width 110 | Write-Host } catch { Write-Host '（帮助不可用：请查看脚本开头的注释式帮助）' }
+  exit 0
+}
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-common.ps1')
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-envfix.ps1')
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-issueexport.ps1')
