@@ -315,3 +315,93 @@ function Save-CslPreflightResultJson {
   if (-not $target) { return $null }
   return (Write-CslPreflightResultJson -Result $Result -Path $target)
 }
+
+# ---------- R4b-1：从 Clash 运行配置只读取节点 server（IP 和域名） ----------
+# 只看顶层 proxies: 段里的 server 字段；不读 secret / 令牌，不联网，不写文件。
+# 配置不存在或解析不出节点：ok=false，info 给一句说明，调用方回退到 R4 行为（不扣分）。
+function Get-CslClashNodeHosts {
+  param([AllowNull()][string]$Path)
+  $r = [pscustomobject]@{ ok = $false; hosts = @(); info = '' }
+  if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    $r.info = '未找到 Clash 运行配置，节点地址按出口 IP 规则处理（不扣分）'
+    return $r
+  }
+  $lines = $null
+  try { $lines = [IO.File]::ReadAllLines($Path, (New-Object System.Text.UTF8Encoding($false))) } catch { $lines = $null }
+  if ($null -eq $lines) {
+    $r.info = 'Clash 运行配置解析失败，节点地址按出口 IP 规则处理（不扣分）'
+    return $r
+  }
+  $found = New-Object System.Collections.ArrayList
+  $inProxies = $false
+  foreach ($line in $lines) {
+    if ($line -match '^\S') {
+      $inProxies = ($line -match '^proxies:\s*(#.*)?$')
+      continue
+    }
+    if (-not $inProxies) { continue }
+    foreach ($m in [regex]::Matches($line, '(?:^|[\s,{])server:\s*(?:"([^"]+)"|''([^'']+)''|([^\s,}#]+))')) {
+      $h = ''
+      foreach ($gi in 1..3) { if ($m.Groups[$gi].Success) { $h = $m.Groups[$gi].Value.Trim(); break } }
+      if ($h -and -not ($found -contains $h)) { [void]$found.Add($h) }
+    }
+  }
+  if ($found.Count -eq 0) {
+    $r.info = 'Clash 运行配置解析失败（没有读到节点 server），节点地址按出口 IP 规则处理（不扣分）'
+    return $r
+  }
+  # 长的先替换，避免短地址先吃掉长地址的一部分
+  $r.hosts = @($found | Sort-Object -Property Length -Descending)
+  $r.ok = $true
+  return $r
+}
+
+# ---------- R4b-2：-HideIp 时屏幕输出和 preflight.log 的公网 IP 遮成 <出口IP> ----------
+# fake-ip（198.18.0.0/15）、内网、回环保留；IPv6 只遮全局单播（2000::/3）。
+function Protect-CslExitIpText {
+  param([AllowNull()][string]$Text)
+  if ([string]::IsNullOrEmpty($Text)) { return $Text }
+  $v4 = {
+    param($m)
+    $ip = $m.Value
+    if ((Test-CslPrivateOrFakeIp $ip) -or $ip -match '^198\.19\.') { return $ip }
+    return '<出口IP>'
+  }
+  $v = [regex]::Replace([string]$Text, '\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b', $v4)
+  $v6 = {
+    param($m)
+    $s = $m.Value
+    $a = $null
+    if ($s -match '(?i)^[23][0-9a-f]{0,3}:' -and $s.Split(':').Count -ge 3 -and [System.Net.IPAddress]::TryParse($s, [ref]$a) -and $a.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { return '<出口IP>' }
+    return $s
+  }
+  return [regex]::Replace($v, '(?i)(?<![0-9a-f:.])[0-9a-f]{1,4}(?::[0-9a-f]{0,4}){2,7}(?![0-9a-f:])', $v6)
+}
+
+# preflight.log 的一行：-HideIp 时先遮 IP
+function Format-CslPreflightLogLine {
+  param([AllowNull()][string]$Line, [switch]$HideIp)
+  if ($HideIp) { return (Protect-CslExitIpText $Line) }
+  return $Line
+}
+
+# -HideIp：在调用方脚本作用域里用同名函数包一层 Write-Host，所有屏幕输出先过 Protect-CslExitIpText
+function Enable-CslHideIpHost {
+  $body = {
+    param(
+      [Parameter(Position = 0, ValueFromRemainingArguments = $true)][object[]]$Object,
+      [switch]$NoNewline,
+      [object]$Separator,
+      [object]$ForegroundColor,
+      [object]$BackgroundColor
+    )
+    $sep = ' '
+    if ($PSBoundParameters.ContainsKey('Separator')) { $sep = [string]$Separator }
+    $txt = ''
+    if ($null -ne $Object) { $txt = (@($Object | ForEach-Object { [string]$_ }) -join $sep) }
+    $p = @{}
+    foreach ($k in @('NoNewline', 'ForegroundColor', 'BackgroundColor')) { if ($PSBoundParameters.ContainsKey($k)) { $p[$k] = $PSBoundParameters[$k] } }
+    Microsoft.PowerShell.Utility\Write-Host (Protect-CslExitIpText $txt) @p
+  }
+  Set-Item -Path 'function:script:Write-Host' -Value $body
+}

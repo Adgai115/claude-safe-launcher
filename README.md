@@ -138,7 +138,7 @@ sudo systemsetup -settimezone America/New_York
 | `-TestMode` | （暂无） | 仅允许操作 `CSL_TEST_` 前缀变量；测试请配合 `-FixVarPattern 'CSL_TEST_ANTHROPIC_*'` |
 | `-FailAtIndex <n>` | （暂无） | **仅** `-TestMode`：第 n 个变量变更时抛错以验证整单回滚；非 TestMode 警告并忽略 |
 | `-ExportIssues` | （暂无） | 检查结束后打印可复制的「问题说明」（脱敏四段）；建议配合 `-NoLaunch -NoPause` |
-| `-HideIp` | （暂无） | 与 `-ExportIssues` 同用：出口 IP / WebRTC IP 也脱敏，并省略 IP 提示行 |
+| `-HideIp` | （暂无） | 出口 IP / WebRTC IP 也脱敏：问题说明（省略 IP 提示行）、JSON 的 current、屏幕输出和 preflight.log 都遮成 `<出口IP>`；fake-ip 和内网地址保留 |
 
 ### 环境变量一键修复（Windows）
 
