@@ -642,6 +642,11 @@ Assert-True ($r4aPf -match '-JsonPath <') 'R4a -? help documents -JsonPath'
 $r4aHelp = @($r4aPf -split "`r?`n" | Where-Object { $_ -match '^\s*-JsonPath <' })
 Assert-True ($r4aHelp.Count -eq 1 -and $r4aHelp[0] -match '不给 -Json 也报错退出' -and $r4aHelp[0] -notmatch '忽略') 'R4a -? help says -JsonPath must be used with -Json (error, not ignored)'
 
+# 不用 Get-FileHash（部分 Windows PowerShell 5.1 子进程里不可用），改用 .NET SHA256
+function Get-CslR4bSha256([string]$Path) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try { return ([BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path)))) } finally { $sha.Dispose() }
+}
 Write-Host '== R4b-1 node server addresses from the Clash runtime config (fake config, temp dir only) ==' -ForegroundColor Cyan
 $r4bBase = Join-Path ([IO.Path]::GetTempPath()) ("csl-r4b-" + [guid]::NewGuid().ToString('n'))
 New-Item -ItemType Directory -Path $r4bBase -Force | Out-Null
@@ -671,13 +676,13 @@ try {
     '  - MATCH,Claude'
   ) -join "`r`n"
   [IO.File]::WriteAllText($r4bYaml, $r4bYamlText, (New-Object System.Text.UTF8Encoding($false)))
-  $r4bHashBefore = (Get-FileHash -LiteralPath $r4bYaml -Algorithm SHA256).Hash
+  $r4bHashBefore = Get-CslR4bSha256 $r4bYaml
   $r4bNodes = Get-CslClashNodeHosts -Path $r4bYaml
   Assert-True ([bool]$r4bNodes.ok) 'R4b-1 fake config: ok'
   Assert-Eq @($r4bNodes.hosts).Count 3 'R4b-1 fake config: 3 node servers'
   Assert-True ((@($r4bNodes.hosts) -contains $r4bNodeIp) -and (@($r4bNodes.hosts) -contains $r4bNodeIp2) -and (@($r4bNodes.hosts) -contains $r4bNodeDom)) 'R4b-1 fake config: node IPs and domain read'
   Assert-True (-not ((@($r4bNodes.hosts) -join ' ') -match [regex]::Escape($r4bSecret)) -and -not ((@($r4bNodes.hosts) -join ' ') -match 'r4b-sni|9097')) 'R4b-1 reads only server, not secret / sni / controller'
-  Assert-Eq ((Get-FileHash -LiteralPath $r4bYaml -Algorithm SHA256).Hash) $r4bHashBefore 'R4b-1 Clash config unchanged after read'
+  Assert-Eq ((Get-CslR4bSha256 $r4bYaml)) $r4bHashBefore 'R4b-1 Clash config unchanged after read'
   $r4bMiss = Get-CslClashNodeHosts -Path (Join-Path $r4bBase 'nope.yaml')
   Assert-True ((-not $r4bMiss.ok) -and @($r4bMiss.hosts).Count -eq 0 -and ([string]$r4bMiss.info -match '未找到') -and ([string]$r4bMiss.info -match '不扣分')) 'R4b-1 missing config: falls back with one info'
   $r4bBad = Join-Path $r4bBase 'bad.yaml'
