@@ -447,7 +447,7 @@ function applyTheme(t,save){theme=t;document.body.dataset.theme=t;const th=T[t];
  const m=$('groups');m.classList.add('noanim');m.innerHTML='';st.groups.forEach(addCard);setTimeout(()=>m.classList.remove('noanim'),50);
  if(save)api('POST','/api/theme?t='+t,{}).catch(()=>{})}
 for(const k in T){const b=document.createElement('button');b.textContent=T[k].name;b.dataset.t=k;b.onclick=()=>applyTheme(k,true);$('themes').appendChild(b)}
-$('bCheck').onclick=()=>run(false);$('bLaunch').onclick=()=>run(true);$('bLearn').onclick=()=>{if(confirm('把当前的出口 IP、Clash 节点和时区记为正确环境？以后发生变化会提醒并自动切回。'))run(false,true)};{const bl=$('bLog');if(bl)bl.onclick=()=>api('POST','/api/log',{});}
+$('bCheck').onclick=()=>run(false);$('bLaunch').onclick=()=>run(true);$('bLearn').onclick=()=>{if(confirm('把当前的出口 IP、Clash 节点和时区记为正确环境？以后正常启动时如有变化，会提醒并自动切回；本次只记录，不改时区、不切节点。'))run(false,true)};{const bl=$('bLog');if(bl)bl.onclick=()=>api('POST','/api/log',{});}
 {const ca=$('bCopyAll');if(ca)ca.onclick=()=>copyAllIssues()}
 setInterval(()=>api('GET','/api/ping').catch(()=>{}),5000);
 reset();applyTheme(theme,false);run(false);

@@ -1152,6 +1152,9 @@ $r4dTwArg1 = ''; if ($r4dTwCalls.Count -eq 1 -and @($r4dTwCalls[0].CommandElemen
 Assert-True ($r4dTwCalls.Count -eq 1 -and $r4dTwArg1 -ceq '([bool]$verge)') ("R4d [TUN wait] the script body calls Invoke-CslTunWaitStep once and passes ([bool]`$verge) as the Clash-running state (calls=$($r4dTwCalls.Count), arg1=[$r4dTwArg1])")
 $r4dPreText = [IO.File]::ReadAllText((Join-Path $root 'claude-preflight.ps1'))
 Assert-True ($r4dPreText.Contains('[重新学习] 将按当前环境重新记住出口 IP / 节点 / 时区') -and -not $r4dPreText.Contains('只报告，不写 preflight.json') -and $r4dPreText.Contains('-NoLaunch：只重新记住并写 preflight.json，不改时区、不切节点、不启动 Clash')) 'R4d [text] the -Relearn banner no longer claims -NoLaunch does not write preflight.json, and says it only re-learns (no tz change / node switch / Clash start)'
+$r4dPanel = [IO.File]::ReadAllText((Join-Path $root 'claude-panel.html'))
+Assert-True ($r4dPanel.Contains('以后正常启动时如有变化，会提醒并自动切回；本次只记录，不改时区、不切节点。')) 'R4d [text] panel relearn confirm: auto switch-back only on normal launch; this run only records, no timezone change, no node switch'
+Assert-True (-not $r4dPanel.Contains('以后发生变化会提醒并自动切回。')) 'R4d [text] panel relearn confirm: old wording implying this run switches back is gone'
 $r4dReadme = [IO.File]::ReadAllText((Join-Path $root 'README.md'))
 Assert-True ($r4dReadme.Contains('「记住当前环境」（面板以 `-NoLaunch -Relearn` 运行：只重新记住并写入 `preflight.json`，不改系统时区、不切节点、不启动 Clash）')) 'R4d [text] README: the panel "记住当前环境" button only re-learns and writes preflight.json (no timezone change, no node switch, no Clash start)'
 
