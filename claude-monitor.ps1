@@ -5,21 +5,27 @@
   Claude 退出后自动结束。单实例（互斥锁）。
   测试: powershell -NoProfile -ExecutionPolicy Bypass -File claude-monitor.ps1 -Once -DryRun
 #>
-param([switch]$Once, [switch]$DryRun)
+param([switch]$Once, [switch]$DryRun, [switch]$HideIp)
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-common.ps1')
 $cfg = Load-Config
 $tag = '[monitor]' + $(if ($DryRun) { '[DryRun]' } else { '' })
+# R4b：-HideIp（由 preflight -HideIp 传入）时，监控写进 preflight.log 的行、-Once 屏幕输出和提醒文字里的公网 IP 遮成 <出口IP>
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-issueexport.ps1')
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-rules.ps1')
+$script:MonHideIp = [bool]$HideIp
+function Write-CslMonLog([string]$Line) { Write-Log (Format-CslPreflightLogLine $Line -HideIp:$script:MonHideIp) }
 
 function Out-Mon([string]$t, [string]$color = 'Gray') {
-  if ($Once) { Write-Host $t -ForegroundColor $color }
+  if ($Once) { Write-Host (Format-CslPreflightLogLine $t -HideIp:$script:MonHideIp) -ForegroundColor $color }
 }
 
 $created = $false
 $mutex = New-Object Threading.Mutex($false, 'Local\ClaudePreflightMonitor')
 try { $created = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $created = $true }
-if (-not $created) { Write-Log "$($tag) 已有监控实例在运行，本实例退出"; Out-Mon '已有监控实例在运行，退出' 'Yellow'; exit 0 }
+if (-not $created) { Write-CslMonLog "$($tag) 已有监控实例在运行，本实例退出"; Out-Mon '已有监控实例在运行，退出' 'Yellow'; exit 0 }
 
 function Show-Alert([string]$title, [string]$text) {
+  $text = Format-CslPreflightLogLine $text -HideIp:$script:MonHideIp
   try {
     [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
     [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
@@ -49,18 +55,18 @@ function Invoke-Check {
   $ctlTxt = $(if ($s.ctlOk) { "node=$($s.node)" } else { 'node=控制器不可达' })
   if ($s.problems.Count -eq 0) {
     Out-Mon "正常: ip=$($s.ip) loc=$($s.loc) $($ctlTxt)" 'Green'
-    if ($Once) { Write-Log "$($tag) OK | ip=$($s.ip) | $($ctlTxt)" }
+    if ($Once) { Write-CslMonLog "$($tag) OK | ip=$($s.ip) | $($ctlTxt)" }
     return
   }
   $p = $s.problems -join '; '
-  Write-Log "$($tag) CHANGE | $($p)"
+  Write-CslMonLog "$($tag) CHANGE | $($p)"
   Out-Mon "发现变化: $($p)" 'Yellow'
   if ($DryRun) {
     $plan = @()
     if ($s.ctlOk) { $plan += "PUT 切回 $($cfg.claudeGroup)/$($cfg.mainGroup) → $($cfg.expectedNode)" } else { $plan += '控制器不可达，无法自动切回' }
     $plan += '若仍不对：弹出 Windows 提醒'
     if ($cfg.monitorKillOnChange) { $plan += '并关闭 Claude（monitorKillOnChange=true）' }
-    Write-Log "$($tag) 将执行(未执行): $($plan -join ' → ')"
+    Write-CslMonLog "$($tag) 将执行(未执行): $($plan -join ' → ')"
     Out-Mon ("[DryRun] 将执行(未执行): " + ($plan -join ' → ')) 'Cyan'
     return
   }
@@ -69,15 +75,15 @@ function Invoke-Check {
     if ($cfg.pinMainGroup -and $cfg.mainGroup) { [void](Ctl-SelectNode $cfg $cfg.mainGroup $cfg.expectedNode) }
     Start-Sleep -Seconds 3
     $s2 = Test-State
-    if ($s2.problems.Count -eq 0) { Write-Log "$($tag) FIXED | 已切回 $($cfg.expectedNode) ip=$($s2.ip)"; Show-Alert 'Claude 监控' "节点曾被切换，已自动切回 $($cfg.expectedNode)（IP $($s2.ip)）"; return }
+    if ($s2.problems.Count -eq 0) { Write-CslMonLog "$($tag) FIXED | 已切回 $($cfg.expectedNode) ip=$($s2.ip)"; Show-Alert 'Claude 监控' "节点曾被切换，已自动切回 $($cfg.expectedNode)（IP $($s2.ip)）"; return }
     $p = $s2.problems -join '; '
   }
-  Write-Log "$($tag) STILL-WRONG | $($p)"
+  Write-CslMonLog "$($tag) STILL-WRONG | $($p)"
   Show-Alert 'Claude 出口异常' "$($p)。请检查 Clash 节点，期望 IP $($cfg.expectedIp)。"
   if ($cfg.monitorKillOnChange) {
     $procs = @(Get-ClaudeProcesses)
     foreach ($pr in $procs) { try { Stop-Process -Id $pr.ProcessId -Force -ErrorAction Stop } catch {} }
-    Write-Log "$($tag) KILLED Claude ($($procs.Count) 个进程)"
+    Write-CslMonLog "$($tag) KILLED Claude ($($procs.Count) 个进程)"
   }
 }
 
@@ -85,15 +91,15 @@ try {
   if ($Once) { Invoke-Check; exit 0 }
   $waited = 0
   while (-not (Get-ClaudeProcesses) -and $waited -lt 90) { Start-Sleep -Seconds 3; $waited += 3 }
-  if (-not (Get-ClaudeProcesses)) { Write-Log "$($tag) 90 秒内未检测到 Claude，监控退出"; exit 0 }
+  if (-not (Get-ClaudeProcesses)) { Write-CslMonLog "$($tag) 90 秒内未检测到 Claude，监控退出"; exit 0 }
   $interval = [Math]::Max(1, [int]$cfg.monitorIntervalMin) * 60
-  Write-Log "$($tag) 开始监控，间隔 $([int]($interval/60)) 分钟"
+  Write-CslMonLog "$($tag) 开始监控，间隔 $([int]($interval/60)) 分钟"
   while ($true) {
     Invoke-Check
     $slept = 0
     while ($slept -lt $interval) {
       Start-Sleep -Seconds 15; $slept += 15
-      if (-not (Get-ClaudeProcesses)) { Write-Log "$($tag) Claude 已退出，监控结束"; exit 0 }
+      if (-not (Get-ClaudeProcesses)) { Write-CslMonLog "$($tag) Claude 已退出，监控结束"; exit 0 }
     }
   }
 } finally {

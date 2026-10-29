@@ -823,7 +823,9 @@ if ($NoLaunch) {
   if (-not (Start-ClaudeApp $cfg)) { Write-Host '找不到 Claude 桌面版，请先安装，或在 preflight.json 里填写 claudeExe' -ForegroundColor Red; $launched = 'notfound' }
   $mon = Join-Path $script:Root 'claude-monitor.ps1'
   if (Test-Path $mon) {
-    Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$($mon)`"")
+    $monArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$($mon)`"")
+    if ($HideIp) { $monArgs += '-HideIp' }
+    Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList $monArgs
     Write-Host "已启动后台监控（每 $($cfg.monitorIntervalMin) 分钟检查一次）" -ForegroundColor Gray
   }
 } else {

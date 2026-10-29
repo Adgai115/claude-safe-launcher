@@ -653,7 +653,8 @@ New-Item -ItemType Directory -Path $r4bBase -Force | Out-Null
 try {
   $r4bNodeIp = '203.0.113.91'
   $r4bNodeIp2 = '198.51.100.67'
-  $r4bNodeDom = 'r4bcanary-node.example-csl.org'
+  # .jp 不在 R4 裸域名规则（com/net/org/io/cc/me/xyz/top/dev）里，只有 R4b-1 的 -ExtraHosts 能遮住
+  $r4bNodeDom = 'r4bcanary-node.example-csl.jp'
   $r4bSecret = 'r4bSecretZq8'
   $r4bExitIp = '192.0.2.150'
   $r4bYaml = Join-Path $r4bBase 'clash-verge.yaml'
@@ -791,6 +792,49 @@ Assert-True ($r4bEn -gt 0 -and $r4bFirstHost -gt $r4bEn -and [regex]::Matches($r
 Assert-Eq ([regex]::Matches($r4bPf, 'Write-Log \(Format-CslPreflightLogLine \$logLine -HideIp:\$HideIp\)').Count) 1 'R4b-2 preflight.log line goes through the -HideIp mask'
 $r4bHelp = @($r4bPf -split "`r?`n" | Where-Object { $_ -match '^\s*-HideIp :' })
 Assert-True ($r4bHelp.Count -eq 1 -and $r4bHelp[0] -match '屏幕输出' -and $r4bHelp[0] -match 'preflight\.log' -and $r4bHelp[0] -match '<节点>') 'R4b -? help states -HideIp covers screen and preflight.log, nodes as <节点>'
+
+Write-Host '== R4b-2 background monitor lines in preflight.log follow -HideIp ==' -ForegroundColor Cyan
+$r4bMonPath = Join-Path $root 'claude-monitor.ps1'
+$r4bMonSrc = Get-Content $r4bMonPath -Raw -Encoding UTF8
+$r4bMonAst = [System.Management.Automation.Language.Parser]::ParseFile($r4bMonPath, [ref]$null, [ref]$null)
+$r4bMonParams = @($r4bMonAst.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+Assert-True ($r4bMonParams -contains 'HideIp') 'R4b-2 monitor has -HideIp parameter'
+Assert-Eq ([regex]::Matches($r4bMonSrc, '(?<![\w-])Write-Log\b').Count) 1 'R4b-2 monitor writes preflight.log only via Write-CslMonLog'
+$r4bAlert = $r4bMonAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Show-Alert' }, $true) | Select-Object -First 1
+Assert-True (($null -ne $r4bAlert) -and ($r4bAlert.Body.Extent.Text -match '\$text = Format-CslPreflightLogLine \$text -HideIp:\$script:MonHideIp')) 'R4b-2 monitor alert text goes through the -HideIp mask'
+Assert-True ($pfSrc -match "if \(\`$HideIp\) \{ \`$monArgs \+= '-HideIp' \}" -and $pfSrc -match '-ArgumentList \$monArgs') 'R4b-2 preflight passes -HideIp to the background monitor'
+$r4bMonBase = Join-Path ([IO.Path]::GetTempPath()) ("csl-r4bmon-" + [guid]::NewGuid().ToString('n'))
+New-Item -ItemType Directory -Path $r4bMonBase -Force | Out-Null
+$r4bPrevLog2 = $script:LogPath
+$r4bHadOnce = Test-Path variable:Once
+try {
+  foreach ($fnName in @('Write-CslMonLog', 'Out-Mon')) {
+    $fnAst = $r4bMonAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $fnName }, $true) | Select-Object -First 1
+    Assert-True ($null -ne $fnAst) "R4b-2 monitor defines $fnName"
+    if ($fnAst) { . ([scriptblock]::Create($fnAst.Extent.Text)) }
+  }
+  $r4bMonIp = '192.0.2.188'
+  $r4bMonLine = ('[monitor] FIXED | 已切回 r4b-n1 ip={0} | fake 198.18.0.7' -f $r4bMonIp)
+  $script:LogPath = Join-Path $r4bMonBase 'preflight.log'
+  $script:MonHideIp = $true
+  Write-CslMonLog $r4bMonLine
+  $r4bMonLogH = [IO.File]::ReadAllText($script:LogPath)
+  Remove-Item -LiteralPath $script:LogPath -Force
+  $script:MonHideIp = $false
+  Write-CslMonLog $r4bMonLine
+  $r4bMonLogN = [IO.File]::ReadAllText($script:LogPath)
+  Assert-True (-not $r4bMonLogH.Contains($r4bMonIp) -and $r4bMonLogH.Contains('ip=<出口IP>') -and $r4bMonLogH.Contains('198.18.0.7')) 'R4b-2 monitor -HideIp preflight.log: fake public IP 0 times, fake-ip kept'
+  Assert-True ($r4bMonLogN.Contains($r4bMonIp)) 'R4b-2 monitor without -HideIp preflight.log unchanged'
+  $Once = $true
+  $script:MonHideIp = $true
+  $r4bMonOut = (@(Out-Mon ('正常: ip={0} loc=JP' -f $r4bMonIp) 'Green' 6>&1 | ForEach-Object { [string]$_ })) -join "`n"
+  Assert-True (-not $r4bMonOut.Contains($r4bMonIp) -and $r4bMonOut.Contains('<出口IP>')) 'R4b-2 monitor -Once -HideIp screen: fake public IP 0 times'
+} finally {
+  $script:LogPath = $r4bPrevLog2
+  $script:MonHideIp = $false
+  if (-not $r4bHadOnce) { Remove-Variable -Name Once -ErrorAction SilentlyContinue }
+  try { Remove-Item -LiteralPath $r4bMonBase -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+}
 
 Write-Host ''
 if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {
