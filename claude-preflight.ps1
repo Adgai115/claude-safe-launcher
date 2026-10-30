@@ -32,7 +32,7 @@
   -TestMode : 仅允许操作 CSL_TEST_ 前缀变量；测试请配合 -FixVarPattern 'CSL_TEST_ANTHROPIC_*'
   -FailAtIndex <n> : （仅 -TestMode）使第 n 个变量变更抛错，用于验证整单回滚；非 TestMode 警告并忽略
   -ExportIssues : 检查结束后打印可复制的「问题说明」（脱敏四段结构）；建议配合 -NoLaunch -NoPause
-  -HideIp : 与 -ExportIssues 同用时，出口 IP / WebRTC IP 也脱敏，并省略 IP 提示行
+  -HideIp : 出口 IP / WebRTC IP 也脱敏：-ExportIssues 的问题说明省略 IP 提示行；preflight-result.json 的 current 同样遮罩（containsIp 照样标 true）
   -Json     : 写出 preflight-result.json（UTF-8 无 BOM）并在末尾打印 CSL_JSON_PATH=…；评分走 claude-rules.ps1
   配置文件  : 同目录 preflight.json（可用 fixVarPatterns；controllerSecret 不会被打印）
   依赖      : 同目录 claude-common.ps1、claude-envfix.ps1、claude-issueexport.ps1、claude-monitor.ps1、claude-rules.ps1
@@ -176,12 +176,23 @@ function Format-CslEnvUserItemText($Name, $Value) {
 }
 
 # JSON 的 current 字段：环境变量项只输出变量名和状态，不含值、不含打码值（不含 = 和 *）
-function Get-CslJsonCurrent([string]$Text) {
-  if ($null -eq $Text) { return '' }
+# 其余文本走 v3.3.0 issue 导出同一套脱敏（Protect-CslIssueValue，claude-issueexport.ps1）：
+#   路径用户名 → %USERPROFILE%，计算机名 → <PC>，订阅链接 / 节点域名 / ExtraHosts 遮罩，controllerSecret / 令牌不输出；
+#   出口 IP / WebRTC IP 默认保留，-HideIp 时遮罩（containsIp 由 New-CslScoreMappedResults 标记）。
+function Get-CslJsonCurrent {
+  param(
+    [AllowNull()][string]$Text,
+    [switch]$HideIp,
+    [string]$UserProfile = $env:USERPROFILE,
+    [string]$ComputerName = $env:COMPUTERNAME,
+    [string[]]$ExtraHosts
+  )
+  if ($null -eq $Text -or $Text -eq '') { return '' }
   $t = [string]$Text
   $m = [regex]::Match($t, '^用户级\s+([^\s=]+)=')
   if ($m.Success) { return ('用户级 {0}：已设置' -f $m.Groups[1].Value) }
   $t = [regex]::Replace($t, '\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)=\S*', '$1：已设置')
+  $t = Protect-CslIssueValue -Value $t -HideIp:$HideIp -UserProfile $UserProfile -ComputerName $ComputerName -ExtraHosts $ExtraHosts
   # 兜底：任何仍含 * 的片段（遗漏的打码值）一律替换，JSON 里不出现 *
   return [regex]::Replace($t, '\S*\*\S*', '（已隐藏）')
 }
@@ -193,7 +204,15 @@ function Get-CslJsonCurrent([string]$Text) {
 #   同时记入 $script:CslUnmappedItems（Item / Id / Reason）。error 行在评分器里不扣分，
 #   所以由 Invoke-CslPreflightScoring 按原权重补扣，分数与 d025841 一致。
 # fixType / fixId 与 d025841 逐项一致：只有文本含「用户级」的失败项带 confirm + envfix.user-anthropic，其余一律 none / null。
-function New-CslScoreMappedResults($Items, $Catalog = $null) {
+function New-CslScoreMappedResults {
+  param(
+    $Items,
+    $Catalog = $null,
+    [switch]$HideIp,
+    [string]$UserProfile = $env:USERPROFILE,
+    [string]$ComputerName = $env:COMPUTERNAME,
+    [string[]]$ExtraHosts
+  )
   $script:CslUnmappedItems = New-Object System.Collections.ArrayList
   $mapped = New-Object System.Collections.ArrayList
   if ($null -eq $Catalog) { try { $Catalog = Get-CslRulesCatalog } catch { $Catalog = $null } }
@@ -219,7 +238,10 @@ function New-CslScoreMappedResults($Items, $Catalog = $null) {
     if ([string]$it.Text -match '用户级' -and $st -eq 'failed') {
       $fixTypeOv = 'confirm'; $fixIdOv = 'envfix.user-anthropic'
     }
-    $cur = Get-CslJsonCurrent ([string]$it.Text)
+    $cur = Get-CslJsonCurrent -Text ([string]$it.Text) -HideIp:$HideIp -UserProfile $UserProfile -ComputerName $ComputerName -ExtraHosts $ExtraHosts
+    # 原文含出口 IP / WebRTC IP 的行一律 containsIp=true（-HideIp 遮罩后照样标 true）；其余沿用目录默认
+    $cipOv = $null
+    if (Test-CslTextContainsExitIp ([string]$it.Text)) { $cipOv = $true }
     $outId = $id
     $note = ''
     if ($reason) {
@@ -227,6 +249,7 @@ function New-CslScoreMappedResults($Items, $Catalog = $null) {
       $outId = 'meta.unmapped'; $st = 'error'
       # 原因写进 notes（不回显原 id）；current 留空，不带任何原文
       $cur = ''
+      $cipOv = $null
       $note = ('未映射：{0}' -f $reason)
     }
     [void]$mapped.Add([pscustomobject]@{
@@ -240,6 +263,7 @@ function New-CslScoreMappedResults($Items, $Catalog = $null) {
       masked               = $true
       fixTypeOverride      = $fixTypeOv
       fixIdOverride        = $fixIdOv
+      containsIpOverride   = $cipOv
       notes                = $note
     })
   }
@@ -247,8 +271,8 @@ function New-CslScoreMappedResults($Items, $Catalog = $null) {
 }
 
 # 评分单一入口（preflight 与测试共用）：映射 → Get-CslRulesScore → 补扣未映射项的原权重
-function Invoke-CslPreflightScoring($Items, $Catalog) {
-  $mapped = New-CslScoreMappedResults @($Items) -Catalog $Catalog
+function Invoke-CslPreflightScoring($Items, $Catalog, [switch]$HideIp) {
+  $mapped = New-CslScoreMappedResults @($Items) -Catalog $Catalog -HideIp:$HideIp
   $res = Get-CslRulesScore -Catalog $Catalog -Results $mapped
   $extra = 0
   foreach ($u in $script:CslUnmappedItems) { $extra += [int]$u.Item.Weight }
@@ -731,7 +755,7 @@ $script:CslScoreMapped = @()
 $script:CslUnmappedItems = New-Object System.Collections.ArrayList
 try {
   $script:CslRulesCatalog = Get-CslRulesCatalog
-  $script:CslScoreResult = Invoke-CslPreflightScoring @($script:Items) $script:CslRulesCatalog
+  $script:CslScoreResult = Invoke-CslPreflightScoring @($script:Items) $script:CslRulesCatalog -HideIp:$HideIp
   $score = [int]$script:CslScoreResult.score
   if ($script:CslUnmappedItems.Count -gt 0) {
     Write-Host ("  [提示] 内部：{0} 条检查项没有有效的规则 id（{1}），JSON 里记为 meta.unmapped / status=error，分数照扣" -f $script:CslUnmappedItems.Count, $script:CslUnmappedItems[0].Reason) -ForegroundColor DarkGray

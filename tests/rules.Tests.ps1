@@ -3,9 +3,10 @@
 # 用法: powershell -NoProfile -ExecutionPolicy Bypass -File tests\rules.Tests.ps1
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-# 与 claude-preflight.ps1 相同的加载顺序：common、envfix、rules
+# 与 claude-preflight.ps1 相同的加载顺序：common、envfix、issueexport（JSON current 复用其脱敏）、rules
 . (Join-Path $root 'claude-common.ps1')
 . (Join-Path $root 'claude-envfix.ps1')
+. (Join-Path $root 'claude-issueexport.ps1')
 . (Join-Path $root 'claude-rules.ps1')
 # Restore Stop after dot-sourcing so non-terminating errors also hit the trap
 $ErrorActionPreference = 'Stop'
@@ -258,6 +259,74 @@ finally {
   [Environment]::SetEnvironmentVariable($canaryName, $prevCanary)
   Remove-Item -LiteralPath $jsonTmp -Force -ErrorAction SilentlyContinue
 }
+
+Write-Host '== R4 JSON current: paths / PC name / subscription / node / secret / IP masked like issue export ==' -ForegroundColor Cyan
+# 全部是假金丝雀值：-UserProfile / -ComputerName 直接注入，不读也不写真实环境变量和注册表
+$r4Up = 'C:\Users\cslR4user'
+$r4Pc = 'CSLR4-PC77'
+$r4SubHost = 'cslr4canary'
+$r4SubTok = 'r4tok9Z'
+$r4NodeIp = '45.77.10.203'
+$r4NodeDom = 'hk1.cslr4node.top'
+$r4Secret = 'r4secretQ7w'
+$r4ExitIp = '203.0.113.77'
+$r4RtcIp = '198.51.100.23'
+$r4DnsIp = '192.0.2.44'
+$r4Items = @(
+  [pscustomobject]@{ Level = 'FAIL'; Text = ("Clash Verge 未运行，{0}\AppData\Local\Clash Verge\clash-verge.exe 不存在（主机 {1}）" -f $r4Up, $r4Pc); Weight = 25; Group = '2. 代理'; Id = 'net.clash_running' }
+  [pscustomobject]@{ Level = 'WARN'; Text = ("外部控制器 http://127.0.0.1:9097 无法连接 controllerSecret={0} 订阅 https://sub.{1}.xyz/api/v1/client/subscribe?token={2}" -f $r4Secret, $r4SubHost, $r4SubTok); Weight = 10; Group = '3. 节点锁定'; Id = 'net.controller' }
+  [pscustomobject]@{ Level = 'FAIL'; Text = ("Claude 组切换后仍为 {0}:443 ({1})" -f $r4NodeDom, $r4NodeIp); Weight = 25; Group = '3. 节点锁定'; Id = 'net.node_lock' }
+  [pscustomobject]@{ Level = 'WARN'; Text = ("各方看到的出口 IP 不一致，暂不记住: {0}, 198.18.0.24" -f $r4ExitIp); Weight = 10; Group = '5. 出口 IP'; Id = 'exit.three_way_ip' }
+  [pscustomobject]@{ Level = 'FAIL'; Text = ("WebRTC srflx 暴露 {0}" -f $r4RtcIp); Weight = 25; Group = '8. 浏览器'; Id = 'exit.webrtc_srflx' }
+  [pscustomobject]@{ Level = 'WARN'; Text = ("api.anthropic.com → {0}，不是 fake-ip，DNS 可能未被 Clash 接管" -f $r4DnsIp); Weight = 10; Group = '6. DNS'; Id = 'net.dns_fakeip' }
+)
+$r4Canaries = @('cslR4user', $r4Pc, $r4SubHost, $r4SubTok, $r4NodeIp, 'cslr4node', $r4Secret)
+function Get-CslR4Json([switch]$HideIp) {
+  $m = New-CslScoreMappedResults $r4Items -Catalog $cat -HideIp:$HideIp -UserProfile $r4Up -ComputerName $r4Pc -ExtraHosts @($r4NodeIp)
+  $sc = Get-CslRulesScore -Catalog $cat -Results @($m)
+  $pl = New-CslPreflightResult -ScoreResult $sc -Platform 'win' -Verdict 'blocked'
+  $tmp = Join-Path ([IO.Path]::GetTempPath()) ("csl-r4-result-" + [guid]::NewGuid().ToString('n') + '.json')
+  try {
+    Write-CslPreflightResultJson -Result $pl -Path $tmp | Out-Null
+    $raw = [IO.File]::ReadAllText($tmp, (New-Object System.Text.UTF8Encoding($false)))
+  } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+  $obj = $raw | ConvertFrom-Json
+  return [pscustomobject]@{ Mapped = @($m); Raw = $raw; Checks = @($obj.checks); Text = ((@($obj.checks) | ForEach-Object { [string]$_.current }) -join "`n") }
+}
+function Get-CslR4Row($J, $Id) { return @($J.Checks | Where-Object id -eq $Id)[0] }
+$r4 = Get-CslR4Json
+Assert-Eq @($r4.Checks).Count 6 'R4 JSON keeps one row per item'
+Assert-Eq @($r4.Checks | Where-Object id -eq 'meta.unmapped').Count 0 'R4 rows keep their real rule ids'
+foreach ($c in $r4Canaries) { Assert-True (-not $r4.Raw.Contains($c)) ("R4 JSON has no canary {0}" -f $c) }
+Assert-True (-not $r4.Raw.Contains('*')) 'R4 JSON has no *'
+Assert-True ($r4.Text.Contains('%USERPROFILE%')) 'R4 JSON current has %USERPROFILE%'
+Assert-True ($r4.Text.Contains('<PC>')) 'R4 JSON current has <PC>'
+Assert-True ($r4.Text.Contains('<订阅链接>')) 'R4 JSON current has <订阅链接>'
+Assert-True ($r4.Text.Contains('<节点>')) 'R4 JSON current has <节点>'
+Assert-True ($r4.Raw.Contains($r4ExitIp)) 'R4 exit IP kept by default'
+Assert-True ($r4.Raw.Contains($r4RtcIp)) 'R4 WebRTC IP kept by default'
+Assert-True ($r4.Raw.Contains('198.18.0.24')) 'R4 fake-ip kept'
+Assert-True ([bool](Get-CslR4Row $r4 'exit.three_way_ip').containsIp) 'R4 exit IP row containsIp'
+Assert-True ([bool](Get-CslR4Row $r4 'exit.webrtc_srflx').containsIp) 'R4 WebRTC row containsIp'
+Assert-True ([bool](Get-CslR4Row $r4 'net.dns_fakeip').containsIp) 'R4 public IP in a non-IP rule sets containsIp'
+Assert-True (-not [bool](Get-CslR4Row $r4 'net.clash_running').containsIp) 'R4 row without IP keeps containsIp false'
+
+Write-Host '== R4 JSON current with -HideIp ==' -ForegroundColor Cyan
+$r4h = Get-CslR4Json -HideIp
+foreach ($c in @($r4ExitIp, $r4RtcIp, $r4DnsIp)) { Assert-True (-not $r4h.Raw.Contains($c)) ("R4 -HideIp JSON has no IP {0}" -f $c) }
+foreach ($c in $r4Canaries) { Assert-True (-not $r4h.Raw.Contains($c)) ("R4 -HideIp JSON has no canary {0}" -f $c) }
+Assert-True ($r4h.Text.Contains('<出口IP>')) 'R4 -HideIp JSON current has <出口IP>'
+Assert-True ($r4h.Raw.Contains('198.18.0.24')) 'R4 -HideIp keeps fake-ip'
+Assert-True ([bool](Get-CslR4Row $r4h 'exit.three_way_ip').containsIp) 'R4 -HideIp exit IP row still containsIp'
+Assert-True ([bool](Get-CslR4Row $r4h 'exit.webrtc_srflx').containsIp) 'R4 -HideIp WebRTC row still containsIp'
+Assert-True ([bool](Get-CslR4Row $r4h 'net.dns_fakeip').containsIp) 'R4 -HideIp non-IP rule still containsIp'
+Assert-True (-not [bool](Get-CslR4Row $r4h 'net.clash_running').containsIp) 'R4 -HideIp row without IP keeps containsIp false'
+Assert-Eq ([int]$r4h.Mapped.Count) 6 'R4 -HideIp keeps one row per item'
+# preflight 的评分入口把 -HideIp 一路传到 JSON current
+$r4inv = Invoke-CslPreflightScoring $r4Items $cat -HideIp
+$r4invText = (@($script:CslScoreMapped) | ForEach-Object { [string]$_.current }) -join "`n"
+Assert-True (-not $r4invText.Contains($r4ExitIp) -and -not $r4invText.Contains($r4RtcIp)) 'R4 Invoke-CslPreflightScoring -HideIp masks IPs in current'
+Assert-True ($r4invText.Contains('<出口IP>')) 'R4 Invoke-CslPreflightScoring -HideIp current has <出口IP>'
 Assert-Eq ([string][Environment]::GetEnvironmentVariable($canaryName)) ([string]$prevCanary) 'canary variable cleaned up (restored to previous state)'
 
 Write-Host '== v4 part 2: real rule ids, no item.N placeholders ==' -ForegroundColor Cyan
