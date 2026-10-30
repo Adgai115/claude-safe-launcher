@@ -9,7 +9,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -Json -
 ```
 
 - 人类可读日志仍写 stdout。
-- 结构化结果写到同目录 **`preflight-result.json`**（UTF-8 无 BOM）。
+- 只有带 `-Json` 才写结构化结果（v4.0.0 起；不带就不生成也不覆盖），默认写到同目录 **`preflight-result.json`**（UTF-8 无 BOM）。
+- `-JsonPath <文件路径>`：配合 `-Json` 写到指定文件；目标目录必须已存在，否则打印 `CSL_JSON_ERROR=` 并以退出码 2 退出（不自动创建）；只给 `-JsonPath` 不给 `-Json` 也同样报错退出，不写任何文件。
 - `-Json` 时额外打印：`CSL_JSON_PATH=<path>`。
 - 有可修项时 stdout 可出现：`CSL_FIX_ID=<fixId>`（面板据此显示修复按钮，不依赖中文文案）。
 
