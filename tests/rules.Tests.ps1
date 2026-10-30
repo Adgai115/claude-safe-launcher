@@ -1470,6 +1470,95 @@ try {
   try { Remove-Item -LiteralPath $r4dTmp -Recurse -Force -ErrorAction SilentlyContinue } catch {}
 }
 
+Write-Host '== R6: JSON keys frozen as v1 (docs/preflight-json-schema.md <-> real JSON) ==' -ForegroundColor Cyan
+# Parses the doc's machine-readable key table ("| scope | `key` | 是/否 |") and compares it with the keys of a real
+# New-CslPreflightResult payload after a write/ConvertFrom-Json round trip. Read-only; temp file only; no ANTHROPIC_* touched.
+$r6Names = [ordered]@{
+  DocNoDraft    = 'R6 [doc] title/status says FROZEN v1 and has no DRAFT / candidate marking'
+  DocBumpRule   = 'R6 [doc] states the rule: renaming a key requires bumping schemaVersion'
+  DocSvRow      = 'R6 [doc] schemaVersion is documented as fixed integer 1'
+  DocTable      = 'R6 [doc] key table parses: top 11 / summary 5 / checks 16 (15 required + 1 optional) / browserCap 3'
+  JsonSv        = 'R6 [json] round-tripped payload has schemaVersion = 1 (integer)'
+  TopSet        = 'R6 [json] top-level key set equals the doc key set (missing 0, extra 0)'
+  SummarySet    = 'R6 [json] summary key set equals the doc key set (missing 0, extra 0)'
+  CapSet        = 'R6 [json] browserCap key set equals the doc key set (missing 0, extra 0)'
+  RowNoExtra    = 'R6 [json] no checks[] row has a key that is not in the doc (extra 0)'
+  RowNoMissing  = 'R6 [json] every checks[] row has every required doc key (missing 0)'
+  RowNotes      = 'R6 [json] optional notes is present on the meta.unmapped row only and is documented optional'
+  SampleSet     = 'R6 [doc] the sample JSON block uses exactly the documented keys (top / summary / checks[0] / browserCap)'
+}
+$r6Doc = $null; $r6Tab = @{ top = @(); summary = @(); checks = @(); browserCap = @() }; $r6Opt = @{}
+$r6Setup = $null; $r6Tmp = $null; $r6Loaded = $null; $r6Raw = ''
+function Get-R6KeyDiff($Actual, $Documented) {
+  $a = @($Actual | ForEach-Object { [string]$_ }); $d = @($Documented | ForEach-Object { [string]$_ })
+  $missing = @($d | Where-Object { $a -notcontains $_ }); $extra = @($a | Where-Object { $d -notcontains $_ })
+  return ('missing=[{0}] extra=[{1}]' -f ($missing -join ','), ($extra -join ','))
+}
+try {
+  $r6Raw = [IO.File]::ReadAllText((Join-Path (Join-Path $root 'docs') 'preflight-json-schema.md'), (New-Object Text.UTF8Encoding($false)))
+  $r6Doc = $r6Raw -split "`r?`n"
+  foreach ($ln in $r6Doc) {
+    $m = [regex]::Match($ln, '^\|\s*(top|summary|checks|browserCap)\s*\|\s*`([^`]+)`\s*\|\s*(是|否)\s*\|\s*$')
+    if ($m.Success) {
+      $r6Tab[$m.Groups[1].Value] += $m.Groups[2].Value
+      if ($m.Groups[3].Value -eq '否') { $r6Opt[$m.Groups[1].Value + '.' + $m.Groups[2].Value] = $true }
+    }
+  }
+  $r6Res = @(
+    [pscustomobject]@{ id = 'net.tun'; status = 'failed'; current = 'TUN 未开启' },
+    [pscustomobject]@{ id = 'exit.api_anthropic'; status = 'passed' },
+    [pscustomobject]@{ id = 'net.browser_webrtc_chromium'; status = 'failed'; refDeductionOverride = 5 },
+    [pscustomobject]@{ id = 'meta.unmapped'; status = 'error'; notes = '未映射：id 不在 rules/checks.json 里' }
+  )
+  $r6Score = Get-CslRulesScore -Catalog $cat -Results $r6Res
+  $r6Payload = New-CslPreflightResult -ScoreResult $r6Score -Platform 'win' -Verdict 'blocked'
+  $r6Tmp = Join-Path ([IO.Path]::GetTempPath()) ('csl-r6-' + [guid]::NewGuid().ToString('n') + '.json')
+  Write-CslPreflightResultJson -Result $r6Payload -Path $r6Tmp | Out-Null
+  $r6Loaded = Get-Content -LiteralPath $r6Tmp -Raw -Encoding UTF8 | ConvertFrom-Json
+} catch { $r6Setup = [string]$_.Exception.Message }
+finally { if ($r6Tmp) { Remove-Item -LiteralPath $r6Tmp -Force -ErrorAction SilentlyContinue } }
+Assert-True ($null -eq $r6Setup -and $null -ne $r6Loaded -and $r6Doc.Count -gt 0) 'R6 setup: doc read and payload round-tripped (setup failure counts once; dependents are skipped)'
+if ($null -ne $r6Setup -or $null -eq $r6Loaded) {
+  Skip-CslDependents 'R6 setup' @($r6Names.Values)
+} else {
+  $r6Head = ($r6Doc | Select-Object -First 8) -join "`n"
+  Assert-True (($r6Doc[0] -match 'FROZEN v1') -and ($r6Raw -notmatch 'DRAFT') -and ($r6Raw -notmatch 'candidate') -and ($r6Raw -notmatch '冻结候选')) $r6Names.DocNoDraft
+  Assert-True ($r6Head -match '改键名必须升 schemaVersion') $r6Names.DocBumpRule
+  Assert-True ($r6Raw -match '\|\s*`schemaVersion`\s*\|\s*固定整数 `1`') $r6Names.DocSvRow
+  $r6Cnt = ('{0}/{1}/{2}/{3}' -f $r6Tab.top.Count, $r6Tab.summary.Count, $r6Tab.checks.Count, $r6Tab.browserCap.Count)
+  Assert-True (($r6Cnt -eq '11/5/16/3') -and ($r6Opt.Count -eq 1) -and $r6Opt['checks.notes']) ($r6Names.DocTable + " (got $r6Cnt, optional=$($r6Opt.Count))")
+  Assert-True ((($r6Loaded.schemaVersion -is [int]) -or ($r6Loaded.schemaVersion -is [long])) -and ($r6Loaded.schemaVersion -eq 1)) $r6Names.JsonSv
+  Assert-Eq (Get-R6KeyDiff @($r6Loaded.PSObject.Properties.Name) $r6Tab.top) 'missing=[] extra=[]' $r6Names.TopSet
+  Assert-Eq (Get-R6KeyDiff @($r6Loaded.summary.PSObject.Properties.Name) $r6Tab.summary) 'missing=[] extra=[]' $r6Names.SummarySet
+  Assert-Eq (Get-R6KeyDiff @($r6Loaded.browserCap.PSObject.Properties.Name) $r6Tab.browserCap) 'missing=[] extra=[]' $r6Names.CapSet
+  $r6Rows = @($r6Loaded.checks)
+  $r6ReqKeys = @($r6Tab.checks | Where-Object { -not $r6Opt.ContainsKey('checks.' + $_) })
+  $r6ExtraAll = New-Object System.Collections.ArrayList; $r6MissAll = New-Object System.Collections.ArrayList
+  foreach ($row in $r6Rows) {
+    $rn = @($row.PSObject.Properties.Name)
+    foreach ($k in $rn) { if ($r6Tab.checks -notcontains $k) { [void]$r6ExtraAll.Add(('{0}:{1}' -f $row.id, $k)) } }
+    foreach ($k in $r6ReqKeys) { if ($rn -notcontains $k) { [void]$r6MissAll.Add(('{0}:{1}' -f $row.id, $k)) } }
+  }
+  Assert-True ($r6Rows.Count -eq 4 -and $r6ExtraAll.Count -eq 0) ($r6Names.RowNoExtra + " (rows=$($r6Rows.Count) extra=[$($r6ExtraAll -join ',')])")
+  Assert-True ($r6Rows.Count -eq 4 -and $r6MissAll.Count -eq 0) ($r6Names.RowNoMissing + " (rows=$($r6Rows.Count) missing=[$($r6MissAll -join ',')])")
+  $r6WithNotes = @($r6Rows | Where-Object { @($_.PSObject.Properties.Name) -contains 'notes' } | ForEach-Object { $_.id })
+  Assert-True (($r6WithNotes -join ',') -eq 'meta.unmapped' -and $r6Opt.ContainsKey('checks.notes')) $r6Names.RowNotes
+  $r6SampleOk = $false; $r6SampleMsg = 'sample block not found'
+  $r6M = [regex]::Match($r6Raw, '(?s)## 顶层形状\s*```json\s*(.*?)```')
+  if ($r6M.Success) {
+    $r6S = $r6M.Groups[1].Value | ConvertFrom-Json
+    $r6D = @(
+      (Get-R6KeyDiff @($r6S.PSObject.Properties.Name) $r6Tab.top),
+      (Get-R6KeyDiff @($r6S.summary.PSObject.Properties.Name) $r6Tab.summary),
+      (Get-R6KeyDiff @(@($r6S.checks)[0].PSObject.Properties.Name) $r6ReqKeys),
+      (Get-R6KeyDiff @($r6S.browserCap.PSObject.Properties.Name) $r6Tab.browserCap)
+    )
+    $r6SampleMsg = $r6D -join ' | '
+    $r6SampleOk = (@($r6D | Where-Object { $_ -ne 'missing=[] extra=[]' }).Count -eq 0)
+  }
+  Assert-True $r6SampleOk ($r6Names.SampleSet + " ($r6SampleMsg)")
+}
+
 Write-Host ''
 if ($script:Skipped.Count -gt 0) { Write-Host ("SKIPPED (setup failed): {0} assertion(s): {1}" -f $script:Skipped.Count, ($script:Skipped -join '; ')) -ForegroundColor Yellow }
 if ($script:Fail -gt 0 -or $script:Uncaught -gt 0 -or $script:Skipped.Count -gt 0) {

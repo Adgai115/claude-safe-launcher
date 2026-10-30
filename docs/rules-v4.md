@@ -12,7 +12,7 @@
 
 历史别名「失败 / 警告 / 信息」仅作展示映射，不再作为规则主键。
 
-运行结果 `status` 另含 **`error`**（检查未能完成：超时/配置不可读）：扣分恒 0；任一 `must_fix` 为 `error` 则 `verdict=blocked`。详见 `docs/preflight-json-schema.md`（FROZEN candidate v1）。
+运行结果 `status` 另含 **`error`**（检查未能完成：超时/配置不可读）：扣分恒 0；任一 `must_fix` 为 `error` 则 `verdict=blocked`。详见 `docs/preflight-json-schema.md`（FROZEN v1）。
 
 ## 分类与条数（33）
 
