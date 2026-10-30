@@ -113,7 +113,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -Json -
 | 值 | 含义 | 参考扣分 | 对 `verdict` |
 |---|---|---|---|
 | `passed` | 通过 | 0 | — |
-| `failed` | 查完了，未达预期 | 按 `refDeduction`（受 cap / hint-only） | `must_fix` → `blocked` |
+| `failed` | 查完了，未达预期 | 按目录 refDeduction 扣分，实际值见 `refDeductionApplied`（受 cap / hint-only） | `must_fix` → `blocked` |
 | `error` | **未能完成**（超时、配置不可读等），**不是** failed | **恒为 0** | 任意 `must_fix` 且 `error` → `blocked`（不得为 `ok`）；`current` 写明原因（已脱敏；`meta.unmapped` 行例外：原因写 `notes`，`current` 留空） |
 | `info` | 仅提示 | 0 | — |
 | `skipped` | 跳过 | 0 | — |
