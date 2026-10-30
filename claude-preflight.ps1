@@ -339,12 +339,17 @@ function Say-Note($t, $Id = $null) { Write-Host "  [提示] $($t)" -ForegroundCo
 function Say-Warn($t, $w = 8, $Id = $null)  { Write-Host "  [警告] $($t)" -ForegroundColor Yellow; Add-Item 'WARN' $t $w $Id }
 function Say-Fail($t, $w = 25, $Id = $null) { Write-Host "  [失败] $($t)" -ForegroundColor Red; Add-Item 'FAIL' $t $w $Id }
 
-# 用户级中转变量的检查项文本（显示给人看，含打码值；JSON 不用这条文本，见 Get-CslJsonCurrent）
+# 第 9 组中转变量的检查项文本（R1）：只显示变量名和状态，不显示值，也不显示打码值（不含 = 和 *）。
+# 面板卡片、CLI 检查行、issue 导出的「当前状态」都用这条文本；不再调用 Protect-Secret / Mask-Value（它们本身不改）。
+# $Value 参数只为兼容既有调用点而保留，函数不读取它。
 function Format-CslEnvUserItemText($Name, $Value) {
-  return ("用户级 {0}={1}（会让 Claude Code 走第三方接口）" -f $Name, (Protect-Secret $Value))
+  return ("用户级 {0}：已设置（会让 Claude Code 走第三方接口）" -f $Name)
+}
+function Format-CslEnvMachineItemText($Name) {
+  return ("机器级 {0}：已设置（会让 Claude Code 走第三方接口；仅机器级存在，需要管理员手动处理）" -f $Name)
 }
 
-# JSON 的 current 字段：环境变量项只输出变量名和状态，不含值、不含打码值（不含 = 和 *）
+# JSON 的 current 字段：环境变量项只输出变量名和状态（用户级 / 机器级），不含值、不含打码值（不含 = 和 *）
 # 其余文本走 v3.3.0 issue 导出同一套脱敏（Protect-CslIssueValue，claude-issueexport.ps1）：
 #   路径用户名 → %USERPROFILE%，计算机名 → <PC>，订阅链接 / 节点域名 / ExtraHosts 遮罩，controllerSecret / 令牌不输出；
 #   出口 IP / WebRTC IP 默认保留，-HideIp 时遮罩（containsIp 由 New-CslScoreMappedResults 标记）。
@@ -358,8 +363,8 @@ function Get-CslJsonCurrent {
   )
   if ($null -eq $Text -or $Text -eq '') { return '' }
   $t = [string]$Text
-  $m = [regex]::Match($t, '^用户级\s+([^\s=]+)=')
-  if ($m.Success) { return ('用户级 {0}：已设置' -f $m.Groups[1].Value) }
+  $m = [regex]::Match($t, '^(用户级|机器级)\s+([^\s=：]+)(?:=|：已设置)')
+  if ($m.Success) { return ('{0} {1}：已设置' -f $m.Groups[1].Value, $m.Groups[2].Value) }
   $t = [regex]::Replace($t, '\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)=\S*', '$1：已设置')
   $t = Protect-CslIssueValue -Value $t -HideIp:$HideIp -UserProfile $UserProfile -ComputerName $ComputerName -ExtraHosts $ExtraHosts
   # 兜底：任何仍含 * 的片段（遗漏的打码值）一律替换，JSON 里不出现 *
@@ -586,7 +591,7 @@ if (-not $targets.ok) {
       Write-Host 'CSL_FIX_ID=envfix.user-anthropic' -ForegroundColor DarkGray
     }
     foreach ($m in $targets.machineOnly) {
-      Say-Note ("{0} 仅 Machine 级存在：需要管理员手动处理" -f $m.Name) -Id 'cfg.env_relay_machine'
+      Say-Note (Format-CslEnvMachineItemText $m.Name) -Id 'cfg.env_relay_machine'
     }
     # 交互修复：显式 -FixEnv 已在上方短路。此处仅在有 TTY 且非 NoPause 时询问。
     # 纯 -NoPause 绝不自动修。envFixKeep 中的变量不进确认名单；envFixEnabled=false 不询问。

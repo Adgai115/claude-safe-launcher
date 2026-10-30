@@ -228,8 +228,8 @@ try {
   $canaryItems = New-Object System.Collections.ArrayList
   foreach ($u in $found.user) {
     $shown = Format-CslEnvUserItemText $u.Name $u.Value
-    # screen/CLI text keeps the masked value (unchanged); proves the canary row is a real masked item
-    Assert-True ($shown -like '*CSL_TEST_CANARY=*' -and $shown.Contains('*')) 'screen text still has NAME=masked'
+    # R1: screen/CLI text is name + status only (no masked value any more)
+    Assert-True ($shown -ceq '用户级 CSL_TEST_CANARY：已设置（会让 Claude Code 走第三方接口）' -and -not $shown.Contains('*') -and -not $shown.Contains('=')) 'R1 [screen] canary row text is name + status only (replaces the old NAME=masked assertion; no =, no *)'
     Assert-True (-not $shown.Contains($canaryVal)) 'screen text does not carry the raw canary'
     [void]$canaryItems.Add([pscustomobject]@{ Level = 'FAIL'; Text = $shown; Weight = 25; Group = '9. 环境变量'; Id = 'cfg.env_relay_user' })
   }
@@ -1469,6 +1469,144 @@ try {
   Remove-Item 'function:Start-Sleep' -ErrorAction SilentlyContinue
   try { Remove-Item -LiteralPath $r4dTmp -Recurse -Force -ErrorAction SilentlyContinue } catch {}
 }
+
+Write-Host '== R1: group 9 relay variables show name + status only on every exit (CSL_TEST_* canaries, no real ANTHROPIC_*) ==' -ForegroundColor Cyan
+# 出口：CLI 检查行、面板卡片数据、issue 导出「当前状态」、JSON current（回归）。第 9 组只显示 NAME + 状态，不显示值，也不显示打码值。
+# 做法：从 claude-preflight.ps1 取第 9 节原文（到 HTTPS_PROXY 行之前）和 Say-* / Format-* 函数原文，在进程内用假环境变量表（$script:CslEnvStore）真实执行，
+# 不碰真实环境变量 / 注册表 / 网络。「面板数据」＝ CLI 输出行经 claude-panel.html 同一条行解析正则得到的卡片行；面板卡片按 esc(r.text) 原样渲染。
+$r1Names = @('CSL_TEST_R1_USERVAR', 'CSL_TEST_R1_KEEPVAR', 'CSL_TEST_R1_MACHVAR')
+$r1Vals = @('csl-r1-user-canary-7f3q', 'csl-r1-keep-canary-5d8w', 'csl-r1-mach-canary-2k9x')
+$r1Suffix = '（会让 Claude Code 走第三方接口）'
+$r1MachSuffix = '（会让 Claude Code 走第三方接口；仅机器级存在，需要管理员手动处理）'
+$r1UserRow0 = ('用户级 {0}：已设置{1}' -f $r1Names[0], $r1Suffix)
+$r1KeepRow0 = ('用户级 {0}：已设置{1}' -f $r1Names[1], $r1Suffix)
+$r1MachRow0 = ('机器级 {0}：已设置{1}' -f $r1Names[2], $r1MachSuffix)
+function Test-R1Any([string]$Text, [string[]]$Needles) { foreach ($n in $Needles) { if ($Text.Contains($n)) { return $true } }; return $false }
+function Get-R1EnvLines([string[]]$Lines, [string[]]$Names) { @($Lines | Where-Object { Test-R1Any ([string]$_) $Names }) }
+$r1PfPath = Join-Path $root 'claude-preflight.ps1'
+$r1PfSrc = [IO.File]::ReadAllText($r1PfPath)
+$r1PfAst = [System.Management.Automation.Language.Parser]::ParseFile($r1PfPath, [ref]$null, [ref]$null)
+$r1FnNames = @('Format-CslEnvUserItemText', 'Format-CslEnvMachineItemText', 'Add-Item', 'Say-Head', 'Say-Pass', 'Say-Info', 'Say-Fix', 'Say-Note', 'Say-Warn', 'Say-Fail')
+$r1Fn = @{}
+foreach ($r1n in $r1FnNames) {
+  $r1a = $r1PfAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $r1n }, $true) | Select-Object -First 1
+  $r1Fn[$r1n] = $r1a
+}
+Assert-True (@($r1FnNames | Where-Object { $null -eq $r1Fn[$_] }).Count -eq 0) 'R1 [setup] preflight defines the two Format-CslEnv*ItemText functions and the Say-* / Add-Item helpers'
+$r1Calls = { param($ast) @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() }) }
+$r1S = $r1PfSrc.IndexOf("Say-Head '9. 环境变量'")
+$r1E = $r1PfSrc.IndexOf('$hp = [Environment]::GetEnvironmentVariable(''HTTPS_PROXY''')
+Assert-True ($r1S -ge 0 -and $r1E -gt $r1S) 'R1 [setup] group 9 section (Say-Head 9 up to the HTTPS_PROXY line) found in claude-preflight.ps1'
+$r1Block = ''; if ($r1S -ge 0 -and $r1E -gt $r1S) { $r1Block = $r1PfSrc.Substring($r1S, $r1E - $r1S) }
+
+# ---- static: group 9 no longer calls Protect-Secret / Mask-Value; HTTPS_PROXY row and the masking helpers are untouched
+$r1UCalls = @(); if ($r1Fn['Format-CslEnvUserItemText']) { $r1UCalls = & $r1Calls $r1Fn['Format-CslEnvUserItemText'] }
+$r1MCalls = @(); if ($r1Fn['Format-CslEnvMachineItemText']) { $r1MCalls = & $r1Calls $r1Fn['Format-CslEnvMachineItemText'] }
+Assert-True ($r1UCalls -notcontains 'Protect-Secret' -and $r1UCalls -notcontains 'Mask-Value' -and $r1MCalls -notcontains 'Protect-Secret' -and $r1MCalls -notcontains 'Mask-Value') 'R1 [static] Format-CslEnvUserItemText / Format-CslEnvMachineItemText do not call Protect-Secret or Mask-Value'
+$r1BlockAst = [System.Management.Automation.Language.Parser]::ParseInput($r1Block, [ref]$null, [ref]$null)
+$r1BCalls = & $r1Calls $r1BlockAst
+Assert-True ($r1Block.Length -gt 0 -and $r1BCalls -notcontains 'Protect-Secret' -and $r1BCalls -notcontains 'Mask-Value') 'R1 [static] group 9 section (up to the HTTPS_PROXY line) calls neither Protect-Secret nor Mask-Value'
+Assert-True ($r1PfSrc.Contains('if ($hp) { Say-Pass ("HTTPS_PROXY={0}" -f (Mask-Value -Value $hp -Kind Url)) } else {')) 'R1 [static] HTTPS_PROXY row unchanged (still HTTPS_PROXY=<Mask-Value -Kind Url>, out of R1 scope)'
+$r1CmAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'claude-common.ps1'), [ref]$null, [ref]$null)
+$r1Sha = New-Object System.Security.Cryptography.SHA256Managed
+$r1Hash = {
+  param($name)
+  $a = $r1CmAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true) | Select-Object -First 1
+  if (-not $a) { return 'missing' }
+  $b = [Text.Encoding]::UTF8.GetBytes(($a.Extent.Text -replace "`r`n", "`n"))
+  return (([BitConverter]::ToString($r1Sha.ComputeHash($b)) -replace '-', '').ToLowerInvariant().Substring(0, 12))
+}
+$r1MvHash = & $r1Hash 'Mask-Value'; $r1PsHash = & $r1Hash 'Protect-Secret'
+Assert-True ($r1MvHash -eq '11a140e8a77b' -and $r1PsHash -eq '11092d710eb4') ("R1 [static] Mask-Value and Protect-Secret in claude-common.ps1 are unchanged (function-text SHA256 sha12 Mask-Value=$r1MvHash Protect-Secret=$r1PsHash)")
+$r1Html = [IO.File]::ReadAllText((Join-Path $root 'claude-panel.html'))
+$r1PanelRowRx = '^\s+\[(通过|信息|修复|提示|警告|失败)\]\s*(.*)$'
+Assert-True ($r1Html.Contains('line.match(/^\s+\[(通过|信息|修复|提示|警告|失败)\]\s*(.*)$/)')) 'R1 [panel] the panel line parser regex is the one this test uses to derive panel card rows'
+Assert-True ($r1Html.Contains('<span class="txt">${esc(r.text)}</span>')) 'R1 [panel] a card row renders esc(r.text) verbatim (no masking or rewriting of row text in the panel)'
+
+# ---- run the real group 9 code with fake env tables (user, user+envFixKeep, machine-only)
+$r1Saved = @{ Items = $script:Items; Head = $script:CurrentHead; Store = $script:CslEnvStore; Pat = $script:FixPatterns; Fix = $script:EnvFixSettings }
+$r1Ok = $false; $r1Lines = @(); $r1Items = @()
+try {
+  foreach ($r1n in $r1FnNames) { if ($r1Fn[$r1n]) { . ([scriptblock]::Create($r1Fn[$r1n].Extent.Text)) } }
+  $script:CslEnvStore = [pscustomobject]@{
+    ListUserNames    = { @('CSL_TEST_R1_USERVAR', 'CSL_TEST_R1_KEEPVAR') }
+    ListMachineNames = { @('CSL_TEST_R1_MACHVAR') }
+    GetMachine       = { param($n) if ($n -eq 'CSL_TEST_R1_MACHVAR') { 'csl-r1-mach-canary-2k9x' } else { $null } }
+    GetUserEntry     = { param($n)
+      if ($n -eq 'CSL_TEST_R1_USERVAR') { @{ Value = 'csl-r1-user-canary-7f3q'; Kind = 'String' } }
+      elseif ($n -eq 'CSL_TEST_R1_KEEPVAR') { @{ Value = 'csl-r1-keep-canary-5d8w'; Kind = 'String' } }
+      else { $null } }
+  }
+  $script:Items = New-Object System.Collections.ArrayList
+  $script:CurrentHead = ''
+  $script:FixPatterns = @('CSL_TEST_R1_*')
+  $script:EnvFixSettings = @{ enabled = $true; keep = @('CSL_TEST_R1_KEEPVAR') }
+  $TestMode = $true; $NoPause = $true; $FixEnv = $false; $FailAtIndex = 0
+  $r1Lines = @(& { . ([scriptblock]::Create($r1Block)) } 6>&1 | ForEach-Object { [string]$_ })
+  $r1Items = @($script:Items.ToArray())
+  $r1Ok = $true
+} catch { Write-Host ("  FAIL  R1 [setup] group 9 section did not run: {0}" -f $_.Exception.Message) -ForegroundColor Red; $script:Fail++ }
+finally {
+  $script:Items = $r1Saved.Items; $script:CurrentHead = $r1Saved.Head; $script:CslEnvStore = $r1Saved.Store
+  $script:FixPatterns = $r1Saved.Pat; $script:EnvFixSettings = $r1Saved.Fix
+}
+Assert-True ($r1Ok -and $r1Lines.Count -gt 0 -and $r1Items.Count -eq 3) ('R1 [setup] group 9 ran against the fake table: {0} output lines, {1} items (user, keep, machine-only)' -f $r1Lines.Count, $r1Items.Count)
+
+# ---- Format helpers: name + status, value ignored
+$r1FmtU = ''; $r1FmtM = ''
+if ($r1Ok) { $r1FmtU = Format-CslEnvUserItemText $r1Names[0] $r1Vals[0]; $r1FmtM = Format-CslEnvMachineItemText $r1Names[2] }
+Assert-Eq $r1FmtU $r1UserRow0 'R1 [format] user row = 用户级 NAME：已设置（会让 Claude Code 走第三方接口）, the value argument is ignored'
+Assert-Eq $r1FmtM $r1MachRow0 'R1 [format] machine row = 机器级 NAME：已设置（…；仅机器级存在，需要管理员手动处理）'
+
+# ---- exit 1: CLI check lines
+$r1Cli = $r1Lines -join "`n"
+$r1CliEnv = Get-R1EnvLines $r1Lines $r1Names
+Assert-True (-not (Test-R1Any $r1Cli $r1Vals) -and $r1Lines.Count -gt 0) 'R1 [cli] the CLI output has 0 occurrences of any canary value'
+Assert-True ($r1CliEnv.Count -ge 4 -and @($r1CliEnv | Where-Object { $_.Contains('*') }).Count -eq 0) ('R1 [cli] the {0} CLI lines naming a group 9 variable have 0 "*"' -f $r1CliEnv.Count)
+Assert-True ($r1CliEnv.Count -ge 4 -and @($r1CliEnv | Where-Object { $_.Contains('=') }).Count -eq 0 -and @($r1Names | Where-Object { $r1Cli -match ([regex]::Escape($_) + '\s*=') }).Count -eq 0) 'R1 [cli] the CLI lines naming a group 9 variable have 0 "=" (no NAME=value, no NAME=masked)'
+Assert-True (@($r1Names | Where-Object { $r1Cli.Contains($_) }).Count -eq 3) 'R1 [cli] all three variable names (user, envFixKeep, machine-only) are present in the CLI output'
+Assert-True ($r1Lines -contains ('  [失败] ' + $r1UserRow0) -and $r1Lines -contains ('  [失败] ' + $r1KeepRow0) -and $r1Lines -contains ('  [提示] ' + $r1MachRow0)) 'R1 [cli] CLI lines are exactly: [失败] 用户级 NAME：已设置（…） x2 and [提示] 机器级 NAME：已设置（…）'
+Assert-True ($r1Lines -contains ('  [信息] {0} 在 envFixKeep 中，一键修复会保留它' -f $r1Names[1]) -and @($r1Lines | Where-Object { $_ -eq 'CSL_FIX_ID=envfix.user-anthropic' }).Count -eq 2) 'R1 [cli] fixed notes unchanged: envFixKeep info line, and CSL_FIX_ID=envfix.user-anthropic once per user row'
+
+# ---- exit 2: panel card data (CLI lines through the panel's own row parser)
+$r1Rows = @()
+foreach ($r1l in $r1Lines) { $r1m = [regex]::Match(($r1l -replace '^\uFEFF', '').TrimEnd(), $r1PanelRowRx); if ($r1m.Success) { $r1Rows += [pscustomobject]@{ lvl = $r1m.Groups[1].Value; text = $r1m.Groups[2].Value } } }
+$r1RowTexts = @($r1Rows | ForEach-Object { $_.text })
+$r1PanelEnv = @($r1RowTexts | Where-Object { Test-R1Any $_ $r1Names })
+Assert-True ($r1Rows.Count -gt 0 -and -not (Test-R1Any ($r1RowTexts -join "`n") $r1Vals)) ('R1 [panel] panel card data ({0} rows) has 0 occurrences of any canary value' -f $r1Rows.Count)
+Assert-True ($r1PanelEnv.Count -ge 4 -and @($r1PanelEnv | Where-Object { $_.Contains('*') }).Count -eq 0) ('R1 [panel] the {0} group 9 card rows have 0 "*"' -f $r1PanelEnv.Count)
+Assert-True ($r1PanelEnv.Count -ge 4 -and @($r1PanelEnv | Where-Object { $_.Contains('=') }).Count -eq 0) 'R1 [panel] the group 9 card rows have 0 "=" (no =value, no =masked)'
+Assert-True (@($r1Names | Where-Object { $n = $_; @($r1PanelEnv | Where-Object { $_.Contains($n) }).Count -ge 1 }).Count -eq 3) 'R1 [panel] all three variable names are present in the group 9 card rows'
+Assert-True (@($r1Rows | Where-Object { $_.lvl -eq '失败' -and $_.text -eq $r1UserRow0 }).Count -eq 1 -and @($r1Rows | Where-Object { $_.lvl -eq '失败' -and $_.text -eq $r1KeepRow0 }).Count -eq 1 -and @($r1Rows | Where-Object { $_.lvl -eq '提示' -and $_.text -eq $r1MachRow0 }).Count -eq 1) 'R1 [panel] card rows read: 失败 用户级 NAME：已设置（…） x2 (the fixable-row test /用户级/ still matches) and 提示 机器级 NAME：已设置（…）'
+
+# ---- exit 3: issue export「当前状态」(real Format-CslIssuePack on the real items)
+$r1Pack = ''; $r1Cur = @()
+if ($r1Ok) { $r1Pack = Format-CslIssuePack -Items $r1Items; $r1Cur = @(($r1Pack -split "`r?`n") | Where-Object { $_.StartsWith('当前状态: ') }) }
+Assert-True ($r1Pack.Contains('---- 问题 1 ----') -and -not (Test-R1Any $r1Pack $r1Vals)) 'R1 [issue] the issue export text has 0 occurrences of any canary value'
+$r1PackEnv = @(($r1Pack -split "`r?`n") | Where-Object { Test-R1Any $_ $r1Names })
+Assert-True ($r1Cur.Count -eq 2 -and $r1PackEnv.Count -eq 4 -and @($r1PackEnv | Where-Object { $_.Contains('*') }).Count -eq 0) 'R1 [issue] the 4 issue export lines naming a variable (问题 + 「当前状态」, x2) have 0 "*"'
+Assert-True ($r1Cur.Count -eq 2 -and $r1PackEnv.Count -eq 4 -and @($r1PackEnv | Where-Object { $_.Contains('=') }).Count -eq 0) 'R1 [issue] the 4 issue export lines naming a variable have 0 "=" (no =value, no =masked)'
+Assert-True (@($r1Names[0], $r1Names[1] | Where-Object { $r1Pack.Contains($_) }).Count -eq 2) 'R1 [issue] both user variable names are present in the issue export'
+Assert-True ($r1Cur -contains ('当前状态: ' + $r1UserRow0) -and $r1Cur -contains ('当前状态: ' + $r1KeepRow0)) 'R1 [issue] 「当前状态」 reads 用户级 NAME：已设置（会让 Claude Code 走第三方接口） for each user variable'
+
+# ---- exit 4 (regression only): JSON current / fixId / status
+$r1Json = @()
+if ($r1Ok) { $r1Mapped = New-CslScoreMappedResults $r1Items; $r1Json = @($r1Mapped) }
+$r1JU = @($r1Json | Where-Object { $_.id -eq 'cfg.env_relay_user' }); $r1JM = @($r1Json | Where-Object { $_.id -eq 'cfg.env_relay_machine' })
+$r1JCur = @($r1Json | ForEach-Object { [string]$_.current })
+Assert-True ($r1JU.Count -eq 2 -and $r1JM.Count -eq 1 -and [string]$r1JU[0].current -eq ('用户级 ' + $r1Names[0] + '：已设置') -and [string]$r1JU[1].current -eq ('用户级 ' + $r1Names[1] + '：已设置') -and [string]$r1JM[0].current -eq ('机器级 ' + $r1Names[2] + '：已设置')) 'R1 [json] checks[].current = 用户级 NAME：已设置 (x2) and 机器级 NAME：已设置 (name + status only)'
+Assert-True ($r1JCur.Count -eq 3 -and -not (Test-R1Any ($r1JCur -join "`n") $r1Vals) -and -not (($r1JCur -join '') -match '[*=]')) 'R1 [json] checks[].current has 0 canary values, 0 "*", 0 "="'
+$r1JChecks = @(); if ($r1Ok) { $r1JChecks = @((Get-CslRulesScore -Catalog $cat -Results @($r1Json)).checks) }
+$r1CU = @($r1JChecks | Where-Object { $_.id -eq 'cfg.env_relay_user' }); $r1CM = @($r1JChecks | Where-Object { $_.id -eq 'cfg.env_relay_machine' })
+Assert-True ($r1CU.Count -eq 2 -and [string]$r1CU[0].fixId -eq 'envfix.user-anthropic' -and [string]$r1CU[1].fixId -eq 'envfix.user-anthropic' -and [string]$r1CU[0].status -eq 'failed' -and $r1CM.Count -eq 1 -and [string]$r1CM[0].fixId -eq '' -and [string]$r1CM[0].status -eq 'info') 'R1 [json] regression: scored checks keep user rows failed + fixId envfix.user-anthropic, machine row info + no fixId'
+$r1JsonTmp = Join-Path ([IO.Path]::GetTempPath()) ('csl-r1-result-' + [guid]::NewGuid().ToString('n') + '.json')
+try {
+  $r1JScore = Get-CslRulesScore -Catalog $cat -Results @($r1Json)
+  $r1JPayload = New-CslPreflightResult -ScoreResult $r1JScore -Platform 'win' -Verdict 'blocked'
+  Write-CslPreflightResultJson -Result $r1JPayload -Path $r1JsonTmp | Out-Null
+  $r1JRaw = [IO.File]::ReadAllText($r1JsonTmp, (New-Object System.Text.UTF8Encoding($false)))
+  Assert-True ($r1JRaw.Length -gt 0 -and -not (Test-R1Any $r1JRaw $r1Vals) -and -not $r1JRaw.Contains('*') -and (@($r1Names | Where-Object { $r1JRaw.Contains($_) }).Count -eq 3)) 'R1 [json] preflight-result.json text: 0 canary values, 0 "*", all three names present'
+} finally { Remove-Item -LiteralPath $r1JsonTmp -Force -ErrorAction SilentlyContinue }
 
 Write-Host ''
 if ($script:Skipped.Count -gt 0) { Write-Host ("SKIPPED (setup failed): {0} assertion(s): {1}" -f $script:Skipped.Count, ($script:Skipped -join '; ')) -ForegroundColor Yellow }
