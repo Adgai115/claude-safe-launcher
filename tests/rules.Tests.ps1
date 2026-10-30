@@ -1697,6 +1697,46 @@ if ($null -ne $r6Setup -or $null -eq $r6Loaded) {
   Assert-True $r6SampleOk ($r6Names.SampleSet + " ($r6SampleMsg)")
 }
 
+Write-Host '== R7: one version number in panel .ver, preflight header + banner, CHANGELOG first heading ==' -ForegroundColor Cyan
+$r7Want = 'v4.0.0'
+$r7Names = [ordered]@{
+  Panel   = 'R7 [panel] claude-panel.html has exactly one <span class="ver">vX.Y.Z</span>'
+  Header  = 'R7 [preflight] header comment (.SYNOPSIS) carries one version vX.Y.Z'
+  Banner  = 'R7 [preflight] startup banner "Claude 桌面版 启动前检查 vX.Y.Z" appears exactly once'
+  Heading = 'R7 [changelog] first "## " heading is a dated version heading (not Unreleased): ## vX.Y.Z（YYYY-MM-DD）'
+  Same    = 'R7 [all] panel .ver, preflight header, preflight banner and CHANGELOG first version heading carry the same version'
+  Want    = ('R7 [all] that version is ' + $r7Want)
+  Order   = 'R7 [changelog] no "## Unreleased" heading remains anywhere in CHANGELOG.md'
+}
+$r7Setup = $null; $r7Panel = @(); $r7Hdr = @(); $r7Ban = @(); $r7Chg = $null; $r7ChgFirst = ''
+try {
+  $r7PanelRaw = [IO.File]::ReadAllText((Join-Path $root 'claude-panel.html'), [Text.Encoding]::UTF8)
+  $r7PfRaw = [IO.File]::ReadAllText((Join-Path $root 'claude-preflight.ps1'), [Text.Encoding]::UTF8)
+  $r7ChgRaw = [IO.File]::ReadAllText((Join-Path $root 'CHANGELOG.md'), [Text.Encoding]::UTF8)
+  $r7Panel = @([regex]::Matches($r7PanelRaw, '<span class="ver">(v\d+\.\d+\.\d+)</span>') | ForEach-Object { $_.Groups[1].Value })
+  $r7Hdr = @([regex]::Matches($r7PfRaw, '(?s)\A\W*<#\s*\.SYNOPSIS\s*[^\r\n]*?[（(](v\d+\.\d+\.\d+)[）)]') | ForEach-Object { $_.Groups[1].Value })
+  $r7Ban = @([regex]::Matches($r7PfRaw, "(?m)^Write-Host '\s*Claude 桌面版 启动前检查 (v\d+\.\d+\.\d+)'") | ForEach-Object { $_.Groups[1].Value })
+  $r7Lines = $r7ChgRaw -split "`r?`n"
+  $r7ChgFirst = [string]($r7Lines | Where-Object { $_ -match '^## ' } | Select-Object -First 1)
+  $r7Chg = [regex]::Match($r7ChgFirst, '^## (v\d+\.\d+\.\d+)（\d{4}-\d{2}-\d{2}）\s*$')
+  $r7Unrel = @($r7Lines | Where-Object { $_ -match '^##\s+Unreleased' }).Count
+} catch { $r7Setup = [string]$_.Exception.Message }
+Assert-True ($null -eq $r7Setup -and $null -ne $r7Chg) 'R7 setup: panel, preflight and CHANGELOG read (setup failure counts once; dependents are skipped)'
+if ($null -ne $r7Setup -or $null -eq $r7Chg) {
+  Skip-CslDependents 'R7 setup' @($r7Names.Values)
+} else {
+  Assert-True ($r7Panel.Count -eq 1) ($r7Names.Panel + " (found=$($r7Panel.Count))")
+  Assert-True ($r7Hdr.Count -eq 1) ($r7Names.Header + " (found=$($r7Hdr.Count))")
+  Assert-True ($r7Ban.Count -eq 1) ($r7Names.Banner + " (found=$($r7Ban.Count))")
+  Assert-True ($r7Chg.Success) ($r7Names.Heading + " (first heading=[$r7ChgFirst])")
+  $r7All = @($r7Panel) + @($r7Hdr) + @($r7Ban)
+  if ($r7Chg.Success) { $r7All += $r7Chg.Groups[1].Value }
+  $r7Distinct = @($r7All | Select-Object -Unique)
+  Assert-True ($r7All.Count -eq 4 -and $r7Distinct.Count -eq 1) ($r7Names.Same + " (panel=[$($r7Panel -join ',')] header=[$($r7Hdr -join ',')] banner=[$($r7Ban -join ',')] changelog=[$(if ($r7Chg.Success) { $r7Chg.Groups[1].Value })])")
+  Assert-True ($r7All.Count -eq 4 -and $r7Distinct.Count -eq 1 -and $r7Distinct[0] -eq $r7Want) ($r7Names.Want + " (got=[$($r7Distinct -join ',')])")
+  Assert-True ($r7Unrel -eq 0) ($r7Names.Order + " (Unreleased headings=$r7Unrel)")
+}
+
 Write-Host ''
 if ($script:Skipped.Count -gt 0) { Write-Host ("SKIPPED (setup failed): {0} assertion(s): {1}" -f $script:Skipped.Count, ($script:Skipped -join '; ')) -ForegroundColor Yellow }
 if ($script:Fail -gt 0 -or $script:Uncaught -gt 0 -or $script:Skipped.Count -gt 0) {

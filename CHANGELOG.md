@@ -1,6 +1,6 @@
 # 更新日志
 
-## Unreleased
+## v4.0.0（2026-10-30）
 
 ### v4.0.0（第一批 · 规则文件 + 结构化 JSON + 单一评分）
 
@@ -32,6 +32,7 @@
 - 第 9 组环境变量不再显示打码值（R1，用户可见变化）：用户级和机器级中转变量的行现在只显示变量名和状态，不再显示 `NAME=打码值`。用户级：`用户级 NAME：已设置（会让 Claude Code 走第三方接口）`；机器级：`机器级 NAME：已设置（会让 Claude Code 走第三方接口；仅机器级存在，需要管理员手动处理）`。面板卡片、CLI 检查行、issue 导出的「当前状态」都是这条文本，不再含 `=` 和 `*`；envFixKeep 提示、`CSL_FIX_ID` 行、面板「修复」按钮（仍按 `用户级` 识别）和 `HTTPS_PROXY=…` 行不变；JSON 的 `current` 不变（回归覆盖）。`claude-preflight.ps1` 这几行不再调用 `Protect-Secret` / `Mask-Value`（两者本身未改，测试里锁了函数文本哈希）。`tests/rules.Tests.ps1`：旧的「屏幕行有 NAME=打码值」断言就地换成 R1 断言，另新增 31 条 R1 断言（`CSL_TEST_*` 金丝雀，覆盖面板数据、CLI 输出、issue 导出文本；值、`*`、`=值` 各 0 次，变量名在）；R1 断言共 32 条。rules 总数：合并 R6（435）后再加 31 条 → 466（只有 R1、不含 R6 时为 422 → 453）。envfix 仍 299 条通过 + 1 条宿主跳过（Windows 上 300），issueexport 仍 40。反例：把用户行改回 `Protect-Secret $Value` 只让 R1 断言失败，另有逐条断言的反例，见 `qa/v4r1/neg-summary.txt`。
 - JSON 键名冻结为 v1（R6）：`docs/preflight-json-schema.md` 去掉 DRAFT / 冻结候选标记，标为 **FROZEN v1**，`preflight-result.json` 顶层的 `schemaVersion: 1`（整数）正式成为契约；文档新增机器可读的「冻结键清单」（顶层 11 个、`summary` 5 个、`checks[]` 每行 15 个必有键 + 可选 `notes`、`browserCap` 3 个），示例补上实际一直在输出的 `refDeductionRule` / `isStaticBrowser`。**以后改键名（重命名、删除，或改变含义 / 类型）必须升 `schemaVersion`**，并同步更新文档和测试。JSON 本身一个键名都没改、没有新增键（`schemaVersion` 自第一批起就在输出里）；用户可见的变化只有文档状态。`docs/rules-v4.md` 的引用同步改为 FROZEN v1。
 - 测试（R6）：`tests/rules.Tests.ps1` 新增 13 条断言（422 → 435）：文档状态与升版本规则、键清单可解析（11/5/16/3，`notes` 为唯一可选键）、写出再 `ConvertFrom-Json` 回读的 JSON `schemaVersion=1`（整数）、顶层 / `summary` / `browserCap` 键集合与文档逐个一致（缺 0、多 0）、每个 `checks[]` 行无多余键且必有键齐全、`notes` 只出现在 `meta.unmapped` 行、文档示例块的键与清单一致；准备步骤失败时记 1 条失败并把其余断言以 SKIP 列名。仅测试与文档改动，无产品代码变化。
+- 版本号统一（R7，发布必做）：面板标题 `.ver`（`claude-panel.html`，v3.3.0 → v4.0.0）、`claude-preflight.ps1` 的头部说明和启动横幅（均为 v4.0.0，与本次一致，无需再改）、CHANGELOG 第一个版本标题（`## Unreleased` → `## v4.0.0（2026-10-30）`）三处统一为 v4.0.0；历史注释里的「v3.3.0 起」等保持不动。`tests/rules.Tests.ps1` 新增 8 条 R7 断言（466 → 474；1 条准备步骤 + 7 条检查）：面板 `.ver`、预检头部说明、预检横幅各恰好一处且可解析，CHANGELOG 首个二级标题是带日期的版本标题，四处（面板、头部说明、横幅、CHANGELOG 首标题）版本号相同且等于 v4.0.0，CHANGELOG 里不再有 Unreleased 标题；准备步骤失败时记 1 条失败并把其余断言以 SKIP 列名。rules 总数 474；envfix 299 条通过 + 1 条宿主跳过（Windows 上 300），issueexport 40 不变。仅面板标题文字和 CHANGELOG 标题改动，无其他产品代码变化；反例见 `qa/v4r7/neg-summary.txt`。
 
 ## v3.3.0（一期 · Windows）
 
