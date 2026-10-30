@@ -1,6 +1,8 @@
-# preflight JSON 输出（**FROZEN candidate v1** · pending product confirm）
+# preflight JSON 输出（**FROZEN v1** · `schemaVersion: 1`）
 
-> **状态：冻结候选 v1，待产品最终确认。** 实现以本文件 + `claude-rules.ps1` 为准。键名变更需产品拍板后再动。
+> **状态：v1 已冻结（v4.0.0）。** 实现以本文件 + `claude-rules.ps1` 为准；下面「冻结键清单」是键名的唯一权威，`tests/rules.Tests.ps1` 会解析本文件并与实际 JSON 的键集合逐个对比（缺 0、多 0）。
+>
+> **版本规则：改键名必须升 schemaVersion。** 重命名、删除任何键，或改变键的含义 / 类型，都必须同时把 `schemaVersion` 升为 2（以此类推）并更新本文件和测试；只新增键也要先升版本并写进清单（不允许悄悄多键）。消费方（面板、问题说明导出、R5 端到端、外部脚本）应先读 `schemaVersion`，不认识的版本不要硬解析。
 
 ## 如何得到
 
@@ -42,7 +44,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -Json -
       "status": "failed",
       "current": "TUN 未开启…",
       "expected": "TUN 已开启（按 Clash 配置与路由判定）",
+      "refDeductionRule": 25,
       "refDeductionApplied": 25,
+      "isStaticBrowser": false,
       "recheck": "powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -NoLaunch -NoPause",
       "fixType": "manual",
       "fixId": null,
@@ -58,12 +62,58 @@ powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -Json -
 }
 ```
 
+## 冻结键清单（v1，机器可读）
+
+测试按下面的表解析：「范围」= `top`（顶层）、`summary`、`checks`（`checks[]` 每一行）、`browserCap`；「必有」= `是` 表示每份 JSON / 每一行都必须有，`否` 表示只在条件满足时才出现。表里没有的键不允许出现。
+
+| 范围 | 键 | 必有 |
+|---|---|---|
+| top | `schemaVersion` | 是 |
+| top | `rulesVersion` | 是 |
+| top | `generatedAt` | 是 |
+| top | `platform` | 是 |
+| top | `score` | 是 |
+| top | `scoreMode` | 是 |
+| top | `canLaunchSafely` | 是 |
+| top | `verdict` | 是 |
+| top | `summary` | 是 |
+| top | `checks` | 是 |
+| top | `browserCap` | 是 |
+| summary | `must_fix_failed` | 是 |
+| summary | `should_fix_failed` | 是 |
+| summary | `info` | 是 |
+| summary | `passed` | 是 |
+| summary | `error` | 是 |
+| checks | `id` | 是 |
+| checks | `category` | 是 |
+| checks | `title` | 是 |
+| checks | `severity` | 是 |
+| checks | `status` | 是 |
+| checks | `current` | 是 |
+| checks | `expected` | 是 |
+| checks | `recheck` | 是 |
+| checks | `fixType` | 是 |
+| checks | `fixId` | 是 |
+| checks | `containsIp` | 是 |
+| checks | `masked` | 是 |
+| checks | `refDeductionRule` | 是 |
+| checks | `refDeductionApplied` | 是 |
+| checks | `isStaticBrowser` | 是 |
+| checks | `notes` | 否 |
+| browserCap | `staticWarnSumBeforeCap` | 是 |
+| browserCap | `staticWarnSumAfterCap` | 是 |
+| browserCap | `cap` | 是 |
+
+- `refDeductionRule`：目录里这条规则的参考扣分（int）；`refDeductionApplied`：这次实际扣的分（受 cap / hint-only / `error` 恒 0 影响，int）。`isStaticBrowser`：该 id 是否属于受 cap 约束的静态浏览器检查（bool）。
+- `notes`（否）：只在调用方给出原因时才有，目前只有 `meta.unmapped` 行带。
+- `schemaVersion` 的类型是整数 `1`（不是字符串）。
+
 ## `status`（每条 check）
 
 | 值 | 含义 | 参考扣分 | 对 `verdict` |
 |---|---|---|---|
 | `passed` | 通过 | 0 | — |
-| `failed` | 查完了，未达预期 | 按 `refDeduction`（受 cap / hint-only） | `must_fix` → `blocked` |
+| `failed` | 查完了，未达预期 | 按目录 refDeduction 扣分，实际值见 `refDeductionApplied`（受 cap / hint-only） | `must_fix` → `blocked` |
 | `error` | **未能完成**（超时、配置不可读等），**不是** failed | **恒为 0** | 任意 `must_fix` 且 `error` → `blocked`（不得为 `ok`）；`current` 写明原因（已脱敏；`meta.unmapped` 行例外：原因写 `notes`，`current` 留空） |
 | `info` | 仅提示 | 0 | — |
 | `skipped` | 跳过 | 0 | — |
@@ -104,7 +154,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File claude-preflight.ps1 -Json -
 
 | 字段 | 说明 |
 |---|---|
-| `schemaVersion` | 固定 `1`（本冻结候选） |
+| `schemaVersion` | 固定整数 `1`（v1 已冻结）；改键名必须升版本（见文首） |
 | `score` / `scoreMode` | 参考分；`scoreMode` = `reference_only` |
 | `canLaunchSafely` | 无 `must_fix` 的 `failed` **且** 无 `must_fix` 的 `error` |
 | `verdict` | `ok` \| `blocked` \| `force`（`-Force` 强启时） |
