@@ -642,6 +642,200 @@ Assert-True ($r4aPf -match '-JsonPath <') 'R4a -? help documents -JsonPath'
 $r4aHelp = @($r4aPf -split "`r?`n" | Where-Object { $_ -match '^\s*-JsonPath <' })
 Assert-True ($r4aHelp.Count -eq 1 -and $r4aHelp[0] -match '不给 -Json 也报错退出' -and $r4aHelp[0] -notmatch '忽略') 'R4a -? help says -JsonPath must be used with -Json (error, not ignored)'
 
+# 不用 Get-FileHash（部分 Windows PowerShell 5.1 子进程里不可用），改用 .NET SHA256
+function Get-CslR4bSha256([string]$Path) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try { return ([BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path)))) } finally { $sha.Dispose() }
+}
+Write-Host '== R4b-1 node server addresses from the Clash runtime config (fake config, temp dir only) ==' -ForegroundColor Cyan
+$r4bBase = Join-Path ([IO.Path]::GetTempPath()) ("csl-r4b-" + [guid]::NewGuid().ToString('n'))
+New-Item -ItemType Directory -Path $r4bBase -Force | Out-Null
+try {
+  $r4bNodeIp = '203.0.113.91'
+  $r4bNodeIp2 = '198.51.100.67'
+  # .jp 不在 R4 裸域名规则（com/net/org/io/cc/me/xyz/top/dev）里，只有 R4b-1 的 -ExtraHosts 能遮住
+  $r4bNodeDom = 'r4bcanary-node.example-csl.jp'
+  $r4bSecret = 'r4bSecretZq8'
+  $r4bExitIp = '192.0.2.150'
+  $r4bYaml = Join-Path $r4bBase 'clash-verge.yaml'
+  $r4bYamlText = @(
+    'mixed-port: 7897',
+    ('secret: ' + $r4bSecret),
+    'external-controller: 127.0.0.1:9097',
+    'proxies:',
+    '  - name: r4b-n1',
+    '    type: ss',
+    ('    server: ' + $r4bNodeIp),
+    '    port: 443',
+    ('  - { name: r4b-n2, type: trojan, server: ' + $r4bNodeDom + ', port: 443, sni: r4b-sni.example }'),
+    '  - name: r4b-n3',
+    ('    server: "' + $r4bNodeIp2 + '"'),
+    'proxy-groups:',
+    '  - name: Claude',
+    '    proxies: [r4b-n1, r4b-n2]',
+    'rules:',
+    '  - MATCH,Claude'
+  ) -join "`r`n"
+  [IO.File]::WriteAllText($r4bYaml, $r4bYamlText, (New-Object System.Text.UTF8Encoding($false)))
+  $r4bHashBefore = Get-CslR4bSha256 $r4bYaml
+  $r4bNodes = Get-CslClashNodeHosts -Path $r4bYaml
+  Assert-True ([bool]$r4bNodes.ok) 'R4b-1 fake config: ok'
+  Assert-Eq @($r4bNodes.hosts).Count 3 'R4b-1 fake config: 3 node servers'
+  Assert-True ((@($r4bNodes.hosts) -contains $r4bNodeIp) -and (@($r4bNodes.hosts) -contains $r4bNodeIp2) -and (@($r4bNodes.hosts) -contains $r4bNodeDom)) 'R4b-1 fake config: node IPs and domain read'
+  Assert-True (-not ((@($r4bNodes.hosts) -join ' ') -match [regex]::Escape($r4bSecret)) -and -not ((@($r4bNodes.hosts) -join ' ') -match 'r4b-sni|9097')) 'R4b-1 reads only server, not secret / sni / controller'
+  Assert-Eq ((Get-CslR4bSha256 $r4bYaml)) $r4bHashBefore 'R4b-1 Clash config unchanged after read'
+  $r4bMiss = Get-CslClashNodeHosts -Path (Join-Path $r4bBase 'nope.yaml')
+  Assert-True ((-not $r4bMiss.ok) -and @($r4bMiss.hosts).Count -eq 0 -and ([string]$r4bMiss.info -match '未找到') -and ([string]$r4bMiss.info -match '不扣分')) 'R4b-1 missing config: falls back with one info'
+  $r4bBad = Join-Path $r4bBase 'bad.yaml'
+  [IO.File]::WriteAllText($r4bBad, "mixed-port: 7897`r`nproxies: [[[`r`n  garbage {{{`r`n", (New-Object System.Text.UTF8Encoding($false)))
+  $r4bBadR = Get-CslClashNodeHosts -Path $r4bBad
+  Assert-True ((-not $r4bBadR.ok) -and @($r4bBadR.hosts).Count -eq 0 -and ([string]$r4bBadR.info -match '解析失败') -and ([string]$r4bBadR.info -match '不扣分')) 'R4b-1 unparsable config: falls back with one info'
+  # static: reader has no secret / network / write
+  $r4bFn = $null
+  $r4bRulesAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'claude-rules.ps1'), [ref]$null, [ref]$null)
+  $r4bFn = $r4bRulesAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-CslClashNodeHosts' }, $true) | Select-Object -First 1
+  Assert-True (($null -ne $r4bFn) -and -not ($r4bFn.Body.Extent.Text -match '(?i)secret\s*[:=]|controller|Invoke-(Curl|WebRequest|RestMethod)|curl|WriteAll|Set-Content|Out-File|Add-Content|Remove-Item|Move-Item')) 'R4b-1 reader: no secret / network / file write'
+
+  # issue export + JSON with the node list (another fake exit IP still follows R4)
+  $r4bItems = @(
+    [pscustomobject]@{ Level = 'FAIL'; Text = ("Claude 组切换后仍为 {0}:443 ({1})，备用 {2}" -f $r4bNodeDom, $r4bNodeIp, $r4bNodeIp2); Weight = 25; Group = '3. 节点锁定'; Id = 'net.node_lock' }
+    [pscustomobject]@{ Level = 'WARN'; Text = ("各方看到的出口 IP 不一致，暂不记住: {0}, 198.18.0.24" -f $r4bExitIp); Weight = 10; Group = '5. 出口 IP'; Id = 'exit.three_way_ip' }
+    [pscustomobject]@{ Level = 'FAIL'; Text = ("WebRTC srflx 暴露 {0}" -f $r4bNodeIp); Weight = 25; Group = '8. 浏览器'; Id = 'exit.webrtc_srflx' }
+  )
+  $r4bNodeCanaries = @($r4bNodeIp, $r4bNodeIp2, $r4bNodeDom, 'r4bcanary')
+  $r4bPack = Format-CslIssuePack -Items $r4bItems -ExtraHosts $r4bNodes.hosts
+  foreach ($c in $r4bNodeCanaries) { Assert-True (-not $r4bPack.Contains($c)) ("R4b-1 issue export has no node {0}" -f $c) }
+  Assert-True ($r4bPack.Contains('<节点>')) 'R4b-1 issue export has <节点>'
+  Assert-True ($r4bPack.Contains($r4bExitIp)) 'R4b-1 issue export keeps the other exit IP by default'
+  $r4bPackH = Format-CslIssuePack -Items $r4bItems -ExtraHosts $r4bNodes.hosts -HideIp
+  Assert-True (-not $r4bPackH.Contains($r4bExitIp) -and $r4bPackH.Contains('<出口IP>')) 'R4b-1 issue export -HideIp masks the other exit IP'
+  foreach ($c in $r4bNodeCanaries) { Assert-True (-not $r4bPackH.Contains($c)) ("R4b-1 issue export -HideIp has no node {0}" -f $c) }
+
+  $r4bInv = Invoke-CslPreflightScoring $r4bItems $cat -ExtraHosts $r4bNodes.hosts
+  $r4bMap = @($script:CslScoreMapped)
+  $r4bCur = ($r4bMap | ForEach-Object { [string]$_.current }) -join "`n"
+  foreach ($c in $r4bNodeCanaries) { Assert-True (-not $r4bCur.Contains($c)) ("R4b-1 JSON current has no node {0}" -f $c) }
+  Assert-True ($r4bCur.Contains('<节点>')) 'R4b-1 JSON current has <节点>'
+  $r4bExitRow = @($r4bMap | Where-Object id -eq 'exit.three_way_ip')[0]
+  Assert-True (([string]$r4bExitRow.current).Contains($r4bExitIp) -and ($r4bExitRow.containsIpOverride -eq $true)) 'R4b-1 JSON other exit IP kept by default, containsIp=true'
+  $r4bInvH = Invoke-CslPreflightScoring $r4bItems $cat -HideIp -ExtraHosts $r4bNodes.hosts
+  $r4bCurH = (@($script:CslScoreMapped) | ForEach-Object { [string]$_.current }) -join "`n"
+  Assert-True (-not $r4bCurH.Contains($r4bExitIp) -and $r4bCurH.Contains('<出口IP>')) 'R4b-1 JSON -HideIp masks the other exit IP'
+  # node IP == exit IP: masked as node
+  $r4bRtcRow = @($r4bMap | Where-Object id -eq 'exit.webrtc_srflx')[0]
+  Assert-True ((([string]$r4bRtcRow.current).Contains('<节点>')) -and -not (([string]$r4bRtcRow.current).Contains('<出口IP>')) -and -not (([string]$r4bRtcRow.current).Contains($r4bNodeIp))) 'R4b-1 node IP equal to exit IP is masked as <节点>'
+  $r4bRtcH = @(@($script:CslScoreMapped) | Where-Object id -eq 'exit.webrtc_srflx')[0]
+  Assert-True ((([string]$r4bRtcH.current).Contains('<节点>')) -and -not (([string]$r4bRtcH.current).Contains('<出口IP>'))) 'R4b-1 node IP equal to exit IP stays <节点> under -HideIp'
+  # fallback: no config → R4 behavior (node IP treated as exit IP, kept by default)
+  $r4bInvF = Invoke-CslPreflightScoring $r4bItems $cat -ExtraHosts @($r4bMiss.hosts)
+  $r4bCurF = (@($script:CslScoreMapped) | ForEach-Object { [string]$_.current }) -join "`n"
+  Assert-True ($r4bCurF.Contains($r4bNodeIp)) 'R4b-1 fallback keeps R4 behavior (node IP kept without config)'
+
+  Write-Host '== R4b-2 -HideIp masks screen output and preflight.log ==' -ForegroundColor Cyan
+  $r4bV6 = '2001:db8:85a3::8a2e:370:7334'
+  $r4bLine = ("出口 {0} WebRTC {1} fake-ip 198.18.0.9 198.19.3.4 内网 192.168.1.20 10.1.2.3 时间 23:15:20 链路本地 fe80::1" -f $r4bExitIp, $r4bV6)
+  $r4bMasked = Protect-CslExitIpText $r4bLine
+  Assert-True (-not $r4bMasked.Contains($r4bExitIp) -and -not $r4bMasked.Contains($r4bV6) -and $r4bMasked.Contains('<出口IP>')) 'R4b-2 mask: public IPv4 / IPv6 to <出口IP>'
+  Assert-True ($r4bMasked.Contains('198.18.0.9') -and $r4bMasked.Contains('198.19.3.4') -and $r4bMasked.Contains('192.168.1.20') -and $r4bMasked.Contains('10.1.2.3') -and $r4bMasked.Contains('23:15:20') -and $r4bMasked.Contains('fe80::1')) 'R4b-2 mask: fake-ip / LAN / time / link-local kept'
+  # screen: real Write-Host in a child process, output captured
+  $r4bScr = Join-Path $r4bBase 'screen.ps1'
+  $r4bScrText = @(
+    'param([switch]$HideIp)',
+    ('$r = ''' + $root.Replace("'", "''") + ''''),
+    '. (Join-Path $r ''claude-common.ps1'')',
+    '. (Join-Path $r ''claude-issueexport.ps1'')',
+    '. (Join-Path $r ''claude-rules.ps1'')',
+    'if ($HideIp) { Enable-CslHideIpHost }',
+    'function Say-Pass($t) { Write-Host "  [通过] $($t)" -ForegroundColor Green }',
+    ('Say-Pass ''' + $r4bLine + ''''),
+    ('Write-Host ''WebRTC 公网 IP:'' ''' + $r4bExitIp + ''' -NoNewline; Write-Host ''''')
+  ) -join "`r`n"
+  [IO.File]::WriteAllText($r4bScr, $r4bScrText, (New-Object System.Text.UTF8Encoding($true)))
+  $r4bExe = (Get-Process -Id $PID).Path
+  $r4bPrevEnc = $null
+  try { $r4bPrevEnc = [Console]::OutputEncoding; [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
+  try {
+    $r4bOutH = (@(& $r4bExe -NoProfile -ExecutionPolicy Bypass -File $r4bScr -HideIp 2>&1 | ForEach-Object { [string]$_ })) -join "`n"
+    $r4bOutN = (@(& $r4bExe -NoProfile -ExecutionPolicy Bypass -File $r4bScr 2>&1 | ForEach-Object { [string]$_ })) -join "`n"
+  } finally {
+    if ($null -ne $r4bPrevEnc) { try { [Console]::OutputEncoding = $r4bPrevEnc } catch {} }
+  }
+  Assert-Eq ([regex]::Matches($r4bOutH, [regex]::Escape($r4bExitIp)).Count + [regex]::Matches($r4bOutH, [regex]::Escape($r4bV6)).Count) 0 'R4b-2 -HideIp screen: fake public IPs appear 0 times'
+  Assert-True ($r4bOutH.Contains('<出口IP>') -and $r4bOutH.Contains('[通过]') -and $r4bOutH.Contains('198.18.0.9') -and $r4bOutH.Contains('192.168.1.20')) 'R4b-2 -HideIp screen: <出口IP> shown, fake-ip / LAN kept'
+  Assert-True ($r4bOutN.Contains($r4bExitIp) -and $r4bOutN.Contains($r4bV6) -and -not $r4bOutN.Contains('<出口IP>')) 'R4b-2 without -HideIp screen unchanged'
+  # log: real Write-Log into a temp preflight.log
+  $r4bPrevLog = $script:LogPath
+  $script:LogPath = Join-Path $r4bBase 'preflight.log'
+  try {
+    $r4bLogLine = ('FAIL | score=60 | ip={0} | tz=Asia/Tokyo | fail=1 | warn=0 | launch=nolaunch | WebRTC 公网 IP 与出口不一致: WebRTC={1} 期望=198.18.0.5' -f $r4bExitIp, $r4bV6)
+    Write-Log (Format-CslPreflightLogLine $r4bLogLine -HideIp)
+    $r4bLogH = [IO.File]::ReadAllText($script:LogPath)
+    Remove-Item -LiteralPath $script:LogPath -Force
+    Write-Log (Format-CslPreflightLogLine $r4bLogLine)
+    $r4bLogN = [IO.File]::ReadAllText($script:LogPath)
+  } finally { $script:LogPath = $r4bPrevLog }
+  Assert-True (-not $r4bLogH.Contains($r4bExitIp) -and -not $r4bLogH.Contains($r4bV6) -and $r4bLogH.Contains('ip=<出口IP>') -and $r4bLogH.Contains('198.18.0.5')) 'R4b-2 -HideIp preflight.log: fake public IPs 0 times, <出口IP>, fake-ip kept'
+  Assert-True ($r4bLogN.Contains($r4bExitIp) -and $r4bLogN.Contains($r4bV6)) 'R4b-2 without -HideIp preflight.log unchanged'
+} finally {
+  try { Remove-Item -LiteralPath $r4bBase -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+}
+# preflight wiring (static)
+$r4bPf = Get-Content (Join-Path $root 'claude-preflight.ps1') -Raw -Encoding UTF8
+Assert-Eq ([regex]::Matches($r4bPf, 'Get-CslClashNodeHosts\s+-Path').Count) 1 'R4b-1 preflight reads node servers once'
+Assert-True ($r4bPf -match "Join-Path \`$script:VergeDir 'clash-verge\.yaml'") 'R4b-1 preflight reads the runtime config the launcher already uses'
+Assert-Eq ([regex]::Matches($r4bPf, 'Invoke-CslPreflightScoring @\(\$script:Items\) \$script:CslRulesCatalog -HideIp:\$HideIp -ExtraHosts \$script:CslNodeHosts').Count) 1 'R4b-1 JSON scoring gets -ExtraHosts node list'
+Assert-Eq ([regex]::Matches($r4bPf, 'Format-CslIssuePack -Items @\(\$script:Items\.ToArray\(\)\) -HideIp:\$HideIp -ExtraHosts \$script:CslNodeHosts').Count) 1 'R4b-1 issue export gets -ExtraHosts node list'
+Assert-True ($r4bPf -match 'New-CslScoreMappedResults @\(\$Items\) -Catalog \$Catalog -HideIp:\$HideIp -ExtraHosts \$ExtraHosts') 'R4b-1 scoring entry forwards -ExtraHosts'
+$r4bEn = $r4bPf.IndexOf('if ($HideIp) { Enable-CslHideIpHost }')
+$r4bFirstHost = $r4bPf.IndexOf("Write-Host '=====")
+Assert-True ($r4bEn -gt 0 -and $r4bFirstHost -gt $r4bEn -and [regex]::Matches($r4bPf, 'Enable-CslHideIpHost').Count -eq 1) 'R4b-2 preflight wraps screen output before the first line'
+Assert-Eq ([regex]::Matches($r4bPf, 'Write-Log \(Format-CslPreflightLogLine \$logLine -HideIp:\$HideIp\)').Count) 1 'R4b-2 preflight.log line goes through the -HideIp mask'
+$r4bHelp = @($r4bPf -split "`r?`n" | Where-Object { $_ -match '^\s*-HideIp :' })
+Assert-True ($r4bHelp.Count -eq 1 -and $r4bHelp[0] -match '屏幕输出' -and $r4bHelp[0] -match 'preflight\.log' -and $r4bHelp[0] -match '<节点>') 'R4b -? help states -HideIp covers screen and preflight.log, nodes as <节点>'
+
+Write-Host '== R4b-2 background monitor lines in preflight.log follow -HideIp ==' -ForegroundColor Cyan
+$r4bMonPath = Join-Path $root 'claude-monitor.ps1'
+$r4bMonSrc = Get-Content $r4bMonPath -Raw -Encoding UTF8
+$r4bMonAst = [System.Management.Automation.Language.Parser]::ParseFile($r4bMonPath, [ref]$null, [ref]$null)
+$r4bMonParams = @($r4bMonAst.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+Assert-True ($r4bMonParams -contains 'HideIp') 'R4b-2 monitor has -HideIp parameter'
+Assert-Eq ([regex]::Matches($r4bMonSrc, '(?<![\w-])Write-Log\b').Count) 1 'R4b-2 monitor writes preflight.log only via Write-CslMonLog'
+$r4bAlert = $r4bMonAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Show-Alert' }, $true) | Select-Object -First 1
+Assert-True (($null -ne $r4bAlert) -and ($r4bAlert.Body.Extent.Text -match '\$text = Format-CslPreflightLogLine \$text -HideIp:\$script:MonHideIp')) 'R4b-2 monitor alert text goes through the -HideIp mask'
+Assert-True ($pfSrc -match "if \(\`$HideIp\) \{ \`$monArgs \+= '-HideIp' \}" -and $pfSrc -match '-ArgumentList \$monArgs') 'R4b-2 preflight passes -HideIp to the background monitor'
+$r4bMonBase = Join-Path ([IO.Path]::GetTempPath()) ("csl-r4bmon-" + [guid]::NewGuid().ToString('n'))
+New-Item -ItemType Directory -Path $r4bMonBase -Force | Out-Null
+$r4bPrevLog2 = $script:LogPath
+$r4bHadOnce = Test-Path variable:Once
+try {
+  foreach ($fnName in @('Write-CslMonLog', 'Out-Mon')) {
+    $fnAst = $r4bMonAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $fnName }, $true) | Select-Object -First 1
+    Assert-True ($null -ne $fnAst) "R4b-2 monitor defines $fnName"
+    if ($fnAst) { . ([scriptblock]::Create($fnAst.Extent.Text)) }
+  }
+  $r4bMonIp = '192.0.2.188'
+  $r4bMonLine = ('[monitor] FIXED | 已切回 r4b-n1 ip={0} | fake 198.18.0.7' -f $r4bMonIp)
+  $script:LogPath = Join-Path $r4bMonBase 'preflight.log'
+  $script:MonHideIp = $true
+  Write-CslMonLog $r4bMonLine
+  $r4bMonLogH = [IO.File]::ReadAllText($script:LogPath)
+  Remove-Item -LiteralPath $script:LogPath -Force
+  $script:MonHideIp = $false
+  Write-CslMonLog $r4bMonLine
+  $r4bMonLogN = [IO.File]::ReadAllText($script:LogPath)
+  Assert-True (-not $r4bMonLogH.Contains($r4bMonIp) -and $r4bMonLogH.Contains('ip=<出口IP>') -and $r4bMonLogH.Contains('198.18.0.7')) 'R4b-2 monitor -HideIp preflight.log: fake public IP 0 times, fake-ip kept'
+  Assert-True ($r4bMonLogN.Contains($r4bMonIp)) 'R4b-2 monitor without -HideIp preflight.log unchanged'
+  $Once = $true
+  $script:MonHideIp = $true
+  $r4bMonOut = (@(Out-Mon ('正常: ip={0} loc=JP' -f $r4bMonIp) 'Green' 6>&1 | ForEach-Object { [string]$_ })) -join "`n"
+  Assert-True (-not $r4bMonOut.Contains($r4bMonIp) -and $r4bMonOut.Contains('<出口IP>')) 'R4b-2 monitor -Once -HideIp screen: fake public IP 0 times'
+} finally {
+  $script:LogPath = $r4bPrevLog2
+  $script:MonHideIp = $false
+  if (-not $r4bHadOnce) { Remove-Variable -Name Once -ErrorAction SilentlyContinue }
+  try { Remove-Item -LiteralPath $r4bMonBase -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+}
+
 Write-Host ''
 if ($script:Fail -gt 0 -or $script:Uncaught -gt 0) {
   Write-Host "FAILED: $($script:Fail) assertion(s), $($script:Uncaught) uncaught error(s)" -ForegroundColor Red

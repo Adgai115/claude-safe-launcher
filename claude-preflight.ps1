@@ -33,7 +33,7 @@
   -TestMode : 仅允许操作 CSL_TEST_ 前缀变量；测试请配合 -FixVarPattern 'CSL_TEST_ANTHROPIC_*'
   -FailAtIndex <n> : （仅 -TestMode）使第 n 个变量变更抛错，用于验证整单回滚；非 TestMode 警告并忽略
   -ExportIssues : 检查结束后打印可复制的「问题说明」（脱敏四段结构）；建议配合 -NoLaunch -NoPause
-  -HideIp : 出口 IP / WebRTC IP 也脱敏：-ExportIssues 的问题说明省略 IP 提示行；preflight-result.json 的 current 同样遮罩（containsIp 照样标 true）
+  -HideIp : 出口 IP / WebRTC IP 也脱敏：-ExportIssues 的问题说明省略 IP 提示行；preflight-result.json 的 current 同样遮罩（containsIp 照样标 true）；屏幕输出和 preflight.log 里的公网出口 IP / WebRTC IP 也遮成 <出口IP>（fake-ip 和内网地址保留）。节点地址（Clash 运行配置里的 server）不论加不加都在问题说明和 JSON 里遮成 <节点>
   -Json     : 写出 preflight-result.json（UTF-8 无 BOM）并在末尾打印 CSL_JSON_PATH=…；评分走 claude-rules.ps1。不带 -Json 就不写也不覆盖这个文件（v4.0.0 起）
   -JsonPath <文件路径> : 配合 -Json，把 JSON 写到指定文件（默认脚本目录的 preflight-result.json）；目标目录必须已存在，不存在就报错退出（不自动创建）；只给 -JsonPath 不给 -Json 也报错退出（退出码 2，不写文件）
   配置文件  : 同目录 preflight.json（可用 fixVarPatterns；controllerSecret 不会被打印）
@@ -43,6 +43,7 @@
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-envfix.ps1')
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-issueexport.ps1')
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'claude-rules.ps1')
+if ($HideIp) { Enable-CslHideIpHost }
 # R4a: -JsonPath 先校验：目录不存在、或只给 -JsonPath 不给 -Json，都在任何检查之前报错退出
 if ($Json -or $JsonPath) {
   try { $script:CslJsonTarget = Resolve-CslPreflightJsonPath -Json:$Json -JsonPath $JsonPath -Root (Split-Path -Parent $MyInvocation.MyCommand.Path) }
@@ -278,8 +279,8 @@ function New-CslScoreMappedResults {
 }
 
 # 评分单一入口（preflight 与测试共用）：映射 → Get-CslRulesScore → 补扣未映射项的原权重
-function Invoke-CslPreflightScoring($Items, $Catalog, [switch]$HideIp) {
-  $mapped = New-CslScoreMappedResults @($Items) -Catalog $Catalog -HideIp:$HideIp
+function Invoke-CslPreflightScoring($Items, $Catalog, [switch]$HideIp, [string[]]$ExtraHosts) {
+  $mapped = New-CslScoreMappedResults @($Items) -Catalog $Catalog -HideIp:$HideIp -ExtraHosts $ExtraHosts
   $res = Get-CslRulesScore -Catalog $Catalog -Results $mapped
   $extra = 0
   foreach ($u in $script:CslUnmappedItems) { $extra += [int]$u.Item.Weight }
@@ -294,8 +295,13 @@ if ($Relearn) { Write-Host '   [重新学习] 将按当前环境重新记住出�
 Write-Host ("   " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + $(if ($NoLaunch) { '   [NoLaunch 测试模式]' } else { '' })) -ForegroundColor Cyan
 Write-Host '==============================================' -ForegroundColor Cyan
 
+# R4b-1：只读读取 Clash 运行配置里的节点 server（不读 secret、不联网、不改配置），问题说明和 JSON 里遮成 <节点>
+$script:CslNodeHostsInfo = Get-CslClashNodeHosts -Path $(if ($script:VergeDir) { Join-Path $script:VergeDir 'clash-verge.yaml' } else { $null })
+$script:CslNodeHosts = @($script:CslNodeHostsInfo.hosts)
+
 # ---------- 1. Clash Verge / TUN ----------
 Say-Head '1. Clash Verge 与 TUN 模式'
+if ($script:CslNodeHostsInfo.ok) { Say-Info ('已从 Clash 运行配置读取 {0} 个节点地址，问题说明和 JSON 里遮成 <节点>' -f $script:CslNodeHosts.Count) } else { Say-Info $script:CslNodeHostsInfo.info }
 $mihomo = Get-ProxyCore
 $verge  = Get-Process -Name 'clash-verge' -ErrorAction SilentlyContinue
 $tun = Get-TunAdapter
@@ -762,7 +768,7 @@ $script:CslScoreMapped = @()
 $script:CslUnmappedItems = New-Object System.Collections.ArrayList
 try {
   $script:CslRulesCatalog = Get-CslRulesCatalog
-  $script:CslScoreResult = Invoke-CslPreflightScoring @($script:Items) $script:CslRulesCatalog -HideIp:$HideIp
+  $script:CslScoreResult = Invoke-CslPreflightScoring @($script:Items) $script:CslRulesCatalog -HideIp:$HideIp -ExtraHosts $script:CslNodeHosts
   $score = [int]$script:CslScoreResult.score
   if ($script:CslUnmappedItems.Count -gt 0) {
     Write-Host ("  [提示] 内部：{0} 条检查项没有有效的规则 id（{1}），JSON 里记为 meta.unmapped / status=error，分数照扣" -f $script:CslUnmappedItems.Count, $script:CslUnmappedItems[0].Reason) -ForegroundColor DarkGray
@@ -788,7 +794,7 @@ $result = $(if ($fails.Count) { 'FAIL' } elseif ($warns.Count) { 'WARN' } else {
 if ($ExportIssues) {
   Write-Host ''
   Write-Host '-------- 问题说明（可复制） --------' -ForegroundColor Cyan
-  $pack = Format-CslIssuePack -Items @($script:Items.ToArray()) -HideIp:$HideIp
+  $pack = Format-CslIssuePack -Items @($script:Items.ToArray()) -HideIp:$HideIp -ExtraHosts $script:CslNodeHosts
   Write-Host $pack
   Write-Host '-------- 结束 --------' -ForegroundColor Cyan
 }
@@ -817,7 +823,9 @@ if ($NoLaunch) {
   if (-not (Start-ClaudeApp $cfg)) { Write-Host '找不到 Claude 桌面版，请先安装，或在 preflight.json 里填写 claudeExe' -ForegroundColor Red; $launched = 'notfound' }
   $mon = Join-Path $script:Root 'claude-monitor.ps1'
   if (Test-Path $mon) {
-    Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$($mon)`"")
+    $monArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$($mon)`"")
+    if ($HideIp) { $monArgs += '-HideIp' }
+    Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList $monArgs
     Write-Host "已启动后台监控（每 $($cfg.monitorIntervalMin) 分钟检查一次）" -ForegroundColor Gray
   }
 } else {
@@ -827,7 +835,7 @@ if ($NoLaunch) {
 # ---------- 日志 ----------
 $logLine = '{0} | score={1} | ip={2} | tz={3} | fail={4} | warn={5} | launch={6}{7}' -f $result, $score, $exitIp, $tz, $fails.Count, $warns.Count, $launched, $(if ($Force) { ' | force' } else { '' })
 if ($fails.Count) { $logLine += ' | ' + (($fails | ForEach-Object { $_.Text }) -join '; ') }
-Write-Log $logLine
+Write-Log (Format-CslPreflightLogLine $logLine -HideIp:$HideIp)
 
 if (-not $NoPause) {
   if ($fails.Count -and -not $Force) { Write-Host ''; Write-Host '按任意键退出' -ForegroundColor Gray; try { [void]$Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch { Read-Host | Out-Null } }
