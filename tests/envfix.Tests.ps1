@@ -1013,7 +1013,7 @@ try {
 } finally {
   if ($null -ne $r2PrevEnc) { try { [Console]::OutputEncoding = $r2PrevEnc } catch {} }
 }
-$r2Names = @('CSL_TEST_ANTHROPIC_R2_KEY', 'CSL_TEST_ANTHROPIC_R2_URL')
+$r2Names = @('CSL_TEST_ANTHROPIC_R2_KEY', 'CSL_TEST_ANTHROPIC_R2_URL') # gitleaks:allow -- synthetic variable identifiers only, no credential values
 $r2Lines = @($r2Out | Where-Object { $_ -match '已恢复' })
 $r2Text = $r2Lines -join "`n"
 Assert-Eq $r2Exit 0 'R2 -UndoFix CLI exit 0'

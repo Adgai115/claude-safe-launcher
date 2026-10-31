@@ -1,0 +1,17 @@
+{
+  "expectedIp": "",
+  "expectedLoc": "",
+  "expectedNode": "",
+  "claudeGroup": "Claude",
+  "mainGroup": "",
+  "pinMainGroup": false,
+  "timezone": "",
+  "expectedTzIana": "",
+  "monitorIntervalMin": 5,
+  "riskMonitorIntervalSec": 30,
+  "monitorAutoRepair": true,
+  "monitorRetryCount": 3,
+  "monitorAlertCooldownMin": 30,
+  "envFixEnabled": true,
+  "envFixKeep": []
+}

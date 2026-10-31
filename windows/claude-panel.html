@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" href="data:,"><title>Claude 安全启动</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:var(--font);color:var(--text);background:var(--bg);overflow:hidden;transition:color .4s}
+.deco{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden}
+.p{position:absolute;bottom:-40px;opacity:.75;animation:floatUp linear infinite}
+@keyframes floatUp{0%{transform:translateY(0) rotate(0)}100%{transform:translateY(-115vh) rotate(360deg)}}
+.app{position:relative;z-index:1;height:100vh;display:flex;flex-direction:column;padding:12px 16px 10px;gap:8px}
+header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-bottom:10px;border-bottom:var(--hline,0)}
+.brand{display:flex;align-items:center;gap:14px;min-width:0}
+.logo{width:42px;height:42px;flex:none;display:grid;place-items:center;font-size:22px;border-radius:var(--radius);background:var(--accent);color:var(--on-accent);box-shadow:var(--shadow);font-family:var(--title-font)}
+h1{font-family:var(--title-font);font-size:22px;letter-spacing:var(--title-ls,0);white-space:nowrap}
+.ver{font-family:ui-monospace,Consolas,monospace;font-size:11px;font-weight:500;color:var(--muted);margin-left:6px;letter-spacing:0;vertical-align:middle}
+.sub{color:var(--muted);font-size:13px;margin-top:3px}
+.themes{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:420px}
+.themes button{font-family:"Microsoft YaHei UI","PingFang SC","Hiragino Sans GB",sans-serif;font-size:12px;padding:6px 12px;border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--text);cursor:pointer;transition:all .2s}
+.themes button:hover{transform:translateY(-1px)}
+.themes button.on{background:var(--accent);color:var(--on-accent);border-color:transparent}
+.hero{display:flex;gap:18px;align-items:center;padding:10px 16px;background:var(--panel);border:var(--border);border-radius:var(--radius);box-shadow:var(--shadow);backdrop-filter:blur(8px);flex:none}
+.ring{position:relative;width:96px;height:96px;flex:none}
+.ring svg{width:100%;height:100%;transform:rotate(-90deg)}
+.ring.running svg{animation:spin 1.1s linear infinite}
+@keyframes spin{to{transform:rotate(270deg)}}
+.ring circle{fill:none;stroke-width:10}
+.track{stroke:var(--line)}
+.bar{stroke:var(--accent);stroke-linecap:round;stroke-dasharray:326.7;stroke-dashoffset:326.7;transition:stroke-dashoffset 1s ease,stroke .4s}
+.ring.running .bar{stroke-dashoffset:250}
+.score{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.score b{font-family:var(--title-font);font-size:32px;line-height:1}
+.score span{font-size:12px;color:var(--muted);margin-top:2px}
+#scoreLabel{font-size:10px;white-space:nowrap}
+.summary{flex:1;min-width:0}
+.state{font-family:var(--title-font);font-size:18px;margin-bottom:6px;letter-spacing:var(--title-ls,0)}
+.summary #coverage{font-size:12px;color:var(--muted);margin-top:6px}
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{font-size:13px;padding:5px 12px;border-radius:999px;background:var(--chip-bg,var(--panel));border:1px solid var(--line)}
+.chip b{margin-left:4px}
+.chip.pass b{color:var(--pass)}.chip.warn b{color:var(--warn)}.chip.fail b{color:var(--fail)}.chip.fix b{color:var(--fix)}
+.events{margin-top:10px;font-size:13px;color:var(--muted);min-height:18px}
+main{flex:1;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:8px;align-content:start;padding:2px 4px 4px 2px;min-height:0}
+main::-webkit-scrollbar{width:8px}main::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px}
+.card{background:var(--panel);border:var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:8px 10px;animation:pop .45s ease both}
+.card h3{font-family:var(--title-font);font-size:13px;display:flex;align-items:center;gap:7px;margin-bottom:4px;letter-spacing:var(--h3-ls,0)}
+.idx{min-width:26px;height:26px;padding:0 6px;display:grid;place-items:center;border-radius:var(--idx-radius,50%);background:var(--accent);color:var(--on-accent);font-size:13px}
+.cst{margin-left:auto;font-size:12px;font-family:var(--font);padding:2px 9px;border-radius:999px;color:#fff;background:var(--muted)}
+.cst.pass{background:var(--pass)}.cst.warn{background:var(--warn)}.cst.fail{background:var(--fail)}.cst.fix{background:var(--fix)}
+.row{display:flex;gap:8px;align-items:flex-start;font-size:12px;padding:3px 0;border-top:1px dashed var(--line);animation:fade .35s ease both}
+.row:nth-child(2){border-top:0}
+.tag{flex:none;font-size:11px;padding:2px 8px;border-radius:var(--tag-radius,6px);color:#fff;background:var(--muted);margin-top:1px}
+.row.pass .tag{background:var(--pass)}.row.warn .tag{background:var(--warn)}.row.fail .tag{background:var(--fail)}.row.fix .tag{background:var(--fix)}
+.row.fail .txt{color:var(--fail);font-weight:600}.row.info .txt,.row.note .txt{color:var(--muted)}
+.txt{word-break:break-all;line-height:1.55}
+footer{display:flex;gap:10px;justify-content:flex-end;align-items:center}
+footer .hint{margin-right:auto;font-size:12px;color:var(--muted)}
+.btn{font:inherit;font-size:13px;padding:8px 14px;border-radius:var(--radius);border:var(--border);background:var(--panel);color:var(--text);cursor:pointer;transition:transform .15s,box-shadow .15s}
+.btn:hover{transform:translateY(-2px)}
+.btn.primary{background:var(--accent);color:var(--on-accent);box-shadow:var(--shadow)}
+.btn:disabled{opacity:.45;cursor:default;transform:none}
+.btn-sm{padding:2px 8px;font-size:11px;line-height:1.25}
+.card-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;align-items:center}
+.row .btn-copy{margin-left:auto;flex:none;padding:1px 7px;font-size:11px}
+footer .tog{display:inline-flex;align-items:center;gap:4px;font-size:12px;margin-right:8px;color:var(--muted);user-select:none;cursor:pointer;font-family:"Microsoft YaHei UI","Microsoft YaHei",sans-serif}
+footer .tog input{margin:0;accent-color:var(--accent)}
+.noanim *{animation:none!important}
+@keyframes pop{from{opacity:0;transform:translateY(12px) scale(.98)}}
+@keyframes fade{from{opacity:0;transform:translateX(-6px)}}
+
+/* 动漫风 */
+body[data-theme=anime]{--bg:#eaf5ff;--panel:#ffffff;--text:#2d3a5a;--muted:#7b8db0;--accent:#3d8bff;--on-accent:#fff;--line:#d3e4f7;--chip-bg:#f5faff;--pass:#22b07d;--warn:#f59e0b;--fail:#e5484d;--fix:#7c5cff;--radius:22px;--font:"YouYuan","Microsoft YaHei UI",sans-serif;--title-font:"YouYuan","Microsoft YaHei UI",sans-serif;--border:2px solid #d3e4f7;--shadow:0 6px 0 #d3e4f7}
+body[data-theme=anime] h1{color:#3d8bff}
+body[data-theme=anime] .logo{background:#ffd43b;color:#2d3a5a}
+body[data-theme=anime] .btn.primary{background:#3d8bff}
+
+/* 机械风 */
+body[data-theme=mech]{--bg:#0c1117;--panel:rgba(18,26,36,.88);--text:#d6e4ee;--muted:#6f8597;--accent:#ff8a00;--on-accent:#111;--line:#2a3b4c;--chip-bg:#0f161e;--pass:#00d6a8;--warn:#ffb000;--fail:#ff3b4e;--fix:#3fa9ff;--radius:3px;--idx-radius:2px;--tag-radius:2px;--font:"Bahnschrift","Consolas","Microsoft YaHei UI",sans-serif;--title-font:"Bahnschrift","Microsoft YaHei UI",sans-serif;--title-ls:2px;--h3-ls:1px;--border:1px solid #30465a;--shadow:0 0 0 1px rgba(255,138,0,.12),0 0 22px rgba(0,214,168,.07);--hline:1px solid #30465a}
+body[data-theme=mech] .card,body[data-theme=mech] .hero{clip-path:polygon(14px 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%,0 14px);border-left:3px solid #ff8a00}
+body[data-theme=mech] .deco::before{content:"";position:absolute;inset:0;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28'%3E%3Cpath d='M28 0H0M0 0V28' stroke='%2300ffdc' stroke-opacity='.08' stroke-width='1' fill='none'/%3E%3C/svg%3E") 0 0/28px 28px}
+body[data-theme=mech] .deco::after{content:"";position:absolute;inset:0;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect y='0' width='4' height='1' fill='%23ffffff' fill-opacity='.04'/%3E%3C/svg%3E") 0 0/4px 4px;animation:scan 8s linear infinite}
+@keyframes scan{to{background-position:0 300px}}
+body[data-theme=mech] .tag,body[data-theme=mech] .cst{color:#0b0f14;font-weight:700}
+body[data-theme=mech] .score b{color:#ff8a00;text-shadow:0 0 12px rgba(255,138,0,.5)}
+
+/* 夏日风 */
+body[data-theme=summer]{--bg:#bfe8ff;--panel:rgba(255,255,255,.8);--text:#0b4a6f;--muted:#5a90ad;--accent:#ffb627;--on-accent:#5a3200;--line:#cfe9f6;--chip-bg:#fff;--pass:#18b98a;--warn:#ff9416;--fail:#e5484d;--fix:#118ab2;--radius:16px;--font:"Microsoft YaHei UI",sans-serif;--title-font:"Segoe UI Black","Microsoft YaHei UI",sans-serif;--border:1px solid rgba(255,255,255,.95);--shadow:0 10px 30px rgba(17,138,178,.18)}
+body[data-theme=summer] .deco::before{content:"";position:absolute;right:-50px;top:-50px;width:190px;height:190px;border-radius:50%;background:#ffd23f;animation:glow 4s ease-in-out infinite alternate}
+@keyframes glow{to{transform:scale(1.08)}}
+body[data-theme=summer] .deco::after{content:"";position:absolute;left:0;right:0;bottom:0;height:120px;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 120' preserveAspectRatio='none'%3E%3Cpath d='M0 60 Q150 20 300 60 T600 60 T900 60 T1200 60 V120 H0Z' fill='%2366c7f4' fill-opacity='.45'/%3E%3Cpath d='M0 80 Q150 45 300 80 T600 80 T900 80 T1200 80 V120 H0Z' fill='%23ffffff' fill-opacity='.55'/%3E%3C/svg%3E") 0 0/100% 100%}
+
+/* 彩绘风 */
+body[data-theme=painted]{--bg:#fbf7ef;--panel:rgba(255,255,255,.62);--text:#3b3a4a;--muted:#8a8597;--accent:#7b61ff;--on-accent:#fff;--line:#e2dccd;--chip-bg:rgba(255,255,255,.8);--pass:#3fb37f;--warn:#f0a03a;--fail:#e5484d;--fix:#4d9de0;--radius:255px 15px 225px 15px/15px 225px 15px 255px;--idx-radius:50% 40% 55% 45%;--tag-radius:10px 4px 12px 5px;--font:"KaiTi","Microsoft YaHei UI",sans-serif;--title-font:"STXingkai","KaiTi","Microsoft YaHei UI",sans-serif;--border:2px solid #3b3a4a;--shadow:4px 5px 0 rgba(59,58,74,.18)}
+body[data-theme=painted] .deco{background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1000 800' preserveAspectRatio='none'%3E%3Cpath d='M60 140 C120 60 260 80 280 170 C300 260 170 300 110 260 C50 220 20 190 60 140Z' fill='%23ffcf70' fill-opacity='.45'/%3E%3Cpath d='M760 60 C860 30 960 110 930 190 C900 270 780 250 740 190 C700 130 700 80 760 60Z' fill='%239bd0ff' fill-opacity='.45'/%3E%3Cpath d='M680 600 C760 540 900 580 900 660 C900 740 760 770 700 730 C640 690 620 650 680 600Z' fill='%23b5e6a3' fill-opacity='.45'/%3E%3Cpath d='M80 620 C140 570 260 590 270 670 C280 750 150 770 100 730 C50 690 40 660 80 620Z' fill='%23c7b8ff' fill-opacity='.45'/%3E%3C/svg%3E") 0 0/100% 100%}
+body[data-theme=painted] .card:nth-child(odd){transform:rotate(-.4deg)}body[data-theme=painted] .card:nth-child(even){transform:rotate(.4deg)}
+body[data-theme=painted] .btn.primary{background:#7b61ff}
+body[data-theme=painted] h1{font-size:30px}
+
+/* 中国风 */
+body[data-theme=chinese]{--bg:#f2ead6;--panel:rgba(252,248,238,.92);--text:#2b2118;--muted:#8c7b66;--accent:#b22222;--on-accent:#fff6e6;--line:#d8c7a4;--chip-bg:#fbf6ea;--pass:#2e7d5b;--warn:#c98a1b;--fail:#b22222;--fix:#2f5d8a;--radius:2px;--idx-radius:2px;--tag-radius:2px;--font:"KaiTi","STKaiti","Microsoft YaHei UI",serif;--title-font:"STXingkai","KaiTi","STKaiti",serif;--title-ls:4px;--h3-ls:2px;--border:1px solid #c8b48c;--shadow:0 0 0 4px rgba(252,248,238,.95),0 0 0 5px #c8b48c,0 6px 18px rgba(80,50,20,.12);--hline:1px solid #c8b48c}
+body[data-theme=chinese] .logo{font-size:30px;box-shadow:inset 0 0 0 3px #b22222,inset 0 0 0 5px #fff6e6;transform:rotate(-4deg)}
+body[data-theme=chinese] .deco::after{content:"安";position:absolute;right:4%;bottom:-6%;font-family:"STXingkai","KaiTi",serif;font-size:420px;color:rgba(43,33,24,.05)}
+body[data-theme=chinese] h1{font-size:30px}
+body[data-theme=chinese] .card,body[data-theme=chinese] .hero{margin:5px}
+body[data-theme=chinese] .chip,body[data-theme=chinese] .cst{border-radius:2px}
+
+/* 欧美风 */
+body[data-theme=western]{--bg:#f4efe4;--panel:#fffdf8;--text:#1d2a44;--muted:#6b7385;--accent:#1d2a44;--on-accent:#f3e2b8;--line:#e5ddcb;--chip-bg:#fffdf8;--pass:#2f7d4f;--warn:#b7791f;--fail:#b3261e;--fix:#2b5c9e;--radius:6px;--idx-radius:3px;--font:"Segoe UI","Microsoft YaHei UI",sans-serif;--title-font:Georgia,"Times New Roman","SimSun",serif;--h3-ls:.5px;--border:1px solid #e5ddcb;--shadow:0 1px 2px rgba(0,0,0,.04),0 10px 26px rgba(29,42,68,.08);--hline:2px solid #c9a227}
+body[data-theme=western] h1{font-size:30px;font-style:italic}
+body[data-theme=western] .logo{color:#c9a227}
+body[data-theme=western] .card h3{text-transform:uppercase;font-size:14px}
+body[data-theme=western] .score b{font-style:italic}
+/* 紧凑一屏布局 */
+.app{padding:14px 18px 12px;gap:10px}
+header{padding-bottom:6px}
+.logo{width:42px;height:42px;font-size:22px}
+h1,body[data-theme=painted] h1,body[data-theme=chinese] h1,body[data-theme=western] h1{font-size:23px}
+.sub{font-size:12px;margin-top:1px}
+.hero{padding:8px 16px;gap:16px}
+.ring{width:84px;height:84px}
+.ring.running svg{animation:none}
+.score b{font-size:26px}
+.state{font-size:18px;margin-bottom:6px}
+.chip{font-size:12px;padding:3px 10px}
+.events{margin-top:6px;font-size:12px;min-height:16px}
+main{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;overflow:hidden auto;align-content:start}
+.card{padding:7px 10px;min-width:0;max-height:100%;overflow:hidden}
+.card h3{font-size:12.5px;margin-bottom:2px;gap:6px}
+.card .row{padding:2px 0}
+.card .row.info .txt,.card .row.note .txt,.card .row.pass .txt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card h3 span:nth-child(2){white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.idx{min-width:22px;height:22px;font-size:11px;flex:none}
+.cst{font-size:11px;padding:1px 7px;flex:none}
+.row{font-size:12px;padding:3px 0;gap:7px}
+.tag{font-size:10px;padding:1px 6px}
+.txt{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.45}
+.row.fail .txt,.row.warn .txt,.row.fix .txt{white-space:normal;overflow-wrap:anywhere}
+/* v3.3.0: 第 9 组（环境变量）每行都完整换行显示，长 PATH 类值不再被截断 */
+.card.env .row .txt{white-space:normal;overflow-wrap:anywhere;text-overflow:clip}
+.card.r-fail{order:-2;border-color:var(--fail);box-shadow:0 0 0 2px var(--fail)}
+.card.r-warn{order:-1;border-color:var(--warn);box-shadow:0 0 0 2px var(--warn)}
+.btn{padding:8px 16px;font-size:13px}
+.score b{transition:color .3s}
+.score.drop b{animation:drop .5s ease}
+@keyframes drop{30%{transform:scale(1.25);color:var(--fail)}}
+/* 字体清晰度优化：正文统一用微软雅黑，装饰字体只用于大标题 */
+body{--font:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Hiragino Sans GB","Segoe UI",sans-serif!important;text-rendering:optimizeLegibility}
+.card h3{font-family:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Hiragino Sans GB",sans-serif;font-weight:700;font-size:13.5px}
+.row{font-size:13px}
+.tag{font-size:11px;font-weight:700}
+.chip{font-size:12.5px}
+.cst{font-weight:700}
+.row.warn .tag,.cst.warn{color:#2a1a00}
+.row.info .txt,.row.note .txt{opacity:1}
+.row.more .tag{background:var(--muted)}
+.row.more .txt{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:help}
+.row[hidden]{display:none!important}
+.row.more.has-fail .tag{background:var(--fail)}
+.row.more.has-fail .txt{color:var(--fail);font-weight:600}
+#groups>.card{max-height:none}
+.btn{font-family:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Hiragino Sans GB",sans-serif;font-weight:600}
+.state{font-weight:700}
+body[data-theme=anime]{--muted:#5d6f92;--title-font:"YouYuan","Microsoft YaHei UI",sans-serif}
+body[data-theme=anime] h1,body[data-theme=anime] .state,body[data-theme=anime] .score b{font-weight:900}
+body[data-theme=mech]{--muted:#9db0c0;--text:#e8f1f7;--panel:rgba(18,26,36,.96);--title-font:"Bahnschrift","Microsoft YaHei UI",sans-serif}
+body[data-theme=mech] .card h3{font-family:"Bahnschrift","Microsoft YaHei UI",sans-serif}
+body[data-theme=summer]{--muted:#2f6684;--text:#073b5a;--panel:rgba(255,255,255,.94);--title-font:"Segoe UI","Microsoft YaHei UI",sans-serif}
+body[data-theme=summer] h1{font-weight:900}
+body[data-theme=painted]{--muted:#57526a;--text:#2b2a38;--panel:rgba(255,255,255,.9);--title-font:"KaiTi","STKaiti","Microsoft YaHei UI",serif}
+body[data-theme=painted] h1,body[data-theme=painted] .state{font-weight:700}
+body[data-theme=chinese]{--muted:#6a5842;--text:#21180f;--title-font:"KaiTi","STKaiti","Microsoft YaHei UI",serif}
+body[data-theme=chinese] h1,body[data-theme=chinese] .state,body[data-theme=chinese] .logo{font-weight:700}
+body[data-theme=chinese] .deco::after{font-family:"KaiTi",serif}
+body[data-theme=western]{--muted:#4c5567;--title-font:Georgia,"Microsoft YaHei UI",serif}
+footer{flex-wrap:wrap}.hint{flex-basis:100%;font-size:12px}.btn{padding:8px 10px}select.btn{background:var(--panel);color:var(--text)}
+@media(max-width:760px){main{grid-template-columns:1fr;grid-auto-rows:max-content;overflow:auto}.card{max-height:none}header{flex-wrap:wrap}.themes{flex-wrap:wrap}h1{font-size:20px}.app{padding:10px}footer .btn{flex:1 1 auto}.hero{gap:10px}}
+.chip.unknown{border-color:#8e7bbb;color:#67538e}.row.unknown .tag,.cst.unknown{background:#e7e0f3;color:#59447c}.card:has(.cst.unknown){border-color:#b7a7d0}main{overflow:auto;grid-auto-rows:max-content}.row.unknown .txt{white-space:normal;overflow-wrap:anywhere}
+.card.r-fail{order:-4}.card.r-unknown{order:-3}.card.r-warn{order:-2}
+</style></head>
+<body data-theme="anime">
+<div class="deco" id="deco"></div>
+<div class="app">
+  <header>
+    <div class="brand"><div class="logo" id="logo">✦</div><div><h1 id="title"><span id="titleText">Claude 安全启动</span> <span class="ver">v3.5.3</span> <span id="testModeBadge" style="display:none;margin-left:8px;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:700;vertical-align:middle;background:#1a5f7a;color:#fff;border:1px solid #0d3d4d">测试模式</span></h1><p class="sub" id="sub"></p></div></div>
+    <div class="themes" id="themes"></div>
+  </header>
+  <section class="hero">
+    <div class="ring" id="ring"><svg viewBox="0 0 120 120"><circle class="track" cx="60" cy="60" r="52"/><circle class="bar" id="bar" cx="60" cy="60" r="52"/></svg><div class="score"><b id="score">--</b><span id="scoreLabel">已检项目评分</span></div></div>
+    <div class="summary">
+      <div class="state" id="state"></div>
+      <div class="chips">
+        <span class="chip pass">通过<b id="cpass">0</b></span><span class="chip warn">警告<b id="cwarn">0</b></span>
+        <span class="chip fail">仍有风险<b id="cfail">0</b></span><span class="chip unknown">未核实<b id="cunknown">0</b></span><span class="chip">参考 / 无数据<b id="creference">0</b></span><span class="chip fix">已修复<b id="cfix">0</b></span>
+      </div>
+      <div class="hint" id="coverage">已检查 0/15 组；分数按实际扣分项计算</div><div class="events" id="events"></div>
+    </div>
+  </section>
+  <main id="groups"></main>
+  <footer>
+    <span class="hint" id="hint"></span><span class="hint" id="riskLive">客户端连接监控：等待客户端运行</span>
+    <label class="tog" title="勾选后问题说明里的出口 IP / WebRTC IP 也会脱敏"><input type="checkbox" id="hideIp">隐藏 IP</label>
+    <button class="btn" id="bCopyAll" disabled>复制全部问题</button>
+    <select id="checkMode" class="btn" aria-label="检查范围"><option value="quick">快速检查</option><option value="full">完整诊断</option></select>
+    <button class="btn" id="bCheck">只读检查</button>
+    <button class="btn primary" id="bLaunch">修复并启动 Claude</button>
+    <button class="btn" id="bSettings">检查并修复</button>
+    <button class="btn" id="bPlan">修复标准</button>
+    <button class="btn" id="bLearn">记住当前环境</button>
+  </footer>
+</div>
+<script>
+const T={
+ anime:{name:'动漫',title:'Claude 出发准备中♪',sub:'今天也要平安上线哦～',logo:'⭐',p:['✨','⭐','☁️','🌙','💫'],s:{idle:'准备好了吗？',run:'正在努力检查中…',ok:'完美！可以出发啦 ✨',warn:'有点小问题，看看再走～',fail:'等一下！有必须修的问题 >_<'}},
+ mech:{name:'机械',title:'CLAUDE // PRE-FLIGHT',sub:'SYSTEM DIAGNOSTICS · 启动前系统自检',logo:'⚙',p:['⚙','◆','⚙'],s:{idle:'STANDBY',run:'SCANNING…',ok:'ALL SYSTEMS GO',warn:'WARNINGS DETECTED',fail:'LAUNCH ABORTED'}},
+ summer:{name:'夏日',title:'Claude 夏日出航',sub:'清爽出发 · 一路畅通',logo:'☀️',p:['🫧','🐚','🍉','🌴','🫧'],s:{idle:'整装待发',run:'正在检查航线…',ok:'风平浪静，随时出发 🌊',warn:'有点小风浪，留意一下',fail:'暂时不宜出航'}},
+ painted:{name:'彩绘',title:'Claude 启程画册',sub:'为每一次出发上色',logo:'🎨',p:['🖌️','🌈','🎨','💧'],s:{idle:'画布已备好',run:'正在调色…',ok:'色彩完美，可以出发',warn:'还差几笔',fail:'这幅画需要修改'}},
+ chinese:{name:'中国风',title:'Claude 安全启程',sub:'启程之前 · 一一勘验',logo:'安',p:['❀','☁','❀'],s:{idle:'静候勘验',run:'勘验中…',ok:'诸事皆宜 · 可以启程',warn:'尚有小疵 · 酌情处置',fail:'不宜出行 · 须先修正'}},
+ western:{name:'欧美',title:'Claude Pre-flight',sub:'Ready for takeoff · 启动前检查',logo:'✈',p:[],s:{idle:'Standing by',run:'Running checks…',ok:'Cleared for takeoff',warn:'Proceed with caution',fail:'Hold — action required'}}
+};
+const CN=['壹','贰','叁','肆','伍','陆','柒','捌','玖','拾','拾壹','拾贰','拾叁','拾肆'];
+const LV={'通过':'pass','警告':'warn','失败':'fail','修复':'fix','信息':'info','提示':'note','待核实':'unknown'};
+const RANK={fail:5,warn:4,unknown:3,fix:2,pass:1,info:0,note:0};
+const CSL_TOKEN='__CSL_TOKEN__';
+const CSL_TESTMODE=('__CSL_TESTMODE__'==='1');
+const CSL_USERPROFILE='__CSL_USERPROFILE__';
+const CSL_COMPUTERNAME='__CSL_COMPUTERNAME__';
+const CSL_ISSUE_CLOSE='请只给出建议，确认后再修改；不要修改 Claude Code 自身依赖的环境变量。';
+const CSL_ISSUE_IP='本说明包含你的出口 IP，粘贴前请确认';
+if(CSL_TESTMODE){const b=document.getElementById('testModeBadge');if(b)b.style.display='inline-block';}
+function apiHeaders(isPost){const h={'X-CSL-Token':CSL_TOKEN};if(isPost)h['Content-Type']='application/json';return h}
+async function api(method,url,body){
+ const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),12000);
+ try{const opt={method,headers:apiHeaders(method==='POST'),signal:controller.signal};if(body!==undefined)opt.body=JSON.stringify(body);
+ const r=await fetch(url,opt);let j;try{j=await r.json()}catch(e){throw new Error('服务器返回了无法解析的结果')}
+ if(!r.ok||j?.ok===false)throw new Error(j?.error||('请求失败 '+r.status));return j
+ }finally{clearTimeout(timer)}}
+
+const CST={pass:'已核对',warn:'需关注',fail:'仍有风险',fix:'已修复',unknown:'未核实'};
+const $=id=>document.getElementById(id);
+let theme='__THEME__'; if(!T[theme]) theme='anime';
+let st, next=0, busy=false;
+function reset(){st={groups:[],cur:null,score:null,cnt:{pass:0,warn:0,fail:0,fix:0,unknown:0,reference:0},events:[],phase:'idle',hasFinal:false};$('groups').innerHTML='';$('events').textContent='';$('coverage').textContent='已检查 0/15 组；分数按实际扣分项计算';setScore(null);count();const ca=$('bCopyAll');if(ca)ca.disabled=true}
+function esc(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+function idxLabel(n){return theme==='chinese'?(CN[n-1]||n):theme==='mech'?('0'+n).slice(-2):n}
+function count(){for(const k in st.cnt)$('c'+k).textContent=st.cnt[k]}
+function setState(){$('state').textContent=st.phase==='error'?'检查未完成':st.phase==='run'?'正在检查 · '+(st.checkedGroups||0)+'/15 组':st.cnt.fail?'仍有风险 · 需处理':st.cnt.unknown?'存在未核实项':st.cnt.warn?'存在告警 · 请查看详情':st.standardVerified?'本地标准已复查':T[theme].s[st.phase]; $('ring').classList.toggle('running',st.phase==='run')}
+function setScore(s){const bar=$('bar');if(s==null){$('score').textContent='--';bar.style.strokeDashoffset=326.7;return}
+ $('score').textContent=s;bar.style.strokeDashoffset=326.7*(1-s/100);bar.style.stroke=st?.cnt.fail||s<70?'var(--fail)':st?.phase==='run'||st?.cnt.unknown||st?.cnt.warn||s<90?'var(--warn)':'var(--pass)'}
+function addCard(g){const el=document.createElement('div');el.className='card'+(isEnvGroup(g)?' env':'');
+ el.innerHTML=`<h3><span class="idx">${idxLabel(g.n)}</span><span>${esc(g.name)}</span><span class="penalty" style="color:var(--fail);white-space:nowrap"></span><span class="cst"></span></h3><div class="card-actions" hidden></div>`;g.el=el;$('groups').appendChild(el);g.rows.forEach(r=>addRow(g,r));cardStatus(g)}
+function hideIpOn(){const el=$('hideIp');return !!(el&&el.checked)}
+function isPrivateOrFakeIp(ip){if(!ip)return true;if(/^127\./.test(ip)||/^10\./.test(ip)||/^192\.168\./.test(ip)||/^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)||/^198\.18\./.test(ip)||/^::1$/i.test(ip)||/^fe80:/i.test(ip))return true;return false}
+function textHasExitIp(s){if(!s)return false;let found=false;String(s).replace(/\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b/g,ip=>{if(!isPrivateOrFakeIp(ip))found=true;return ip});return found}
+function looksSecret(s){return /controllerSecret|X-CSL-Token|Authorization:\s*Bearer|api[_-]?key|auth[_-]?token|sk-[a-zA-Z0-9]{8,}|Bearer\s+[A-Za-z0-9\-_\.]{16,}/i.test(s||'')}
+function protectIssueValue(v,hide){if(v==null||v==='')return '(空)';let s=String(v);if(looksSecret(s)){return s.length<=4?s.charAt(0)+'****':s.slice(0,4)+'****'}
+  if(CSL_USERPROFILE&&!CSL_USERPROFILE.startsWith('__CSL_')){const re=new RegExp(CSL_USERPROFILE.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'ig');s=s.replace(re,'%USERPROFILE%')}
+  s=s.replace(/([A-Za-z]:\\Users\\)[^\\\/\s"']+/ig,'%USERPROFILE%');
+  s=s.replace(/(\/Users\/)[^\/\s"']+/g,'%USERPROFILE%');
+  if(CSL_COMPUTERNAME&&!CSL_COMPUTERNAME.startsWith('__CSL_')){const re=new RegExp(CSL_COMPUTERNAME.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'ig');s=s.replace(re,'<PC>')}
+  s=s.replace(/https?:\/\/[^\s'"<>]+(?:subscribe|sub\?|\/sub\/|proxy-provider|providers?\/|clash|verge)[^\s'"<>]*/ig,'<订阅链接>');
+  s=s.replace(/https?:\/\/[^\s'"<>]*(?:token|password|key)=[^\s'"<>]+/ig,'<订阅链接>');
+  s=s.replace(/\b(?!(?:anthropic|claude|ipify|ipinfo|proxycheck|ip-api|googleapis|cloudflare|stun)\b)[a-z0-9][a-z0-9\-.]{2,}\.(?:com|net|org|io|cc|me|xyz|top|dev)(?::\d{2,5})?\b/ig,'<节点>');
+  s=s.replace(/\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b/g,ip=>isPrivateOrFakeIp(ip)?ip:(hide?'<出口IP>':ip));
+  s=s.replace(/\b[0-9a-f]{64}\b/ig,'<令牌>');
+  return s}
+function issueMeta(group,text){const g=group||'';const t=text||'';
+  let expected='按预设标准修复可确认的偏差，并保留无法确认的诊断信息';let recheck='powershell -NoProfile -ExecutionPolicy Bypass -File .\\claude-preflight.ps1 -NoLaunch -NoPause';
+  if(/官方支持地区/.test(g))expected='按有来源和时效的官方名单核对出口；真实使用资格需用户确认，不用更换基准或伪造地区来放行';
+  else if(/实际进程连接/.test(g))expected='只读核对归属到 Claude 的官方服务连接，不断开连接、不注入或关闭 Claude；证据不足时自动复查';
+  else if(/账号告警|客户端告警扫描/.test(g))expected='只报告近期日志扫描结果；403、429 与封号分开处理，出现告警时确认客户端当前提示，无日志时跳过';
+  else if(/Clash|TUN/.test(g))expected='Clash Verge 已运行，代理内核 (mihomo) 运行中，TUN（虚拟网卡）已启用';
+  else if(/时区/.test(g))expected='系统时区与用户记录的标准一致；自动修复后应复查实际时区';
+  else if(/节点/.test(g))expected='Claude 策略组（及锁定的主组）使用记住的节点';
+  else if(/出口 IP|三方/.test(g))expected='Claude 域名探测出口与用户记录的标准一致；通用 IP 查询允许按规则分流';
+  else if(/IP 风险/.test(g))expected='第三方 IP 标签仅作参考，实际故障需结合目标域名的路由和连通性确认';
+  else if(/DNS/.test(g))expected='目标域名能够正确解析并按现有代理规则连接；fake-ip 与 redir-host 均可正常工作';
+  else if(/IPv6/.test(g))expected='确认 IPv6 流量是否按预期路由；地址存在本身不等于泄露';
+  else if(/连通性|api\.anthropic/.test(g))expected='HTTPS 连通性可验证；账号、地区和权限需要结合响应内容判断';
+  else if(/环境变量/.test(g))expected='正常 API Key、模型和认证变量按用途保留；自定义接口需单独核实，不自动清除';
+  else if(/残留/.test(g))expected='按实际生效的 Claude Code 接口配置判断；正常配置与未运行的切换脚本可以保留';
+  else if(/浏览器/.test(g)){expected='面板浏览器信息应注明来源；发现差异时核实实际路由，不直接替代 Claude 桌面端结论';recheck='从面板运行「检查并修复」并查看浏览器参考信息（命令行不采集 WebRTC）'}
+  else if(/其他/.test(g))expected='系统语言合理，Claude 桌面版与 CLI 已安装';
+  return{problem:t||'检查未通过',expected,recheck,group:g}}
+function formatIssue(group,lvl,text,hide,skipNotice){const meta=issueMeta(group,text);const hideIp=!!hide;const current=protectIssueValue(text,hideIp);const problem=protectIssueValue(meta.problem,hideIp);const expected=protectIssueValue(meta.expected,hideIp);
+  const title=meta.group?('['+lvl+'] '+(meta.group.replace(/^\d+\.\s*/,''))):('['+lvl+']');
+  const lines=[];const hasIp=textHasExitIp(text);
+  if(hasIp&&!hideIp&&!skipNotice){lines.push(CSL_ISSUE_IP);lines.push('')}
+  lines.push('问题: '+(meta.group?(title+' — '+problem):problem));
+  lines.push('当前状态: '+current);
+  lines.push('期望状态: '+expected);
+  lines.push('复查命令: '+meta.recheck);
+  lines.push(CSL_ISSUE_CLOSE);
+  return lines.join('\r\n')}
+function collectIssueItems(){const out=[];(st.groups||[]).forEach(g=>{(g.rows||[]).forEach(r=>{if(r.cls==='fail'||r.cls==='warn'||r.cls==='unknown')out.push({group:g.name,lvl:r.lvl,text:r.text,cls:r.cls})})});return out}
+function formatIssuePack(hide){const items=collectIssueItems();if(!items.length)return'(当前没有失败或警告项)';
+  const hideIp=!!hide;let anyIp=items.some(i=>textHasExitIp(i.text));const parts=[];
+  if(anyIp&&!hideIp){parts.push(CSL_ISSUE_IP);parts.push('')}
+  items.forEach((it,i)=>{parts.push('---- 问题 '+(i+1)+' ----');parts.push(formatIssue(it.group,it.lvl,it.text,hideIp,true));parts.push('')});
+  return parts.join('\r\n').replace(/\s+$/,'')+'\r\n'}
+async function copyText(s){try{if(navigator.clipboard&&navigator.clipboard.writeText){await navigator.clipboard.writeText(s);return true}}catch(e){}
+  try{const ta=document.createElement('textarea');ta.value=s;ta.style.cssText='position:fixed;left:-9999px;top:0';document.body.appendChild(ta);ta.select();const ok=document.execCommand('copy');ta.remove();return ok}catch(e){return false}}
+async function copyOneIssue(g,r){const t=formatIssue(g.name,r.lvl,r.text,hideIpOn(),false);const ok=await copyText(t);$('hint').textContent=ok?'已复制本项问题说明':'复制失败，请手动全选';}
+async function copyAllIssues(){const t=formatIssuePack(hideIpOn());const ok=await copyText(t);$('hint').textContent=ok?'已复制全部问题说明':'复制失败，请手动全选'}
+function isEnvGroup(g){return /环境变量/.test(g.name||'')}
+function isFixableEnvFail(g,r){return isEnvGroup(g)&&r.cls==='fail'&&/用户级/.test(r.text)}
+function isUnfixableIssue(g,r){return (r.cls==='fail'||r.cls==='warn'||r.cls==='unknown')&&!isFixableEnvFail(g,r)}
+function addRow(g,r){const d=document.createElement('div');d.className='row '+r.cls;const label=r.cls==='warn'&&r.weight===0?r.lvl+'·不扣分':r.lvl;d.innerHTML=`<span class="tag">${label}</span><span class="txt">${esc(r.text)}</span>`;d.title=r.text;
+  if(isUnfixableIssue(g,r)){const b=document.createElement('button');b.type='button';b.className='btn btn-sm btn-copy';b.textContent='复制问题说明';b.onclick=e=>{e.stopPropagation();copyOneIssue(g,r)};d.appendChild(b)}
+  g.el.appendChild(d);fitCard(g)}
+// v3.3.0: a card never silently clips rows. If rows overflow the card, fold the least important
+// ones (pass/info/note first, then from the bottom) into one "还有 N 条" row; hover shows full text.
+const FOLD_ORDER={pass:0,info:0,note:0,fix:1,warn:2,fail:3};
+function cardOver(el){return el.scrollHeight>el.clientHeight+1}
+function mainOver(){const m=$('groups');return !!m&&m.scrollHeight>m.clientHeight+1}
+function setMore(el,hidden){let more=el.querySelector(':scope > .row.more');
+ if(!hidden.length){if(more)more.remove();return}
+ if(!more){more=document.createElement('div');more.className='row more';more.innerHTML='<span class="tag">更多</span><span class="txt"></span>';el.appendChild(more)}
+ const nFail=hidden.filter(o=>o.r.classList.contains('fail')).length;more.classList.toggle('has-fail',nFail>0);
+ more.querySelector('.txt').textContent='还有 '+hidden.length+' 条未显示'+(nFail>0?'（含 '+nFail+' 条失败）':'')+'，鼠标悬停看全文';
+ more.title=[...hidden].sort((x,y)=>x.i-y.i).map(o=>'['+o.r.querySelector('.tag').textContent+'] '+o.r.title).join('\n')}
+function fitAll(){const gs=(st&&st.groups)||[];
+ gs.forEach(g=>{if(!g.el)return;g.el.querySelectorAll(':scope > .row').forEach(r=>r.hidden=false);setMore(g.el,[]);g._hidden=[]});
+  if(window.innerWidth<=760)return;
+ for(let guard=0;guard<200;guard++){
+  let tgt=gs.find(g=>g.el&&cardOver(g.el));
+  // Diagnostic content scrolls instead of hiding evidence to fit the viewport.
+  if(!tgt)break;
+  const vis=[...tgt.el.querySelectorAll(':scope > .row:not(.more)')].map((r,i)=>({r,i,k:FOLD_ORDER[r.className.split(' ')[1]]||0})).filter(o=>!o.r.hidden);
+  if(vis.length<2)break;
+  vis.sort((x,y)=>x.k-y.k||y.i-x.i);tgt._hidden.push(vis[0]);vis[0].r.hidden=true;setMore(tgt.el,tgt._hidden)}}
+let fitQueued=false;
+function fitCard(g){if(fitQueued)return;fitQueued=true;requestAnimationFrame(()=>{fitQueued=false;fitAll()})}
+window.addEventListener('resize',()=>fitAll());
+function cardStatus(g){let w='info';g.rows.forEach(r=>{if(RANK[r.cls]>RANK[w])w=r.cls});const c=g.el.querySelector('.cst');c.className='cst '+w;const nW=g.rows.filter(r=>r.cls===w).length;const neutralScan=g.n===15&&w==='info';c.textContent=neutralScan?'无近期日志':(g.n===15&&w==='pass'?'已扫描':(CST[w]||'信息'))+((w==='fail'||w==='warn'||w==='unknown')&&nW>0?' '+nW:'');c.style.display=CST[w]||neutralScan?'':'none';g.el.classList.toggle('r-fail',w==='fail');g.el.classList.toggle('r-warn',w==='warn');g.el.classList.toggle('r-unknown',w==='unknown');
+ if(isEnvGroup(g)){updateEnvActions(g,w)}}
+function updateEnvActions(g,w){const box=g.el.querySelector('.card-actions');if(!box)return;
+ const hasUserFail=g.rows.some(r=>r.cls==='fail'&&/用户级/.test(r.text));
+ box.innerHTML='';
+ // Existing variables are preserved; explicit CLI cleanup still requires a preview and confirmation.
+ const u=document.createElement('button');u.className='btn btn-sm';u.textContent='撤销上次修复';u.onclick=()=>envFixUndo(g);box.appendChild(u);
+ box.hidden=false}
+async function envFixApply(g){try{
+  const planRes=await api('POST','/api/envfix',{action:'plan'});
+  if(!planRes.ok){alert(planRes.error||'无法预览修复');return}
+  const rows=(planRes.plan||[]).filter(p=>p.action==='remove');
+  const skips=(planRes.plan||[]).filter(p=>p.action==='skip-admin');
+  const keeps=(planRes.plan||[]).filter(p=>p.action==='keep');
+  if(!rows.length){alert('没有可清除的用户级变量'+(keeps.length?'（'+keeps.map(p=>p.name).join('、')+' 在 envFixKeep 中保留）':'')+(skips.length?'\n仅 Machine 级的变量需要管理员手动处理':''));return}
+  let msg='将执行以下操作（只列变量名，不显示值）：\n';
+  rows.forEach(p=>{msg+='  · 删除用户级 '+p.name+'\n'});
+  keeps.forEach(p=>{msg+='  · 保留 '+p.name+'（envFixKeep）\n'});
+  skips.forEach(p=>{msg+='  · '+p.name+' 仅 Machine 级：需要管理员手动处理\n'});
+  msg+='\n新开的终端才会生效。\n确认修复？';
+  if(!confirm(msg))return;
+  const r=await api('POST','/api/envfix',{action:'apply'});
+  if(!r.ok){alert(r.error||'修复失败');return}
+  alert('已修复'+(r.id?('（备份 '+r.id+'）'):'')+'。'+(r.hint||'新开的终端才会生效')+'\n将自动重新检查。');
+  run(false,false);
+ }catch(e){alert('修复请求失败: '+e)}}
+function undoConflictDialog(conflicts){
+  return new Promise(resolve=>{
+    const wrap=document.createElement('div');
+    wrap.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;padding:12px';
+    const box=document.createElement('div');
+    box.style.cssText='background:var(--panel,#fff);color:var(--text,#222);border:1px solid var(--line,#ccc);border-radius:8px;max-width:560px;width:100%;max-height:78vh;display:flex;flex-direction:column;padding:14px 16px;font-family:"Microsoft YaHei UI","Microsoft YaHei",sans-serif;font-size:13px';
+    const head=document.createElement('div');
+    head.innerHTML='<div style="font-weight:700;font-size:15px;margin-bottom:4px">撤销冲突</div><div style="color:var(--muted,#666);margin-bottom:8px;font-size:12px">每项默认跳过。可逐项改选覆盖，或用全部按钮。确认后才会改系统；取消不改。</div>';
+    const list=document.createElement('div');
+    list.style.cssText='flex:1;overflow:auto;min-height:0;margin-bottom:10px;border-top:1px solid var(--line,#ddd)';
+    const radios=[];
+    conflicts.forEach((c,idx)=>{
+      const row=document.createElement('div');
+      row.style.cssText='padding:6px 0;border-bottom:1px dashed var(--line,#ddd);display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap';
+      const info=document.createElement('div');
+      info.style.cssText='flex:1;min-width:180px;line-height:1.45';
+      info.innerHTML='<b>'+esc(c.name||'')+'</b><br><span style="color:var(--muted,#666)">当前值与修复后不一致</span>';
+      const ctl=document.createElement('div');
+      ctl.style.cssText='flex:none;display:flex;gap:8px;align-items:center;font-size:12px';
+      const g='csl-ud-'+idx;
+      const mk=(val,label,checked)=>{
+        const lab=document.createElement('label');
+        lab.style.cssText='cursor:pointer;display:inline-flex;align-items:center;gap:3px;user-select:none';
+        const inp=document.createElement('input');
+        inp.type='radio';inp.name=g;inp.value=val;inp.checked=!!checked;
+        lab.appendChild(inp);lab.appendChild(document.createTextNode(label));
+        ctl.appendChild(lab);return inp;
+      };
+      const rSkip=mk('skip','跳过',true);
+      const rOver=mk('overwrite','覆盖',false);
+      radios.push({name:c.name, get:()=>rOver.checked?'overwrite':'skip', set:(v)=>{if(v==='overwrite')rOver.checked=true;else rSkip.checked=true}});
+      row.appendChild(info);row.appendChild(ctl);list.appendChild(row);
+    });
+    const foot=document.createElement('div');
+    foot.style.cssText='display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;align-items:center';
+    const mkBtn=(txt,primary,fn)=>{const b=document.createElement('button');b.type='button';b.className='btn'+(primary?' primary':'');b.textContent=txt;b.onclick=fn;foot.appendChild(b);return b};
+    mkBtn('全部跳过',false,()=>radios.forEach(r=>r.set('skip')));
+    mkBtn('全部覆盖',false,()=>radios.forEach(r=>r.set('overwrite')));
+    mkBtn('取消',false,()=>{wrap.remove();resolve({cancel:true})});
+    mkBtn('确认',true,()=>{
+      const decisions={};
+      radios.forEach(r=>{decisions[r.name]=r.get()});
+      wrap.remove();
+      resolve({cancel:false, defaultConflictDecision:'skip', decisions});
+    });
+    box.appendChild(head);box.appendChild(list);box.appendChild(foot);
+    wrap.appendChild(box);document.body.appendChild(wrap);
+  });
+}
+async function envFixUndo(g){try{
+  const list=await api('POST','/api/envfix',{action:'list'});
+  const items=(list.items||[]).filter(i=>!i.undone);
+  if(!items.length){alert('没有可撤销的修复');return}
+  const latest=items[0];
+  const plan=await api('POST','/api/envfix',{action:'undo-plan',id:latest.id});
+  if(!plan.ok){alert(plan.error||'无法预览撤销');return}
+  let defaultConflictDecision='skip';
+  let decisions={};
+  const confs=plan.conflicts||[];
+  if(confs.length){
+    const choice=await undoConflictDialog(confs);
+    if(!choice||choice.cancel)return; // 取消=不改系统
+    defaultConflictDecision=choice.defaultConflictDecision||'skip';
+    decisions=choice.decisions||{};
+  } else {
+    let msg='撤销修复 '+latest.id+(latest.ts?('（'+latest.ts+'）'):'')+'？\n';
+    (plan.pending||[]).forEach(v=>{msg+='  · 恢复 '+v.name+'\n'});
+    msg+='\n新开的终端才会生效。';
+    if(!confirm(msg))return;
+  }
+  const r=await api('POST','/api/envfix',{action:'undo-apply',id:latest.id,defaultConflictDecision,decisions});
+  if(!r.ok && !(r.skipped&&r.skipped.length)){alert(r.error||'撤销失败');return}
+  let done='已撤销。';
+  if(r.skipped&&r.skipped.length) done='已撤销（跳过冲突 '+r.skipped.length+' 项，exitCode='+(r.exitCode||3)+'）。';
+  alert(done+(r.hint||'新开的终端才会生效'));
+  run(false,false);
+ }catch(e){alert('撤销请求失败: '+e)}}
+function handle(line){line=line.replace(/^\uFEFF/,'').replace(/\s+$/,'');if(!line)return;let m;
+ if(m=line.match(/^== (?:(\d+)\.\s*)?(.+)$/)){const g={n:st.groups.length+1,name:m[2],rows:[]};st.groups.push(g);st.cur=g;addCard(g);g.el.scrollIntoView({block:'nearest'});return}
+ if(m=line.match(/^\s+\[(通过|信息|修复|提示|警告|失败|待核实)\]\s*(.*)$/)){const r={lvl:m[1],cls:LV[m[1]],text:m[2]};
+  if(!st.cur){const g={n:st.groups.length+1,name:'其他',rows:[]};st.groups.push(g);st.cur=g;addCard(g)}
+  st.cur.rows.push(r);addRow(st.cur,r);cardStatus(st.cur);const a=assessmentFromGroups();st.cnt=a.cnt;count();return}
+ if(m=line.match(/一致性评分:\s*(\d+)/)){st.score=+m[1];return}
+ if(/正在启动 Claude|切换到前台|已启动后台监控|未启动 Claude|NoLaunch/.test(line)){st.events.push(line.trim());$('events').textContent=st.events.join('　·　')}
+}
+function failRun(message){busy=false;setBusy(false);st.phase='error';setState();setScore(null);$('score').title='检查未完成，不显示评分';$('hint').textContent=message||'检查未完成，请重试';const ca=$('bCopyAll');if(ca)ca.disabled=true}
+const EVENT_LEVELS={PASS:'通过',INFO:'信息',FIX:'修复',NOTE:'提示',WARN:'警告',FAIL:'失败',UNKNOWN:'待核实'};
+function assessmentFromGroups(){
+ const cnt={pass:0,warn:0,fail:0,fix:0,unknown:0,reference:0};let lost=0,checked=0;const deductions=[];
+ for(const g of st.groups){
+  if(!g.rows.length)continue;checked++;
+  const has=cls=>g.rows.some(r=>r.cls===cls);
+  if(has('fail'))cnt.fail++;else if(has('unknown'))cnt.unknown++;else if(has('warn'))cnt.warn++;
+  else if(has('pass')||has('fix')){cnt.pass++;if(g.hadFix||has('fix'))cnt.fix++}else cnt.reference++;
+  const penalty=g.rows.reduce((sum,r)=>sum+(Number.isFinite(r.weight)?r.weight:0),0);lost+=penalty;
+  if(penalty)deductions.push(g.name+' -'+penalty+' 分');
+  const badge=g.el?.querySelector('.penalty');if(badge){badge.textContent=penalty?'-'+penalty+'分':'';badge.title='按本组实际检查明细扣分'}
+ }
+ return{score:checked?Math.max(0,100-lost):null,cnt,checked,deductions};
+}
+function syncAssessment(){
+ const a=assessmentFromGroups();st.cnt=a.cnt;st.checkedGroups=a.checked;st.score=a.score;count();
+ if(st.hasFinal&&st.phase!=='error')st.phase=st.cnt.fail?'fail':st.cnt.warn||st.cnt.unknown?'warn':'ok';
+ setState();setScore(st.phase==='error'?null:a.score);$('scoreLabel').textContent=st.phase==='run'?'检查中评分':'已检项目评分';
+ $('coverage').textContent='已检查 '+a.checked+'/15 组 · 待核实 '+st.cnt.unknown+' 组 · 参考 / 无数据 '+st.cnt.reference+' 组';
+ $('score').title=a.deductions.length?a.deductions.join('\n'):'已检查项暂无扣分；未核实项不作通过，不代表账号风险概率';
+ $('bCopyAll').disabled=busy||!(st.cnt.fail||st.cnt.warn||st.cnt.unknown);
+ return a;
+}
+function eventRow(e,items=[]){
+ const lvl=EVENT_LEVELS[e.Level];if(!lvl||typeof e.Text!=='string')return null;
+ let weight=e.Weight;if(!Number.isFinite(weight)){const item=items.find(i=>i.Group===e.Group&&i.Level===e.Level&&i.Text===e.Text);weight=Number.isFinite(item?.Weight)?item.Weight:e.Level==='FAIL'?25:0}
+ if(!Number.isInteger(weight)||weight<0)return null;
+ return{lvl,cls:LV[lvl],text:e.Text,weight};
+}
+function renderCheckSnapshot(snapshot){
+ const previous=st.events,scroll=$('groups').scrollTop;reset();st.events=previous;$('events').textContent=previous.join('　·　');
+ const groups=new Map();for(const name of snapshot.stages){const n=Number(name.match(/^\d+/)?.[0])||st.groups.length+1;const g={n,name:name.replace(/^\d+\.\s*/,''),rows:[]};st.groups.push(g);groups.set(name,g);addCard(g)}
+ for(const e of snapshot.events||[]){const g=groups.get(e.Group),r=eventRow(e,snapshot.items||[]);if(!g||!r)continue;g.rows.push(r)}
+ for(const g of st.groups){g.hadFix=g.rows.some(r=>r.cls==='fix');g.rows.forEach(r=>addRow(g,r));cardStatus(g)}
+ st.cur=st.groups.at(-1)||null;$('groups').scrollTop=scroll;
+}
+function applyProgress(progress){
+ if(!progress||progress.assessmentVersion!==1||!Array.isArray(progress.events)||!Array.isArray(progress.stages)||progress.stages.length>15)return;
+ if(progress.runId===st.progressRunId&&progress.sequence===st.progressSequence)return;
+ renderCheckSnapshot(progress);st.progressRunId=progress.runId;st.progressSequence=progress.sequence;st.phase='run';
+ const a=syncAssessment();if(a.score!==progress.assessment?.score){failRun('检查明细与评分不一致，请重新检查');return}
+ fitAll();
+}
+function finish(report){
+ const valid=report&&report.complete===true&&report.schemaVersion===2&&report.checkCount===15&&Array.isArray(report.stages)&&report.stages.length===15&&Number.isInteger(report.score)&&report.score>=0&&report.score<=100&&['PASS','WARN','FAIL'].includes(report.result)&&Array.isArray(report.events);
+ if(!valid){failRun('检查未完成：没有收到完整结果，请重新检查');return}
+ renderCheckSnapshot(report);st.hasFinal=true;st.fullCheckedAt=report.timestamp||null;st.launchBlocked=!!report.riskSummary?.launchBlocked;
+ busy=false;setBusy(false);st.phase=report.result==='FAIL'?'fail':report.result==='WARN'?'warn':'ok';st.standardVerified=report.repairMode===true;
+ const a=syncAssessment();
+ if(report.assessmentVersion===1&&(a.score!==report.score||a.score!==report.assessment?.score)){failRun('评分与实际检查明细不一致，请重新检查');return}
+ $('hint').textContent='检查完成 '+new Date().toLocaleTimeString('zh-CN',{hour12:false})+' · 已检项目评分 '+a.score+'/100'+(a.deductions.length?' · '+a.deductions.join('；'):' · 已检查项暂无扣分')+(st.launchBlocked?' · 自动启动已阻止':'')+'；未核实项不作通过';
+ fitAll();refreshLiveRisk();
+}
+function applyLiveRisk(v){
+ const footer=$('riskLive');footer.textContent='只读实时复查：'+(v.remaining||v.attention?'有偏差或告警':v.unknown?'有待核实项':'本次复查未见已知异常')+' · 实际服务连接 '+(v.routes?.observed||0)+' 条';
+ if(busy||st.phase==='error'||!st.hasFinal||st.groups.length!==15)return;
+ const timestamp=Date.parse(v.timestampUtc||'');
+ if(Number.isFinite(timestamp)&&((st.fullCheckedAt&&timestamp<Date.parse(st.fullCheckedAt))||timestamp<(st.lastLiveAt||0))){footer.textContent='等待本次完整检查之后的新观测；评分保留本次实际检查结果';return}
+ let events=v.checkEvents;
+ if(!Array.isArray(events))events=[[14,v.routes],[15,v.account]].filter(([,o])=>o&&typeof o.message==='string').map(([n,o])=>({Group:n+'. '+st.groups.find(g=>g.n===n).name,Level:o.status==='risk'?(n===14?'FAIL':'WARN'):o.status==='unknown'?'UNKNOWN':o.status==='observed'?'PASS':'INFO',Text:o.message,Weight:o.status==='risk'&&n===14?25:0}));
+ const byNumber=new Map();for(const event of events){const n=Number(event.Group?.match(/^\d+/)?.[0]);const row=eventRow(event);if(!row||n<1||n>15)continue;if(!byNumber.has(n))byNumber.set(n,[]);byNumber.get(n).push(row)}
+ for(const [n,rows]of byNumber){const g=st.groups.find(g=>g.n===n);if(!g)continue;g.rows=rows;g.liveScope=true;g._hidden=[];g.el.querySelectorAll(':scope > .row').forEach(el=>el.remove());rows.forEach(r=>addRow(g,r));cardStatus(g)}
+ st.lastLiveAt=Number.isFinite(timestamp)?timestamp:Date.now();st.staleMarked=false;
+ const a=syncAssessment();$('hint').textContent='实时复查 '+new Date(st.lastLiveAt).toLocaleTimeString('zh-CN',{hour12:false})+' · 已检项目评分 '+a.score+'/100'+(a.deductions.length?' · '+a.deductions.join('；'):' · 已检查项暂无扣分')+'；未核实项不作通过'+(st.launchBlocked?' · 启动条件请重新完整检查':'');fitAll();
+}
+function markObservationStale(){
+ if(busy||!st.hasFinal||st.phase==='error'||st.staleMarked||!st.lastLiveAt||Date.now()-st.lastLiveAt<60000)return;
+ for(const g of st.groups.filter(g=>g.liveScope)){
+  const knownProblems=g.rows.filter(r=>r.cls==='fail'||r.cls==='warn');
+  const row={lvl:g.n===15?'信息':'待核实',cls:g.n===15?'info':'unknown',text:'本组实时观测已过期，等待新的检查结果；上次发现的问题会保留',weight:0};
+  g.rows=[...knownProblems,row];g.el.querySelectorAll(':scope > .row').forEach(el=>el.remove());g.rows.forEach(r=>addRow(g,r));cardStatus(g);
+ }
+ st.staleMarked=true;syncAssessment();$('hint').textContent='实时观测待更新 · 已检项目评分 '+st.score+'/100；保留已发现问题，过期结果不作通过';
+}
+let liveRiskPending=false;
+async function refreshLiveRisk(){if(liveRiskPending||busy)return;liveRiskPending=true;try{const r=await api('GET','/api/risk-status');if(r.active&&r.summary){applyLiveRisk(r.summary);if(r.state==='timed_out')$('riskLive').textContent+=' · 本轮观测超时，稍后重试'}else{$('riskLive').textContent=r.message||'后台正在只读观测，面板可继续操作';markObservationStale()}}catch(e){$('riskLive').textContent='只读实时观测暂不可用，将自动重试；面板可继续操作';markObservationStale()}finally{liveRiskPending=false}}
+
+function setBusy(b){for(const id of ['bCheck','bLaunch','bLearn','bSettings','bPlan','checkMode'])$(id).disabled=b;const ca=$('bCopyAll');if(ca&&b)ca.disabled=true}
+function parseIce(cand){const c=cand&&cand.candidate;if(!c)return null;const p=c.split(' ');if(p.length<8)return null;const ip=p[4];const ti=p.indexOf('typ');if(ti<0)return null;return{ip,typ:p[ti+1]}}
+function gatherWebRTC(timeoutMs){return new Promise(resolve=>{const out={srflx:[],host:[],ipv6:[]};let done=false;const fin=()=>{if(done)return;done=true;try{pc.close()}catch(e){}out.srflx=[...new Set(out.srflx)];out.host=[...new Set(out.host)];out.ipv6=[...new Set(out.ipv6)];resolve(out)};const to=setTimeout(fin,timeoutMs||4000);let pc;try{pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun.cloudflare.com:3478'}]});pc.createDataChannel('csl');pc.onicecandidate=e=>{if(!e.candidate){clearTimeout(to);fin();return}const x=parseIce(e.candidate);if(!x||!x.ip)return;const v6=x.ip.includes(':')&&!x.ip.includes('.');if(x.typ==='srflx'||x.typ==='relay'){if(v6)out.ipv6.push(x.ip);else out.srflx.push(x.ip)}else if(x.typ==='host')out.host.push(x.ip)};pc.createOffer().then(o=>pc.setLocalDescription(o)).catch(()=>{clearTimeout(to);fin()})}catch(e){clearTimeout(to);fin()}})}
+async function collectBrowser(){const out={ts:new Date().toISOString(),webrtc:{srflx:[],host:[],ipv6:[]},timezone:'',tzOffsetMin:new Date().getTimezoneOffset(),language:navigator.language||'',languages:[...(navigator.languages||[])],webdriver:!!navigator.webdriver};try{out.timezone=Intl.DateTimeFormat().resolvedOptions().timeZone||''}catch(e){}try{out.webrtc=await gatherWebRTC(4000)}catch(e){}try{await api('POST','/api/browser',out)}catch(e){}return out}
+let pollDeadline=0,pollErrors=0;
+async function run(launch,relearn,apply){if(busy)return;
+ try{
+ // A running Claude instance is brought forward by the launcher; it is not restarted.
+ busy=true;setBusy(true);reset();st.phase='run';setState();setScore(null);$('hint').textContent='正在采集面板浏览器信息；此信息不代表 Claude 桌面端连接…';
+ await collectBrowser();
+ $('hint').textContent=apply?'正在按预设标准检查、修复并复查；环境变量保持原有用途':relearn?'正在记录当前环境到本工具配置':launch?'只读检查通过后启动 Claude':'只读检查：保留时区、代理节点和环境变量';
+ await api('POST','/api/run?launch='+(launch?1:0)+'&relearn='+(relearn?1:0)+'&apply='+(apply?1:0)+'&mode='+$('checkMode').value,{});
+ next=0;pollErrors=0;pollDeadline=Date.now()+8*60*1000;poll()
+ }catch(e){failRun('检查未完成：'+e.message)}}
+async function poll(){
+ try{if(Date.now()>pollDeadline)throw new Error('等待结果超时，请重新检查');const r=await api('GET','/api/poll?from='+next);
+ pollErrors=0;
+ if(typeof r.next!=='number')throw new Error('检查响应缺少进度信息');if(r.progress){applyProgress(r.progress);if(st.phase==='error')return}else if(!st.progressRunId)(r.lines||[]).forEach(handle);next=r.next;
+ if(r.done){if(r.complete!==true){failRun(r.error||'检查异常结束，结果不完整');return}finish(r.report);return}
+ if(Number.isFinite(r.elapsedSeconds))$('hint').textContent='正在检查'+(st.cur?'：'+st.cur.name:'')+' · 已用 '+r.elapsedSeconds+' 秒'+(r.timeoutSeconds?'；本次最多 '+r.timeoutSeconds+' 秒':'');
+ }catch(e){pollErrors++;if(pollErrors<3&&Date.now()<pollDeadline){$('hint').textContent='检查连接暂时中断，正在重试（'+pollErrors+'/3）';setTimeout(poll,pollErrors*1000);return}failRun('检查未完成：'+e.message);return}setTimeout(poll,700)}
+async function applySettings(){if(busy)return;try{const p=await api('POST','/api/settings-plan',{});
+ const standards=p.standards||[];const rows=p.rows||[];
+ alert('修复标准：\n'+standards.join('\n')+'\n\n当前偏差：\n'+(rows.length?rows.join('\n'):'已符合预设设置；运行检查会继续验证出口和连通性'))
+ }catch(e){$('hint').textContent='无法读取修复标准：'+e.message}}
+function particles(){const d=$('deco');d.querySelectorAll('.p').forEach(e=>e.remove());const ps=T[theme].p;if(!ps.length)return;
+ for(let i=0;i<14;i++){const s=document.createElement('span');s.className='p';s.textContent=ps[i%ps.length];
+  s.style.left=Math.random()*100+'%';s.style.fontSize=(14+Math.random()*18)+'px';s.style.animationDuration=(14+Math.random()*16)+'s';s.style.animationDelay=(-Math.random()*25)+'s';
+  if(theme==='chinese'){s.style.color=i%2?'rgba(178,34,34,.35)':'rgba(43,33,24,.18)'}if(theme==='mech'){s.style.color='rgba(0,214,168,.18)'}d.appendChild(s)}}
+function applyTheme(t,save){theme=t;document.body.dataset.theme=t;const th=T[t];$('titleText').textContent=th.title;$('sub').textContent=th.sub+' · 降低可识别风险';$('logo').textContent=th.logo;document.title=th.title;
+ [...$('themes').children].forEach(b=>b.classList.toggle('on',b.dataset.t===t));particles();setState();
+ const m=$('groups');m.classList.add('noanim');m.innerHTML='';st.groups.forEach(addCard);setTimeout(()=>m.classList.remove('noanim'),50);
+ if(save)api('POST','/api/theme?t='+t,{}).catch(()=>{})}
+for(const k in T){const b=document.createElement('button');b.textContent=T[k].name;b.dataset.t=k;b.onclick=()=>applyTheme(k,true);$('themes').appendChild(b)}
+$('bCheck').onclick=()=>run(false,false,false);$('bLaunch').onclick=()=>run(true,false,true);$('bSettings').onclick=()=>run(false,false,true);$('bPlan').onclick=applySettings;$('bLearn').onclick=()=>{if(confirm('将当前可测得的出口 IP、Claude 策略组节点和系统时区记为基准，写入本工具配置；不会切换代理节点或修改系统时区。确认记录？'))run(false,true)};{const bl=$('bLog');if(bl)bl.onclick=()=>api('POST','/api/log',{});}
+{const ca=$('bCopyAll');if(ca)ca.onclick=()=>copyAllIssues()}
+let heartbeatPending=false;
+async function heartbeat(){if(heartbeatPending)return;heartbeatPending=true;try{await api('GET','/api/ping');await refreshLiveRisk()}catch(e){$('riskLive').textContent='面板后台连接中断；恢复连接后会自动更新，后台退出时请重新打开安全启动快捷方式'}finally{heartbeatPending=false}}
+setInterval(heartbeat,5000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)heartbeat()});window.addEventListener('focus',heartbeat);window.addEventListener('pageshow',heartbeat);
+reset();applyTheme(theme,false);run(false,false,!CSL_TESTMODE);
+</script></body></html>
