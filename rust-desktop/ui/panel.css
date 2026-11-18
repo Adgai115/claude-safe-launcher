@@ -146,6 +146,9 @@ h1 { font-size: 23px; font-weight: 700; line-height: 1.24; }
 .actions { flex-wrap: wrap; gap: 8px; }
 .launch-hint { font-size: 13px; color: var(--muted); }
 .launch-hint:empty { display: none; }
+.blocker-link { text-underline-offset: 3px; }
+.card:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+#confirm-message { white-space: pre-line; overflow-wrap: anywhere; max-height: 50vh; overflow: auto; }
 .launch-hint.locked {
   padding: 1px 6px;
   border-radius: 4px;

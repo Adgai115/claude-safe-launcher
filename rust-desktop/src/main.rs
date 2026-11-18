@@ -188,6 +188,7 @@ struct Settings {
     claude_group: String,
     main_group: String,
     pin_main_group: bool,
+    auto_repair: bool,
     has_baseline: bool,
     directory: String,
     log_path: String,
@@ -202,6 +203,7 @@ fn read_settings(state: &Launcher) -> Result<Settings, String> {
         claude_group: config.claude_group,
         main_group: config.main_group,
         pin_main_group: config.pin_main_group,
+        auto_repair: config.auto_repair,
         directory: state.folder.to_string_lossy().into_owned(),
         log_path: history::path(&state.folder).to_string_lossy().into_owned(),
         claude_running,
@@ -220,6 +222,7 @@ fn save_groups(
     claude_group: String,
     main_group: String,
     pin_main_group: bool,
+    auto_repair: bool,
 ) -> Result<Settings, String> {
     let primary = claude_group.trim();
     let secondary = main_group.trim();
@@ -235,16 +238,21 @@ fn save_groups(
     }
     let _operation = state.begin()?;
     let mut config = Config::load(&state.folder)?;
-    if config.claude_group != primary
+    let changed_groups = config.claude_group != primary
         || config.main_group != secondary
-        || config.pin_main_group != pin_main_group
-    {
-        config.claude_group = primary.into();
-        config.main_group = secondary.into();
-        config.pin_main_group = pin_main_group;
-        config.expected_node.clear();
+        || config.pin_main_group != pin_main_group;
+    if changed_groups || config.auto_repair != auto_repair {
         machine::require_claude_stopped(&config)?;
+        if changed_groups {
+            config.claude_group = primary.into();
+            config.main_group = secondary.into();
+            config.pin_main_group = pin_main_group;
+            config.expected_node.clear();
+        }
+        config.auto_repair = auto_repair;
         config.save(&state.folder)?;
+    }
+    if changed_groups {
         let mut snapshot = lock(&state.snapshot)?;
         snapshot.groups.clear();
         snapshot.message = "策略组已变更，请重新核对环境".into();
@@ -295,12 +303,25 @@ fn copy_status(summary: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn preview_repair(app: AppHandle) -> Result<Vec<checks::RepairChange>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Launcher>();
+        let _operation = state.begin()?;
+        checks::preview_repair(&state.folder)
+    })
+    .await
+    .map_err(|_| "修复预览任务异常退出".to_owned())?
+}
+
+#[tauri::command]
 async fn run_check(
     app: AppHandle,
     action: Action,
     browser_zone: String,
     browser_webrtc: Option<Vec<String>>,
     progress: Channel<Value>,
+    approved_repairs: Option<Vec<checks::RepairChange>>,
+    automatic: Option<bool>,
 ) -> Result<Value, String> {
     if browser_zone.len() > 128 || browser_zone.chars().any(char::is_control) {
         return Err("面板时区格式无效".into());
@@ -325,6 +346,8 @@ async fn run_check(
         let result = checks::run(
             &state.folder,
             action,
+            approved_repairs.as_deref(),
+            automatic.unwrap_or(false),
             &browser_zone,
             browser_webrtc.as_deref(),
             |groups| {
@@ -600,15 +623,21 @@ async fn retry_timezone_restore(app: AppHandle) -> Result<Value, String> {
 #[tauri::command]
 async fn check_for_update(app: AppHandle) -> Result<releases::UpdateCheck, String> {
     let current = app.package_info().version.clone();
+    let public_check = tauri::async_runtime::spawn_blocking(move || releases::check(&current));
     #[cfg(all(windows, feature = "signed-updates"))]
     if app.state::<Launcher>().updates_enabled {
-        return Ok(releases::UpdateCheck {
-            current_version: current.to_string(),
-            available_version: updates::latest(&app).await?.map(|update| update.version),
-            signed: true,
-        });
+        let direct = updates::latest(&app)
+            .await
+            .ok()
+            .flatten()
+            .filter(|update| updates::can_install_directly(&app, update))
+            .map(|update| update.version);
+        let public = public_check
+            .await
+            .map_err(|_| "更新检查任务异常退出".to_owned())?;
+        return updates::prefer_direct(&app.package_info().version, public, direct);
     }
-    tauri::async_runtime::spawn_blocking(move || releases::check(&current))
+    public_check
         .await
         .map_err(|_| "更新检查任务异常退出".to_owned())?
 }
@@ -619,10 +648,13 @@ fn open_release_page(version: Option<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn install_update(app: AppHandle, version: String) -> Result<(), String> {
-    #[cfg(all(windows, feature = "signed-updates"))]
-    if app.state::<Launcher>().updates_enabled {
-        return updates::install(app, &version).await;
+async fn install_update(app: AppHandle, version: String, direct: bool) -> Result<(), String> {
+    if direct {
+        #[cfg(all(windows, feature = "signed-updates"))]
+        if app.state::<Launcher>().updates_enabled {
+            return updates::install(app, &version).await;
+        }
+        return Err("此构建无法直接更新，请重新检查更新".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Launcher>();
@@ -788,6 +820,7 @@ fn main() {
             read_monitor_history,
             export_diagnostics,
             copy_status,
+            preview_repair,
             run_check,
             set_monitor,
             retry_timezone_restore,

@@ -16,7 +16,7 @@ const MAX_INSTALLER_BYTES: u64 = 128 * 1024 * 1024;
 pub struct UpdateCheck {
     pub current_version: String,
     pub available_version: Option<String>,
-    pub signed: bool,
+    pub direct: bool,
 }
 
 #[derive(Deserialize)]
@@ -104,7 +104,7 @@ pub fn check(current: &Version) -> Result<UpdateCheck, String> {
     Ok(UpdateCheck {
         current_version: current.to_string(),
         available_version: (latest > *current).then(|| latest.to_string()),
-        signed: false,
+        direct: false,
     })
 }
 

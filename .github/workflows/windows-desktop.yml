@@ -1,0 +1,55 @@
+name: Windows desktop checks
+
+on:
+  push:
+    paths:
+      - 'rust-desktop/**'
+      - '.github/workflows/windows-desktop.yml'
+      - 'LICENSE*'
+  pull_request:
+    paths:
+      - 'rust-desktop/**'
+      - '.github/workflows/windows-desktop.yml'
+      - 'LICENSE*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: rust-desktop
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Check formatting and tests
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          rustup update stable
+          rustup component add --toolchain stable rustfmt
+          cargo +stable fmt --all --check
+          cargo +stable test --locked --no-default-features
+          cargo +stable test --locked --features custom-protocol,signed-updates --bin claude-safe-launcher-rust
+          node --check ui/panel.js
+      - name: Build Windows x64 installer
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $env:RUSTUP_TOOLCHAIN = 'stable'
+          npx.cmd --yes --package @tauri-apps/cli@2.12.5 tauri build --bundles nsis --no-sign --ci -- --locked
+          $payload = @(Get-ChildItem target/release/bundle/nsis -Filter '*.exe')
+          if ($payload.Count -ne 1) { throw 'Expected one NSIS payload.' }
+          $version = (Get-Content tauri.conf.json -Raw | ConvertFrom-Json).version
+          $setup = ./installer/Build-Installer.ps1 -Payload $payload[0].FullName -OutputPath "$env:RUNNER_TEMP/Claude-Environment-Checker-v$version-win-x64-setup.exe"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./installer/Test-Installer.ps1 -Installer $setup.FullName -Version $version
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64-installer
+          path: ${{ runner.temp }}/Claude-Environment-Checker-*-win-x64-setup.exe
+          if-no-files-found: error
+          compression-level: 0

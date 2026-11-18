@@ -31,6 +31,7 @@
             <span id="spinner" class="spinner" aria-hidden="true" hidden></span>
             <h2 class="state" id="state" role="status">准备检查</h2>
             <span class="launch-hint" id="launch-hint">检查达到 100 分后可启动</span>
+            <a id="launch-blocker" class="launch-hint blocker-link" href="#groups" hidden></a>
           </div>
           <div class="progress-heading">
             <span id="activity">检查进度</span>
@@ -45,7 +46,7 @@
 
       <div class="actions" aria-label="检查操作">
         <button class="btn primary" data-action="repair">检查并修复</button>
-        <button class="btn launch" data-action="launch" aria-describedby="launch-hint" disabled>启动 Claude</button>
+        <button class="btn launch" data-action="launch" aria-describedby="launch-hint launch-blocker" disabled>启动 Claude</button>
         <button class="btn" id="monitor-history" aria-haspopup="dialog">监控日志</button>
       </div>
 
@@ -88,6 +89,8 @@
         <label class="inline"><input type="checkbox" name="pinMainGroup">同时锁定另一个策略组</label>
         <label>另一个策略组<input name="mainGroup" maxlength="128"></label>
         <p class="hint">启用后，检查并修复会按同一个预设节点核对两个策略组。</p>
+        <label class="inline"><input type="checkbox" name="autoRepair">打开应用时自动修复</label>
+        <p class="hint">启用后，Claude 未运行时可自动调整 TUN、节点和时区。</p>
         <p class="hint" id="settings-lock" hidden>Claude 正在运行。退出 Claude 后可修改策略组或环境基准。</p>
         <p class="hint" id="data-directory"></p>
         <p class="hint" id="log-path"></p>

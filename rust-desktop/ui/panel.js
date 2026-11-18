@@ -35,6 +35,8 @@ const chips = Object.entries(labels).map(([level, label]) => {
 
 const cards = titles.map((title, index) => {
   const card = node("article", "card", "");
+  card.id = "check-" + (index + 1);
+  card.tabIndex = -1;
   const heading = node("h3", "", "");
   const titleText = node("span", "", title);
   const label = node("span", "cst", "等待检查");
@@ -117,7 +119,18 @@ function updateButtons() {
   byId("monitor-history").disabled = !tauri;
   const launchHint = byId("launch-hint");
   launchHint.classList.toggle("locked", state.claudeRunning);
-  launchHint.textContent = launchable ? "" :
+  const blockers = !state.busy && !state.claudeRunning && state.report?.complete
+    ? state.report.groups.filter((group) => group.blocksLaunch || group.earned < group.weight) : [];
+  const firstBlocker = blockers.find((group) => group.blocksLaunch) ?? blockers[0];
+  const blocker = byId("launch-blocker");
+  const repairHint = firstBlocker && [1, 2, 3, 4].includes(firstBlocker.id)
+    ? "，可查看修复方案" : firstBlocker?.level === "unknown" ? "，可复查" : "，请查看处理说明";
+  blocker.hidden = !firstBlocker;
+  blocker.textContent = firstBlocker
+    ? `${firstBlocker.title}${blockers.length > 1 ? `等 ${blockers.length} 项` : ""}${firstBlocker.level === "unknown" ? "待核实" : "需处理"}${repairHint}`
+    : "";
+  blocker.href = firstBlocker ? "#check-" + firstBlocker.id : "#groups";
+  launchHint.textContent = launchable || firstBlocker ? "" :
     state.claudeRunning ? "Claude 运行中 · 配置已锁定" :
     state.settings?.hasBaseline ? "检查达到 100 分后可启动" : "检查并修复会核实并建立基准";
   byId("copy").disabled = state.busy || !state.report?.groups?.length;
@@ -151,6 +164,13 @@ function updateButtons() {
   retry.textContent = failure ? "重试恢复" : "恢复原时区";
   updateGroupField();
 }
+
+byId("launch-blocker").addEventListener("click", (event) => {
+  event.preventDefault();
+  const card = byId(event.currentTarget.hash.slice(1));
+  card?.scrollIntoView({ block: "nearest" });
+  card?.focus({ preventScroll: true });
+});
 
 function displaySnapshot(snapshot) {
   if (snapshot.version) byId("app-version").textContent = "v" + snapshot.version;
@@ -216,21 +236,39 @@ async function collectWebRtcCandidates() {
   }
 }
 
-async function runCheck(action) {
+async function runCheck(action, automatic = false) {
   if (state.busy || (action === "launch" && !canLaunch()) || (action === "learn" && state.claudeRunning)) return;
   if (action === "repair" && state.claudeRunning) action = "check";
   if (settingsDialog.open) settingsDialog.close();
   if (!(await confirmAction(action))) return;
   state.busy = true;
-  state.launchReady = false;
-  state.lastGroup = null;
-  renderReport(null);
-  setStatus(action === "launch" ? "启动前复核…" : action === "repair" ? "正在检查并修复…" : "正在检查…");
-  const progress = new tauri.core.Channel();
-  progress.onmessage = (report) => { if (state.busy) renderReport(report); };
+  updateButtons();
   try {
+    let approvedRepairs = null;
+    if (action === "repair" && !automatic) {
+      setStatus("正在核对可修复项…");
+      approvedRepairs = await tauri.core.invoke("preview_repair");
+      if (approvedRepairs.length) {
+        const message = approvedRepairs.map(({ label, before, after }) =>
+          `${label}\n${before || "未保存"} → ${after || "清除"}`).join("\n\n");
+        if (!(await confirmDialog("确认修复", message))) {
+          setStatus("已取消修复");
+          return;
+        }
+      } else {
+        action = "check";
+      }
+    }
+    state.launchReady = false;
+    state.lastGroup = null;
+    renderReport(null);
+    setStatus(action === "launch" ? "启动前复核…" : action === "repair" ? "正在检查并修复…" : "正在检查…");
+    const progress = new tauri.core.Channel();
+    progress.onmessage = (report) => { if (state.busy) renderReport(report); };
     const snapshot = await tauri.core.invoke("run_check", {
       action,
+      approvedRepairs,
+      automatic,
       browserZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
       browserWebrtc: await collectWebRtcCandidates(),
       progress,
@@ -238,11 +276,13 @@ async function runCheck(action) {
     state.busy = false;
     if (action === "learn" || action === "repair") state.settings = await tauri.core.invoke("load_settings");
     displaySnapshot(snapshot);
+    if (approvedRepairs?.length === 0) setStatus("暂无可自动修复项，已完成只读检查");
   } catch (error) {
     state.busy = false;
     renderReport(null);
     setStatus(String(error));
   } finally {
+    state.busy = false;
     updateButtons();
   }
 }
@@ -392,10 +432,12 @@ const form = byId("settings-form");
 const primaryGroup = form.elements.namedItem("claudeGroup");
 const mainGroup = form.elements.namedItem("mainGroup");
 const pinGroup = form.elements.namedItem("pinMainGroup");
+const autoRepair = form.elements.namedItem("autoRepair");
 function updateGroupField() {
   const locked = state.claudeRunning;
   primaryGroup.disabled = locked;
   pinGroup.disabled = locked;
+  autoRepair.disabled = locked;
   mainGroup.disabled = locked || !pinGroup.checked;
   mainGroup.required = !locked && pinGroup.checked;
   form.querySelector("[type=submit]").disabled = locked;
@@ -410,6 +452,7 @@ byId("settings").addEventListener("click", async () => {
     primaryGroup.value = state.settings.claudeGroup;
     mainGroup.value = state.settings.mainGroup;
     pinGroup.checked = state.settings.pinMainGroup;
+    autoRepair.checked = state.settings.autoRepair === true;
     updateGroupField();
     byId("data-directory").textContent = state.settings.directory;
     byId("log-path").textContent = state.settings.logPath ? `本地诊断日志 · ${state.settings.logPath}` : "";
@@ -450,9 +493,11 @@ function checkUpdateInBackground() {
 function showUpdate(info, message) {
   updateVersion.hidden = !info;
   if (info) updateVersion.textContent = "当前版本 v" + info.currentVersion;
-  updateResult.textContent = message ?? (info.availableVersion ? "发现新版本 v" + info.availableVersion : "已是最新版本。");
+  updateResult.textContent = message ?? (info.availableVersion
+    ? `发现新版本 v${info.availableVersion}。可${info.direct ? "直接更新" : "通过安装向导升级"}。`
+    : "已是最新版本。");
   updateAction.hidden = !info?.availableVersion && !message;
-  updateAction.textContent = info?.availableVersion ? "下载并更新" : "打开发布页";
+  updateAction.textContent = info?.availableVersion ? (info.direct ? "直接更新" : "下载安装包") : "打开发布页";
 }
 
 byId("check-updates").addEventListener("click", async () => {
@@ -476,14 +521,14 @@ async function applyUpdate() {
   updateAction.disabled = true;
   availableUpdate.disabled = true;
   try {
-    const message = info.signed
-      ? "请先关闭 Claude。确认后将下载并验证更新，安装时退出环境检查器。"
+    const message = info.direct
+      ? "请先关闭 Claude。确认后会校验补丁签名，更新后重新打开环境检查器。"
       : "请先关闭 Claude。确认后将下载并校验安装包，并退出环境检查器以打开安装器。";
     if (!(await confirmDialog("更新至 v" + info.availableVersion, message))) return;
     showUpdate(info, "正在下载并校验更新…");
     if (!updateDialog.open) updateDialog.showModal();
     byId("close-update").disabled = true;
-    await tauri.core.invoke("install_update", { version: info.availableVersion });
+    await tauri.core.invoke("install_update", { version: info.availableVersion, direct: info.direct === true });
   } catch (error) {
     updateResult.textContent = String(error);
     if (!updateDialog.open) updateDialog.showModal();
@@ -511,7 +556,7 @@ form.addEventListener("submit", async (event) => {
   submit.disabled = true;
   try {
     state.settings = await tauri.core.invoke("save_groups", {
-      claudeGroup: primaryGroup.value, mainGroup: mainGroup.value, pinMainGroup: pinGroup.checked,
+      claudeGroup: primaryGroup.value, mainGroup: mainGroup.value, pinMainGroup: pinGroup.checked, autoRepair: autoRepair.checked,
     });
     settingsDialog.close();
     displaySnapshot(await tauri.core.invoke("get_snapshot"));
@@ -539,7 +584,10 @@ async function init() {
     state.settings = await tauri.core.invoke("load_settings");
     const snapshot = await tauri.core.invoke("get_snapshot");
     displaySnapshot(snapshot);
-    if (!snapshot.report?.complete) void runCheck("repair");
+    if (!snapshot.report?.complete) {
+      const automatic = state.settings.autoRepair === true;
+      void runCheck(automatic ? "repair" : "check", automatic);
+    }
   } catch (error) { setStatus(String(error)); }
 }
 void init();

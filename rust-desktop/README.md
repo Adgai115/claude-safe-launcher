@@ -26,12 +26,16 @@ $payload = Get-ChildItem target\release\bundle\nsis -Filter '*.exe' | Select-Obj
 
 主界面右下角显示应用版本。程序启动时自动查询 `desktop-v<版本号>` 的 Windows x64 正式发布，设置中也可手动检查。发现新版本时点击「可更新」，确认后从 GitHub 下载到 Windows 下载文件夹，校验 SHA-256 并通过 Windows 打开安装器。更新安装前会检查 Claude 是否已退出，并处理待恢复的时区。
 
-启用签名更新的安装包可在应用内安装已验证的新版本。构建命令为 `cargo tauri build --features signed-updates --config <发布配置>`。配置需要设置 `bundle.createUpdaterArtifacts`、`plugins.updater.pubkey`、HTTPS `plugins.updater.endpoints` 和 `plugins.updater.requireSignedVersion: true`。使用 Tauri CLI 2.12.5 或更新版本签署带版本号的安装包，并按 [Tauri 更新发布格式](https://v2.tauri.app/plugin/updater/) 发布安装包、签名和版本清单。应用内安装前必须退出 Claude，并完成尚未处理的时区恢复。
+启用签名更新后，同一 `major.minor` 系列内的补丁可以通过应用直接更新。发布方确认补丁与整个版本系列兼容后，在更新清单的顶层加入 `"installMode": "direct"`。确认更新后，应用验证补丁签名，Tauri 在原位置应用更新包并重新启动应用。跨版本系列、未标记为可直接更新或需要完整安装的版本，从 GitHub 下载对应的正式安装包并打开安装向导。如果 GitHub 上有更高版本，应用优先提示升级到该版本。
+
+构建命令为 `cargo tauri build --features signed-updates --config <发布配置>`。配置需要设置 `bundle.createUpdaterArtifacts`、`plugins.updater.pubkey`、HTTPS `plugins.updater.endpoints` 和 `plugins.updater.requireSignedVersion: true`。Windows 更新模式使用默认的 `passive`，也可使用 `quiet`。使用 Tauri CLI 2.12.5 或更新版本签署带版本号的 NSIS 更新包，按 [Tauri 更新发布格式](https://v2.tauri.app/plugin/updater/) 发布更新包、签名和版本清单。每个公开版本仍需发布带安装向导的 EXE。两种更新方式均要求退出 Claude 并完成待处理的时区恢复。
+
+[Windows 构建检查](../.github/workflows/windows-desktop.yml)会运行核心及桌面测试、构建安装器并检查包版本、双语资源和路径处理。正式发布前另行验证旧版升级、签名补丁重启、原配置保留和实际 VPN 环境。
 
 ## 使用
 
 1. 打开 Clash Verge Rev，启用外部控制和 TUN。Rust 版从 Clash Verge 运行配置读取本机控制器地址及认证信息。默认策略组为 `Claude`，可在应用设置里更改。
-2. 打开面板自动「检查并修复」，也可从主界面手动复查。首次缺少基准时，尝试依据可确认的 Claude 出口、当前策略组节点和出口地时区建立基准，检查无阻断后再保存。已有基准按原值复查和修复。需要换基准时使用「设置 → 记住当前环境」。
+2. 打开面板默认执行只读检查。「检查并修复」列出将改动的项目与前后值，确认后执行并复查。待修改的值有变化时，需要重新预览。首次缺少基准时，候选基准以确认的出口、网络和时区为依据，检查无阻断后才保存。启用 TUN 或切换节点后可能需要再次预览，以便核对新的出口。需要换基准时使用「设置 → 记住当前环境」。可以在设置中主动开启启动时自动修复。
 3. 检查完成且达到 100 分后，「启动 Claude」才可点击。点击后会只读复核，复核达到 100 分才启动客户端。
 4. 关闭面板后程序留在系统托盘。完成一次环境检查后，发现 Claude 正在运行就进入监控，包括从其他入口启动的 Claude。约每 30 秒复查连接和日志，约每 5 分钟复查代理、时区、出口、DNS、IPv6、API 连通性和支持地区。Claude 退出后回到等待状态，下一次运行会自动接续。面板底部可暂停或恢复监控，托盘菜单可以退出程序。
 5. 启动器临时更改 Windows 时区前，先保存原时区及夏令时设置。Claude 进程退出后恢复。如果时区在会话中被另行更改，保留当前设置。托盘退出且 Claude 未运行时也会处理恢复。遇到异常退出，启动器下次打开会继续处理未完成的恢复记录。

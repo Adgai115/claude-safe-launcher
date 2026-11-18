@@ -6,7 +6,7 @@ use crate::report::{Group, Level, Report};
 use crate::timezone;
 use crate::vpn;
 use chrono::Utc;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{ErrorKind, Read};
 use std::net::{IpAddr, ToSocketAddrs};
@@ -609,18 +609,192 @@ struct Repairs {
     tun: bool,
 }
 
-fn repair(folder: &Path, config: &Config, network: &Network, machine: &Machine) -> Repairs {
+#[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairChange {
+    check_id: u8,
+    label: String,
+    before: String,
+    after: String,
+}
+
+struct RepairPlan {
+    config: Config,
+    changes: Vec<RepairChange>,
+    tun: bool,
+    nodes: Vec<(String, String)>,
+    timezone: bool,
+    baseline: bool,
+}
+
+impl RepairPlan {
+    fn change(&mut self, check_id: u8, label: impl Into<String>, before: &str, after: &str) {
+        if before != after {
+            self.changes.push(RepairChange {
+                check_id,
+                label: label.into(),
+                before: before.to_owned(),
+                after: after.to_owned(),
+            });
+        }
+    }
+}
+
+fn require_repair_approval(
+    changes: &[RepairChange],
+    approved: Option<&[RepairChange]>,
+    automatic: bool,
+    auto_repair_enabled: bool,
+) -> Result<(), String> {
+    if (automatic && auto_repair_enabled) || approved == Some(changes) {
+        Ok(())
+    } else {
+        Err("修复方案已变化，请重新预览并确认".into())
+    }
+}
+
+fn prepare_repair(config: &Config, network: &Network, machine: &Machine) -> RepairPlan {
+    let mut plan = RepairPlan {
+        config: config.clone(),
+        changes: Vec::new(),
+        tun: false,
+        nodes: Vec::new(),
+        timezone: false,
+        baseline: false,
+    };
+    let clash = machine.proxy_running;
+    if (clash && config.vpn_interface.is_some())
+        || (!clash && config.vpn_interface.is_none() && !config.expected_node.is_empty())
+        || (!config.expected_node.is_empty() && !is_proxy_node(&config.expected_node))
+    {
+        return plan;
+    }
+    let mut candidate = config.clone();
+    let tun = clash.then(|| network.tun()).flatten();
+    if clash && tun.is_none() {
+        return plan;
+    }
+    if tun == Some(false) {
+        plan.tun = true;
+        plan.change(1, "Clash TUN", "关闭", "开启");
+    }
+    if clash && !candidate.expected_node.is_empty() {
+        for name in config.groups() {
+            if let Some(group) = network.group(name) {
+                if group.now != candidate.expected_node
+                    && group.all.contains(&candidate.expected_node)
+                {
+                    plan.change(
+                        3,
+                        format!("策略组 {name}"),
+                        &group.now,
+                        &candidate.expected_node,
+                    );
+                    plan.nodes.push((name.to_owned(), group.now));
+                }
+            }
+        }
+    }
+    // A network change can affect the observed exit. Establish missing baseline
+    // fields during the next preview, after the network is stable.
+    if !config.has_baseline() && (plan.tun || !plan.nodes.is_empty()) {
+        return plan;
+    }
+    if !config.has_baseline() || !clash {
+        let exits = probe_exits(network);
+        if !clash {
+            let (_, api_peer) = api_reachable(network);
+            let (_, interface) = vpn::interface(exits.front_peer, api_peer);
+            let Some(interface) = interface else {
+                return plan;
+            };
+            if candidate
+                .vpn_interface
+                .as_ref()
+                .is_some_and(|saved| saved != &interface)
+            {
+                return plan;
+            }
+            candidate.vpn_interface = Some(interface);
+        } else if candidate.expected_node.is_empty() {
+            let selected = network.group(&config.claude_group);
+            learn_node(
+                &mut candidate,
+                selected.as_ref().map(|group| group.now.as_str()),
+                false,
+            );
+        }
+        learn_exit(&mut candidate, &exits, false);
+        if candidate.timezone.is_empty() {
+            let matching_exit = exits.confirmed().filter(|trace| {
+                candidate.expected_ip == Some(trace.ip) && candidate.expected_loc == trace.country
+            });
+            if let Some((iana, windows)) =
+                matching_exit.and_then(|trace| exit_timezone(network, trace))
+            {
+                candidate.timezone = windows.into();
+                candidate.expected_tz_iana = iana;
+            }
+        }
+        if !candidate.has_baseline() {
+            return plan;
+        }
+        plan.change(
+            3,
+            "基准节点",
+            &config.expected_node,
+            &candidate.expected_node,
+        );
+        plan.change(
+            3,
+            "VPN 接口基准",
+            config.vpn_interface.as_deref().unwrap_or(""),
+            candidate.vpn_interface.as_deref().unwrap_or(""),
+        );
+        let exit = |config: &Config| {
+            config
+                .expected_ip
+                .map_or_else(String::new, |ip| format!("{} · {ip}", config.expected_loc))
+        };
+        plan.change(4, "出口基准", &exit(config), &exit(&candidate));
+        plan.change(2, "时区基准", &config.timezone, &candidate.timezone);
+        plan.baseline = config.expected_node != candidate.expected_node
+            || config.vpn_interface != candidate.vpn_interface
+            || config.expected_ip != candidate.expected_ip
+            || config.expected_loc != candidate.expected_loc
+            || config.timezone != candidate.timezone;
+    }
+    if let Some(current) = machine.timezone.as_deref() {
+        if !candidate.timezone.is_empty() && current != candidate.timezone {
+            plan.timezone = true;
+            plan.change(2, "Windows 时区", current, &candidate.timezone);
+        }
+    }
+    plan.config = candidate;
+    plan
+}
+
+pub fn preview_repair(folder: &Path) -> Result<Vec<RepairChange>, String> {
+    let config = Config::load(folder)?;
+    machine::require_claude_stopped(&config)?;
+    let machine = Machine::inspect(&config);
+    let runtime = machine.proxy_running.then(machine::verge_runtime).flatten();
+    let network = Network::new(runtime.as_deref())?;
+    Ok(prepare_repair(&config, &network, &machine).changes)
+}
+
+fn apply_repair(folder: &Path, network: &Network, machine: &Machine, plan: &RepairPlan) -> Repairs {
+    let config = &plan.config;
     let mut repairs = Repairs {
-        tun: network.tun() == Some(false) && network.enable_tun(config),
+        tun: plan.tun && network.tun() == Some(false) && network.enable_tun(config),
         ..Repairs::default()
     };
-    repair_timezone(folder, config, machine, &mut repairs);
-    for name in config.groups() {
+    if plan.timezone && machine::current_timezone().map(|zone| zone.id) == machine.timezone {
+        repair_timezone(folder, config, machine, &mut repairs);
+    }
+    for (name, before) in &plan.nodes {
         if let Some(group) = network.group(name) {
-            if is_proxy_node(&config.expected_node)
-                && group.now != config.expected_node
-                && group.all.contains(&config.expected_node)
-            {
+            if group.now == *before && group.all.contains(&config.expected_node) {
                 repairs.nodes |= network.select(config, name, &config.expected_node);
             }
         }
@@ -679,6 +853,8 @@ pub struct Outcome {
 pub fn run(
     folder: &Path,
     action: Action,
+    approved_repairs: Option<&[RepairChange]>,
+    automatic: bool,
     webview_zone: &str,
     webview_webrtc: Option<&[IpAddr]>,
     mut progress: impl FnMut(&[Group]),
@@ -702,19 +878,19 @@ pub fn run(
     }
     let runtime = clash.then(machine::verge_runtime).flatten();
     let network = Network::new(runtime.as_deref())?;
-    let learnable =
-        baseline_matches || (config.vpn_interface.is_none() && config.expected_node.is_empty());
     let mut baseline_changed = false;
-    let mut repairs = if action == Action::Repair && clash && learnable {
-        if config.expected_node.is_empty() {
-            let selected = network.group(&config.claude_group);
-            baseline_changed = learn_node(
-                &mut config,
-                selected.as_ref().map(|group| group.now.as_str()),
-                false,
-            );
-        }
-        let changes = repair(folder, &config, &network, &machine);
+    let repairs = if action == Action::Repair {
+        let plan = prepare_repair(&config, &network, &machine);
+        require_repair_approval(
+            &plan.changes,
+            approved_repairs,
+            automatic,
+            config.auto_repair,
+        )?;
+        machine::require_claude_stopped(&config)?;
+        let changes = apply_repair(folder, &network, &machine, &plan);
+        baseline_changed = plan.baseline;
+        config = plan.config;
         machine = Machine::inspect(&config);
         changes
     } else {
@@ -773,34 +949,6 @@ pub fn run(
         }
         learn_exit(&mut config, &exits, true);
         config.expected_tz_iana = webview_zone.to_owned();
-    } else if action == Action::Repair && learnable && (clash || interface.is_some()) {
-        if !clash && config.vpn_interface.is_none() {
-            config.vpn_interface.clone_from(&interface);
-            baseline_changed = true;
-        }
-        baseline_changed |= learn_exit(&mut config, &exits, false);
-        if !clash && config.vpn_interface == interface {
-            repair_timezone(folder, &config, &machine, &mut repairs);
-            if repairs.timezone || repairs.timezone_error.is_some() {
-                machine = Machine::inspect(&config);
-            }
-        }
-        if config.timezone.is_empty() {
-            let matching_exit = exits.confirmed().filter(|trace| {
-                config.expected_ip == Some(trace.ip) && config.expected_loc == trace.country
-            });
-            if let Some((iana, windows)) =
-                matching_exit.and_then(|trace| exit_timezone(&network, trace))
-            {
-                config.timezone = windows.into();
-                config.expected_tz_iana = iana;
-                baseline_changed = true;
-                repair_timezone(folder, &config, &machine, &mut repairs);
-                if repairs.timezone || repairs.timezone_error.is_some() {
-                    machine = Machine::inspect(&config);
-                }
-            }
-        }
     }
 
     let mut zone = measure(|| zone_group(&config, machine.timezone.as_deref()));
@@ -926,6 +1074,22 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repair_requires_the_exact_current_plan_or_explicit_automatic_setting() {
+        let change = |before: &str| RepairChange {
+            check_id: 2,
+            label: "Windows 时区".into(),
+            before: before.into(),
+            after: "Eastern Standard Time".into(),
+        };
+        let current = [change("UTC")];
+        let previous = [change("Pacific Standard Time")];
+        assert!(require_repair_approval(&current, Some(&current), false, false).is_ok());
+        assert!(require_repair_approval(&current, Some(&previous), false, true).is_err());
+        assert!(require_repair_approval(&current, None, true, false).is_err());
+        assert!(require_repair_approval(&current, None, true, true).is_ok());
+    }
 
     #[test]
     fn running_client_forces_read_only_and_rejects_baseline_writes() {
