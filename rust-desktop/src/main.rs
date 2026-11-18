@@ -648,18 +648,27 @@ fn open_release_page(version: Option<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn install_update(app: AppHandle, version: String, direct: bool) -> Result<(), String> {
+async fn install_update(
+    app: AppHandle,
+    version: String,
+    direct: bool,
+) -> Result<(), releases::UpdateFailure> {
+    use releases::{UpdateFailure, UpdateNext};
+
     if direct {
         #[cfg(all(windows, feature = "signed-updates"))]
         if app.state::<Launcher>().updates_enabled {
             return updates::install(app, &version).await;
         }
-        return Err("此构建无法直接更新，请重新检查更新".into());
+        return Err(UpdateFailure::new(
+            "此构建无法直接更新，请重新检查更新。",
+            UpdateNext::Recheck,
+        ));
     }
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Launcher>();
         let _operation = state.begin()?;
-        machine::require_claude_stopped(&Config::load(&state.folder)?)?;
+        require_claude_stopped_for_update(&state)?;
         let folder = app
             .path()
             .download_dir()
@@ -671,11 +680,19 @@ async fn install_update(app: AppHandle, version: String, direct: bool) -> Result
         Ok(())
     })
     .await
-    .map_err(|_| "更新任务异常退出".to_owned())?
+    .map_err(|_| UpdateFailure::from("更新任务意外中断，请重试。"))?
 }
 
-fn prepare_update_install(app: &AppHandle, state: &Launcher) -> Result<(), String> {
-    machine::require_claude_stopped(&Config::load(&state.folder)?)?;
+fn require_claude_stopped_for_update(state: &Launcher) -> Result<(), releases::UpdateFailure> {
+    machine::require_claude_stopped(&Config::load(&state.folder)?)
+        .map_err(|_| "Claude 正在运行。请完全退出 Claude，再点击「重试更新」。".into())
+}
+
+fn prepare_update_install(
+    app: &AppHandle,
+    state: &Launcher,
+) -> Result<(), releases::UpdateFailure> {
+    require_claude_stopped_for_update(state)?;
     if timezone::pending(&state.folder) {
         finish_timezone_recovery(app, true);
         if timezone::pending(&state.folder) {

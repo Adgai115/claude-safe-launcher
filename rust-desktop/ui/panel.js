@@ -471,6 +471,7 @@ let updateInfo = null;
 let checkingUpdate = null;
 let lastUpdateCheck = 0;
 let applyingUpdate = false;
+let updateNext = null;
 
 function refreshUpdate() {
   if (!checkingUpdate) {
@@ -490,27 +491,34 @@ function checkUpdateInBackground() {
   if (Date.now() - lastUpdateCheck >= updateInterval) void refreshUpdate().catch(() => {});
 }
 
-function showUpdate(info, message) {
+function showUpdate(info, message, next = info?.availableVersion ? "apply" : null) {
   updateVersion.hidden = !info;
   if (info) updateVersion.textContent = "当前版本 v" + info.currentVersion;
-  updateResult.textContent = message ?? (info.availableVersion
+  updateResult.textContent = message ?? (info?.availableVersion
     ? `发现新版本 v${info.availableVersion}。可${info.direct ? "直接更新" : "通过安装向导升级"}。`
     : "已是最新版本。");
-  updateAction.hidden = !info?.availableVersion && !message;
-  updateAction.textContent = info?.availableVersion ? (info.direct ? "直接更新" : "下载安装包") : "打开发布页";
+  updateNext = next;
+  updateAction.hidden = !next;
+  updateAction.textContent = {
+    apply: info?.direct ? "直接更新" : "下载安装包",
+    retry: "重试更新",
+    recheck: "重新检查",
+    releasePage: "打开正式发布页",
+  }[next] ?? "";
 }
 
-byId("check-updates").addEventListener("click", async () => {
+async function checkUpdates() {
   showUpdate(null, "正在检查更新…");
-  updateAction.hidden = true;
-  updateDialog.showModal();
+  if (!updateDialog.open) updateDialog.showModal();
   try {
     const info = await refreshUpdate();
     if (updateDialog.open) showUpdate(info);
   } catch (error) {
-    if (updateDialog.open) showUpdate(null, String(error));
+    if (updateDialog.open) showUpdate(null, String(error), "recheck");
   }
-});
+}
+
+byId("check-updates").addEventListener("click", () => { void checkUpdates(); });
 byId("close-update").addEventListener("click", () => updateDialog.close());
 updateDialog.addEventListener("cancel", (event) => { if (applyingUpdate) event.preventDefault(); });
 
@@ -530,7 +538,7 @@ async function applyUpdate() {
     byId("close-update").disabled = true;
     await tauri.core.invoke("install_update", { version: info.availableVersion, direct: info.direct === true });
   } catch (error) {
-    updateResult.textContent = String(error);
+    showUpdate(info, error?.message ?? String(error), error?.next ?? "retry");
     if (!updateDialog.open) updateDialog.showModal();
   } finally {
     applyingUpdate = false;
@@ -542,12 +550,19 @@ async function applyUpdate() {
 
 availableUpdate.addEventListener("click", () => { void applyUpdate(); });
 updateAction.addEventListener("click", async () => {
-  if (updateAction.textContent !== "打开发布页") {
-    await applyUpdate();
-    return;
+  switch (updateNext) {
+    case "apply":
+    case "retry":
+      await applyUpdate();
+      break;
+    case "recheck":
+      await checkUpdates();
+      break;
+    case "releasePage":
+      try { await tauri.core.invoke("open_release_page", { version: null }); }
+      catch (error) { updateResult.textContent = String(error); }
+      break;
   }
-  try { await tauri.core.invoke("open_release_page", { version: null }); }
-  catch (error) { updateResult.textContent = String(error); }
 });
 form.addEventListener("submit", async (event) => {
   event.preventDefault();

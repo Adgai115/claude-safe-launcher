@@ -1,0 +1,26 @@
+name: Windows direct upgrade smoke test
+
+on:
+  push:
+    paths:
+      - '.github/workflows/windows-upgrade-smoke.yml'
+      - 'rust-desktop/tests/Test-DirectUpdate.ps1'
+      - 'rust-desktop/tests/upgrade-smoke.cjs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upgrade:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build, install and exercise the signed upgrade
+        shell: pwsh
+        working-directory: rust-desktop
+        run: ./tests/Test-DirectUpdate.ps1

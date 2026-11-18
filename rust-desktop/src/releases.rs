@@ -19,6 +19,41 @@ pub struct UpdateCheck {
     pub direct: bool,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdateNext {
+    Retry,
+    Recheck,
+    ReleasePage,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpdateFailure {
+    pub message: String,
+    pub next: UpdateNext,
+}
+
+impl UpdateFailure {
+    pub fn new(message: impl Into<String>, next: UpdateNext) -> Self {
+        Self {
+            message: message.into(),
+            next,
+        }
+    }
+}
+
+impl From<String> for UpdateFailure {
+    fn from(message: String) -> Self {
+        Self::new(message, UpdateNext::Retry)
+    }
+}
+
+impl From<&str> for UpdateFailure {
+    fn from(message: &str) -> Self {
+        Self::new(message, UpdateNext::Retry)
+    }
+}
+
 #[derive(Deserialize)]
 struct Release {
     tag_name: String,
@@ -118,10 +153,16 @@ fn release_url(version: Option<&str>) -> Result<String, String> {
     }
 }
 
-pub fn download(current: &Version, requested: &str, folder: &Path) -> Result<PathBuf, String> {
+pub fn download(
+    current: &Version,
+    requested: &str,
+    folder: &Path,
+) -> Result<PathBuf, UpdateFailure> {
     let version = stable_version(requested)
         .filter(|version| version > current)
-        .ok_or("可安装版本无效，请重新检查更新")?;
+        .ok_or_else(|| {
+            UpdateFailure::new("可安装版本无效，请重新检查更新。", UpdateNext::Recheck)
+        })?;
     let tag = format!("{TAG_PREFIX}{version}");
     let metadata = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(12))
@@ -137,7 +178,12 @@ pub fn download(current: &Version, requested: &str, folder: &Path) -> Result<Pat
                 .send()
         })
         .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|_| "无法核实 GitHub 发布，请重新检查更新")?;
+        .map_err(|_| {
+            UpdateFailure::new(
+                "无法核实 GitHub 发布，请重新检查更新。",
+                UpdateNext::Recheck,
+            )
+        })?;
     let mut json = Vec::new();
     metadata
         .take(MAX_PAGE_BYTES + 1)
@@ -151,13 +197,23 @@ pub fn download(current: &Version, requested: &str, folder: &Path) -> Result<Pat
         .installer(&version)
         .filter(|_| release.desktop_version() == Some(version.clone()))
         .filter(|asset| asset.size <= MAX_INSTALLER_BYTES)
-        .ok_or("此版本的 Windows 安装包不可用")?;
+        .ok_or_else(|| {
+            UpdateFailure::new(
+                "此版本的 Windows 安装包不可用，请重新检查更新。",
+                UpdateNext::Recheck,
+            )
+        })?;
     let digest = asset
         .digest
         .as_deref()
         .and_then(|digest| digest.strip_prefix("sha256:"))
         .filter(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .ok_or("GitHub 未提供可验证的安装包校验值，请从发布页手动下载")?;
+        .ok_or_else(|| {
+            UpdateFailure::new(
+                "GitHub 未提供安装包校验值，请从正式发布页重新下载安装包。",
+                UpdateNext::ReleasePage,
+            )
+        })?;
     let url = format!(
         "https://github.com/{REPOSITORY}/releases/download/{tag}/{}",
         asset.name
@@ -192,7 +248,8 @@ pub fn download(current: &Version, requested: &str, folder: &Path) -> Result<Pat
     std::fs::create_dir_all(folder).map_err(|_| "无法创建下载文件夹")?;
     let mut temp = tempfile::NamedTempFile::new_in(folder).map_err(|_| "无法写入下载文件夹")?;
     verify_download(response, temp.as_file_mut(), asset.size, digest)?;
-    mark_internet_download(temp.path(), &url)?;
+    mark_internet_download(temp.path(), &url)
+        .map_err(|message| UpdateFailure::new(message, UpdateNext::ReleasePage))?;
     crate::downloads::save(temp, folder, &installer_stem(&version), "exe")
         .map_err(|_| "无法在下载文件夹保存安装包".into())
 }

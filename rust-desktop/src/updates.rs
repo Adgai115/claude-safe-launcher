@@ -1,10 +1,10 @@
-use crate::releases::UpdateCheck;
-use crate::{machine, prepare_update_install, Config, Launcher};
+use crate::releases::{UpdateCheck, UpdateFailure, UpdateNext};
+use crate::{prepare_update_install, require_claude_stopped_for_update, Launcher};
 use semver::Version;
 use serde_json::Value;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
-use tauri_plugin_updater::{Update, UpdaterExt};
+use tauri_plugin_updater::{Error, Update, UpdaterExt};
 
 pub fn register(app: &AppHandle) -> tauri::Result<bool> {
     let Some(config) = app.config().plugins.0.get("updater") else {
@@ -102,38 +102,74 @@ fn is_direct_patch(current: &Version, target: &str, manifest: &Value) -> bool {
         && manifest["installMode"].as_str() == Some("direct")
 }
 
-pub async fn install(app: AppHandle, version: &str) -> Result<(), String> {
+fn download_failure(error: Error) -> UpdateFailure {
+    match error {
+        Error::Minisign(_)
+        | Error::Base64(_)
+        | Error::SignatureUtf8(_)
+        | Error::SignedVersionMismatch { .. }
+        | Error::MissingSignedVersion => UpdateFailure::new(
+            "更新包签名校验失败，已停止安装。请从正式发布页重新获取安装包。",
+            UpdateNext::ReleasePage,
+        ),
+        _ => "更新包下载失败。请检查网络后重试。".into(),
+    }
+}
+
+pub async fn install(app: AppHandle, version: &str) -> Result<(), UpdateFailure> {
+    require_claude_stopped_for_update(&app.state::<Launcher>())?;
     let update = latest(&app)
         .await?
         .filter(|update| update.version == version)
-        .ok_or("可安装版本已变更，请重新检查更新")?;
+        .ok_or_else(|| {
+            UpdateFailure::new("可安装版本已变更，请重新检查更新。", UpdateNext::Recheck)
+        })?;
     if !can_install_directly(&app, &update) {
-        return Err("此版本需要使用安装向导，请重新检查更新".into());
-    }
-    {
-        let state = app.state::<Launcher>();
-        machine::require_claude_stopped(&Config::load(&state.folder)?)?;
+        return Err(UpdateFailure::new(
+            "此版本需要使用安装向导，请重新检查更新。",
+            UpdateNext::Recheck,
+        ));
     }
     let bytes = update
         .download(|_, _| {}, || {})
         .await
-        .map_err(|_| "下载失败或更新签名校验未通过")?;
+        .map_err(download_failure)?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Launcher>();
         let _operation = state.begin()?;
         prepare_update_install(&app, &state)?;
-        update
-            .install(bytes)
-            .map_err(|_| "无法安装已验证的更新".into())
+        update.install(bytes).map_err(|_| {
+            UpdateFailure::new(
+                "无法运行已验证的更新包。请从正式发布页下载安装包。",
+                UpdateNext::ReleasePage,
+            )
+        })
     })
     .await
-    .map_err(|_| "更新任务异常退出".to_owned())?
+    .map_err(|_| UpdateFailure::from("更新任务意外中断，请重试。"))?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn failed_downloads_and_untrusted_packages_offer_different_actions() {
+        let download = download_failure(Error::Network("fixture".into()));
+        assert!(matches!(download.next, UpdateNext::Retry));
+        for error in [
+            Error::MissingSignedVersion,
+            Error::SignedVersionMismatch {
+                signed: "0.1.25".into(),
+                announced: "0.1.26".into(),
+            },
+        ] {
+            let failure = download_failure(error);
+            assert!(matches!(failure.next, UpdateNext::ReleasePage));
+            assert!(failure.message.contains("签名校验失败"));
+        }
+    }
 
     #[test]
     fn direct_install_requires_an_explicit_compatible_patch() {
