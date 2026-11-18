@@ -1,90 +1,25 @@
-# Claude Safe Launcher
+# Claude 环境检查器
 
-在启动 Claude 桌面版之前检查环境，按记录的标准修复可确认偏差，并在使用时观察实际连接与客户端日志。工具用于降低可识别的风险，不保证免封；检查分数不是账号安全概率。
+Claude 环境检查器是面向 Windows x64 的第三方桌面工具，用于在启动 Claude 前核对系统环境，并在运行期间监控连接和客户端日志。当前源码版本为 **v0.1.23**。
 
-## Claude 环境检查器 · Windows x64 桌面版
+## 构建与安装
 
-独立的 Rust 桌面应用，提供加权检查、后台监控、时区恢复和脱敏诊断。当前源码版本为 **v0.1.23**。
+从当前源码构建 Windows 安装包，请按[桌面版构建说明](rust-desktop/README.md#构建)操作。安装器并排显示中英文许可，勾选同意后可继续。首次安装可浏览文件夹或粘贴路径，升级沿用原安装位置。
 
-**[下载已发布的 Windows x64 安装包 v0.1.22](https://github.com/Adgai115/claude-safe-launcher/releases/tag/desktop-v0.1.22)** · [构建和使用当前桌面版源码](rust-desktop/README.md)
+## 使用
 
-v0.1.23 提供以下安装和更新操作。
+1. 打开应用后运行「检查并修复」，查看每项检查的状态和得分。
+2. 完整检查达到 100 分后可点击「启动 Claude」。启动前会再次核对环境。
+3. 面板关闭后可留在托盘监控。应用临时调整过的时区可在 Claude 退出后恢复。
 
-- 安装器按条款并排显示中英文协议。勾选同意后继续。首次安装可浏览文件夹或粘贴路径，升级沿用原安装位置。
-- 主界面右下角显示版本，并在发现新版时显示「可更新」。确认后从 GitHub 下载安装包，校验 SHA-256 并通过 Windows 打开。手动检查位于「设置」。
-- 「监控日志 → 导出脱敏诊断」将文件保存到 Windows 的下载文件夹。同名文件自动编号。
+主界面右下角显示版本，发现新版时显示「可更新」。确认后应用会下载并校验安装包，再通过 Windows 打开安装器。手动检查入口位于「设置」。
 
-## Windows 默认脚本版：v3.5.3
+「监控日志 → 导出脱敏诊断」将诊断文件保存到 Windows 的下载文件夹，同名文件自动编号。
 
-1. 下载完整仓库并解压。
-2. 运行根目录的 `install.cmd`。
-3. 桌面「Claude 安全启动」会打开 `windows/claude-panel.ps1`，默认执行「检查并修复」。
-
-需要 Windows 10/11、Windows PowerShell 5.1、Edge 或 Chrome、Claude 桌面版，以及已开启外部控制和 TUN 的 Clash Verge Rev。默认使用 `Claude` 策略组，请先准备自己的代理配置。
-
-- 15 组检查，实际明细、顶部计数、卡片扣分和评分同步更新。
-- 按记录的标准复查时区、节点、出口、TUN；保留正常 Claude Code 认证与模型变量。
-- 通过 Windows TCP 归属补足代理缺少进程信息的情况，只读核对 Claude 官方服务连接。
-- 只报告近期日志中的告警类别，无日志不等于账号异常，也不等于账号健康。
-- 耗时观测在独立进程执行，有超时和重试，避免拖住面板。
-- 不注入或挂接 Claude，不读取其进程内存、不改登录数据，不主动断连或关闭 Claude。
-
-完整的安装、配置、升级、评分和命令行说明见 **[Windows 使用说明](windows/README.md)**，变更范围见 [v3.5.3 发布说明](docs/windows-v3.5.3.md)。移动解压目录后重新运行安装脚本即可。
-
-### 关闭面板后还会监控吗
-
-| 使用方式 | 关闭面板后 |
-| --- | --- |
-| 仅打开面板、只读检查或检查并修复 | 不会因此启动独立常驻监控；面板的周期观测停止 |
-| 「修复并启动 Claude」并成功启动或确认客户端运行 | 独立监控继续：默认约每 5 分钟检查环境、约每 30 秒观测连接和日志 |
-| Claude 退出 | 独立监控退出 |
-
-独立监控默认按标准修复时区、节点和 TUN；配置 `monitorAutoRepair=false` 可改为仅提醒。不会因关闭面板而关闭 Claude，也不会因观测异常主动断开 Claude 连接。
-
-### 分数表示什么
-
-分数从实际带权重的检查结果计算。已确认失败默认扣 25 分，已确认时区偏差扣 8 分；参考项和未知状态不会凭空扣分。界面同时展示待核实和参考组数，100 分不代表全部核实。异常中止或明细与分数不一致时不显示分数。
-
-首次使用请核对地区、出口和预设标准。Windows 本机配置、日志、浏览器目录、变量备份均不应提交到 Git；仓库只提供无凭据的 `windows/preflight.example.json`。
-
-## macOS
-
-macOS 实现保留在 `mac/`，本次 Windows 更新不改变其行为。进入该目录运行 `install.command`，或：
-
-```bash
-cd mac
-python3 claude_panel.py
-```
-
-依赖 Python 3、系统 `curl`、`osascript`、Clash Verge Rev 和 Claude 桌面版。详细要求与旧功能见 [原有使用说明](docs/legacy-README.md)。
-
-## 保留的 v4 JSON 预览接口
-
-根目录的脚本、`claude-rules.ps1`、`rules/checks.json` 及原有测试保持兼容。已有调用根目录 `claude-preflight.ps1 -Json -JsonPath ...` 的工具不需要迁移；它们不是新版 Windows 默认入口。
-
-- [v4 规则文档](docs/rules-v4.md)
-- [v4 JSON 预览格式](docs/preflight-json-schema.md)
-- [更新日志](CHANGELOG.md)
-
-新版 Windows 的结构化进度与完整结果使用 schemaVersion 2，由 `windows/claude-diagnostics.ps1` 统一生成和核对。根目录预览文档中的旧行为仅适用于根目录预览实现，请勿将其视为新版 Windows 的启动或评分规则。
-
-## 验证
-
-```powershell
-# 新版 Windows：隔离脚本、连接归属、日志分类与结果回归
-powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\tests\verify.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\tests\verify-risk.ps1
-
-# 保留的根目录预览接口回归
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\rules.Tests.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\envfix.Tests.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\issueexport.Tests.ps1
-```
-
-新版浏览器回归及依赖设置见 [Windows 测试说明](windows/README.md#验证)。截图、结果和依赖默认在临时目录，不提交运行数据。
+[完整使用说明](rust-desktop/README.md#使用)
 
 ## 许可
 
-本仓库采用 **Creative Commons Attribution-NonCommercial 4.0 International（CC BY-NC 4.0）**。在遵守署名、非商业使用及其他许可条款的前提下，可以分享和改编。
+本项目采用 **CC BY-NC 4.0**，可依照署名、非商业使用及其他条款分享和改编。
 
-[英文许可全文](LICENSE) · [简体中文许可全文](LICENSE.zh-Hans.txt) · [Creative Commons 官方简体中文法律文本](https://creativecommons.org/licenses/by-nc/4.0/legalcode.zh-hans)
+[英文许可全文](LICENSE) · [简体中文许可全文](LICENSE.zh-Hans.txt)
