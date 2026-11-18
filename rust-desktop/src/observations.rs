@@ -52,7 +52,7 @@ fn parse_region_list(html: &str, now: DateTime<Utc>) -> Option<RegionList> {
         LazyLock::new(|| Regex::new(r"(?is)<li\b[^>]*>(.*?)</li>").unwrap());
     static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<[^>]*>").unwrap());
     static NAMES: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
-        serde_json::from_str(include_str!("../../windows/data/country-name-map.json"))
+        serde_json::from_str(include_str!("../data/country-name-map.json"))
             .expect("bundled policy name map")
     });
     let after = html.split_once(POLICY_ANCHOR)?.1;
@@ -91,9 +91,7 @@ pub fn supported_region(network: &Network, folder: &Path, country: Option<&str>)
     let cached = std::fs::read_to_string(folder.join("supported-regions.json"))
         .ok()
         .and_then(|json| serde_json::from_str::<RegionList>(&json).ok())
-        .or_else(|| {
-            serde_json::from_str(include_str!("../../windows/data/supported-regions.json")).ok()
-        })
+        .or_else(|| serde_json::from_str(include_str!("../data/supported-regions.json")).ok())
         .filter(|list| list.current(now));
     let list = if cached
         .as_ref()
@@ -586,8 +584,7 @@ mod tests {
     fn stale_or_incomplete_region_evidence_is_rejected() {
         let now = Utc::now();
         let seed: RegionList =
-            serde_json::from_str(include_str!("../../windows/data/supported-regions.json"))
-                .unwrap();
+            serde_json::from_str(include_str!("../data/supported-regions.json")).unwrap();
         assert!(seed.current(seed.fetched_at_utc));
         assert!(!seed.current(seed.fetched_at_utc + Duration::days(8)));
         let malformed = format!("{POLICY_ANCHOR}<ul><li>United States</li></ul>");
