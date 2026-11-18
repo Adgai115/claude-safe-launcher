@@ -42,15 +42,19 @@ jobs:
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
           $env:RUSTUP_TOOLCHAIN = 'stable'
-          npx.cmd --yes --package @tauri-apps/cli@2.12.5 tauri build --bundles nsis --no-sign --ci -- --locked
-          $payload = @(Get-ChildItem target/release/bundle/nsis -Filter '*.exe')
-          if ($payload.Count -ne 1) { throw 'Expected one NSIS payload.' }
+          $payload = ./installer/Build-UpdateBundle.ps1 -OutputDirectory "$env:RUNNER_TEMP/update-bundle" -UseNpx
           $version = (Get-Content tauri.conf.json -Raw | ConvertFrom-Json).version
-          $setup = ./installer/Build-Installer.ps1 -Payload $payload[0].FullName -OutputPath "$env:RUNNER_TEMP/Claude-Environment-Checker-v$version-win-x64-setup.exe"
+          $setup = ./installer/Build-Installer.ps1 -Payload $payload.FullName -OutputPath "$env:RUNNER_TEMP/Claude-Environment-Checker-v$version-win-x64-setup.exe"
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./installer/Test-Installer.ps1 -Installer $setup.FullName -Version $version
       - uses: actions/upload-artifact@v7
         with:
           name: windows-x64-installer
           path: ${{ runner.temp }}/Claude-Environment-Checker-*-win-x64-setup.exe
+          if-no-files-found: error
+          compression-level: 0
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-x64-unsigned-update-bundle
+          path: ${{ runner.temp }}/update-bundle/*-update.exe
           if-no-files-found: error
           compression-level: 0
