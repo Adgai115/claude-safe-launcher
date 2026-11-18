@@ -36,6 +36,7 @@ jobs:
           cargo +stable fmt --all --check
           cargo +stable test --locked --no-default-features
           cargo +stable test --locked --features custom-protocol,signed-updates --bin claude-safe-launcher-rust
+          cargo +stable build --locked --no-default-features --features verify-update-package --example verify-update
           node --check ui/panel.js
       - name: Build Windows x64 installer
         run: |

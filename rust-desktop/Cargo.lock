@@ -511,8 +511,10 @@ name = "claude-safe-launcher-rust"
 version = "0.1.25"
 dependencies = [
  "arboard",
+ "base64 0.22.1",
  "chrono",
  "html-escape",
+ "minisign-verify",
  "regex",
  "reqwest 0.12.28",
  "semver",

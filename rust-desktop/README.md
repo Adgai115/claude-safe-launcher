@@ -30,6 +30,14 @@ $payload = Get-ChildItem target\release\bundle\nsis -Filter '*.exe' | Select-Obj
 
 构建命令为 `cargo tauri build --features signed-updates --config <发布配置>`。配置需要设置 `bundle.createUpdaterArtifacts`、`plugins.updater.pubkey`、HTTPS `plugins.updater.endpoints` 和 `plugins.updater.requireSignedVersion: true`。Windows 更新模式使用默认的 `passive`，也可使用 `quiet`。使用 Tauri CLI 2.12.5 或更新版本签署带版本号的 NSIS 更新包，按 [Tauri 更新发布格式](https://v2.tauri.app/plugin/updater/) 发布更新包、签名和版本清单。每个公开版本仍需发布带安装向导的 EXE。两种更新方式均要求退出 Claude 并完成待处理的时区恢复。
 
+正式签名包可用 `installer/New-SignedRelease.ps1` 生成。发布机需要已登录的 AWS CLI、`asm-exec`、PowerShell 7.2 或更新版本、Windows x64 MSVC 构建环境和上述版本的 `cargo tauri`。Secret 内默认使用 `privateKey` 字段，有密码时用 `-PasswordField` 指定字段名。脚本仅在签名进程中通过 Secret 引用注入私钥。
+
+```powershell
+./installer/New-SignedRelease.ps1 -PublicKeyPath <Tauri 公钥文件> -SigningSecretArn <Secret ARN> -AWSProfile <AWS 登录配置>
+```
+
+首次接入更新公钥时使用默认的安装向导模式。后续兼容补丁可传入 `-InstallMode direct`。脚本核验包签名、签名内的版本和安装器资源后，在 `target/signed-release/<版本号>/` 生成安装器、直接更新包、签名和 `latest.json`。发布前将四个文件放入同一个 `desktop-v<版本号>` 发布草稿，验证后再发布。
+
 [Windows 构建检查](../.github/workflows/windows-desktop.yml)会运行核心及桌面测试、构建安装器并检查包版本、双语资源和路径处理。正式发布前另行验证旧版升级、签名补丁重启、原配置保留和实际 VPN 环境。
 
 ## 使用

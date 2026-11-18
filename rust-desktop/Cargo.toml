@@ -10,11 +10,14 @@ default = ["desktop"]
 desktop = ["dep:arboard", "dep:semver", "dep:sha2", "dep:tauri", "dep:tauri-build", "dep:tauri-plugin-single-instance", "dep:windows"]
 custom-protocol = ["desktop", "tauri/custom-protocol"]
 signed-updates = ["desktop", "dep:tauri-plugin-updater"]
+verify-update-package = ["dep:base64", "dep:minisign-verify"]
 
 [dependencies]
 arboard = { version = "3", default-features = false, optional = true }
+base64 = { version = "0.22", optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 html-escape = "0.2"
+minisign-verify = { version = "0.3", optional = true }
 regex = "1"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 semver = { version = "1", optional = true }
@@ -40,3 +43,7 @@ tauri-build = { version = "2", optional = true , features = [] }
 name = "claude-safe-launcher-rust"
 path = "src/main.rs"
 required-features = ["desktop"]
+
+[[example]]
+name = "verify-update"
+required-features = ["verify-update-package"]
