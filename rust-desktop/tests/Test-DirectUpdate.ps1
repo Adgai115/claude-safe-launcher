@@ -32,7 +32,7 @@ function Build-TestBundle([version] $Version) {
 
 try {
     # Disposable test key. The production signing account is not used by this job.
-    npx.cmd @cli signer generate --ci --write-keys $testKey *> $null
+    npx.cmd @cli signer generate --ci --write-keys $testKey --password 'local-test' *> $null
     @{
         bundle = @{ createUpdaterArtifacts = $true }
         plugins = @{ updater = @{
@@ -53,13 +53,16 @@ try {
     foreach ($file in 'Cargo.toml', 'Cargo.lock') {
         $pattern = '(?m)(^name = "claude-safe-launcher-rust"\r?\nversion = ")' + [regex]::Escape($sourceVersion) + '"'
         $original = Get-Content -LiteralPath $file -Raw
-        $patched = $original -replace $pattern, ('1' + $patchVersion + '"')
+        $patched = [regex]::Replace($original, $pattern, {
+            param($match)
+            $match.Groups[1].Value + $patchVersion + '"'
+        })
         if ($patched -ceq $original) { throw "Failed to set fixture version in $file." }
         Set-Content -LiteralPath $file -Value $patched -NoNewline -Encoding utf8NoBOM
     }
     $patchInstaller = Build-TestBundle $patchVersion
     $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $testKey
-    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''
+    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = 'local-test'
     npx.cmd @cli signer sign --app-version "$patchVersion" $patchInstaller *> $null
     Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PATH, Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $testKey
@@ -68,7 +71,7 @@ try {
     $certificate = Join-Path $work 'localhost.cer'
     $pfx = Join-Path $work 'localhost.pfx'
     Export-Certificate -Cert $cert -FilePath $certificate | Out-Null
-    Export-PfxCertificate -Cert $cert -FilePath $pfx -Password (ConvertTo-SecureString 'local-test' -AsPlainText -Force) | Out-Null
+    Export-PfxCertificate -Cert $cert -FilePath $pfx -CryptoAlgorithmOption AES256_SHA256 -Password (ConvertTo-SecureString 'local-test' -AsPlainText -Force) | Out-Null
     certutil.exe -f -addstore Root $certificate | Out-Host
 
     $installPath = Join-Path $work 'Custom Install Path'
@@ -78,6 +81,9 @@ try {
     if ((Get-Item -LiteralPath $exe).VersionInfo.ProductVersion -ne "$baseVersion") {
         throw "Expected the baseline app in its custom installation directory."
     }
+    $debugPolicy = 'HKCU:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+    New-Item -Path $debugPolicy -Force | Out-Null
+    New-ItemProperty -Path $debugPolicy -Name 'claude-safe-launcher-rust.exe' -Value '--remote-debugging-port=42724' -PropertyType String | Out-Null
 
     $dataPath = Join-Path $env:LOCALAPPDATA 'io.github.adgai115.claude-safe-launcher-rust'
     New-Item -Path $dataPath -ItemType Directory -Force | Out-Null
