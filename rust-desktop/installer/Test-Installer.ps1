@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string] $Installer,
     [Parameter(Mandatory)] [string] $Version
