@@ -33,7 +33,7 @@ $payload = Get-ChildItem target\release\bundle\nsis -Filter '*.exe' | Select-Obj
 正式签名包可用 `installer/New-SignedRelease.ps1` 生成。发布机需要已登录的 AWS CLI、`asm-exec`、PowerShell 7.2 或更新版本、Windows x64 MSVC 构建环境和上述版本的 `cargo tauri`。Secret 内默认使用 `privateKey` 字段，有密码时用 `-PasswordField` 指定字段名。脚本仅在签名进程中通过 Secret 引用注入私钥。
 
 ```powershell
-./installer/New-SignedRelease.ps1 -PublicKeyPath <Tauri 公钥文件> -SigningSecretArn <Secret ARN> -AWSProfile <AWS 登录配置>
+./installer/New-SignedRelease.ps1 -PublicKeyPath ./installer/updater.pub -SigningSecretArn <Secret ARN> -AWSProfile <AWS 登录配置>
 ```
 
 首次接入更新公钥时使用默认的安装向导模式。后续兼容补丁可传入 `-InstallMode direct`。脚本核验包签名、签名内的版本和安装器资源后，在 `target/signed-release/<版本号>/` 生成安装器、直接更新包、签名和 `latest.json`。发布前将四个文件放入同一个 `desktop-v<版本号>` 发布草稿，验证后再发布。
