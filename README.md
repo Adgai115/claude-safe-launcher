@@ -2,7 +2,13 @@
 
 在启动 Claude 桌面版之前检查环境，按记录的标准修复可确认偏差，并在使用时观察实际连接与客户端日志。工具用于降低可识别的风险，不保证免封；检查分数不是账号安全概率。
 
-## Windows 默认版本：v3.5.3
+## Claude 环境检查器 · Windows x64 桌面版
+
+独立的 Rust 桌面应用，包含环境评分、后台监控、时区恢复和脱敏诊断。安装后可从主界面右上角检查新版。
+
+**[下载桌面版安装包](https://github.com/Adgai115/claude-safe-launcher/releases/tag/desktop-v0.1.22)** · [桌面版使用和构建说明](rust-desktop/README.md)
+
+## Windows 默认脚本版：v3.5.3
 
 1. 下载完整仓库并解压。
 2. 运行根目录的 `install.cmd`。

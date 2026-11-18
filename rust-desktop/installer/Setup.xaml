@@ -1,0 +1,179 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Claude 环境检查器 安装程序" Width="876" Height="635" MinWidth="695" MinHeight="500"
+        WindowStartupLocation="CenterScreen" UseLayoutRounding="True" SnapsToDevicePixels="True"
+        FontFamily="Segoe UI, Microsoft YaHei UI" FontSize="14" Foreground="#17221B"
+        Background="White" TextOptions.TextFormattingMode="Display">
+  <Window.Resources>
+    <SolidColorBrush x:Key="Ink" Color="#17221B"/>
+    <SolidColorBrush x:Key="Muted" Color="#52635A"/>
+    <SolidColorBrush x:Key="Green" Color="#237748"/>
+    <SolidColorBrush x:Key="Line" Color="#D7DED9"/>
+    <SolidColorBrush x:Key="Selection" Color="#D7EDDF"/>
+    <Style TargetType="Button">
+      <Setter Property="Padding" Value="17,7"/>
+      <Setter Property="MinWidth" Value="78"/>
+      <Setter Property="MinHeight" Value="36"/>
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="Background" Value="#FFFFFF"/>
+      <Setter Property="BorderBrush" Value="Transparent"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="ButtonSurface" Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="6">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                Margin="{TemplateBinding Padding}" RecognizesAccessKey="True"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="ButtonSurface" Property="BorderBrush" Value="#6FA889"/>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="ButtonSurface" Property="BorderBrush" Value="#237748"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="ButtonSurface" Property="Background" Value="#DCEBE1"/>
+                <Setter TargetName="ButtonSurface" Property="BorderBrush" Value="Transparent"/>
+                <Setter Property="Foreground" Value="#4E6D59"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+      <Setter Property="Background" Value="{StaticResource Green}"/>
+      <Setter Property="Foreground" Value="White"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="MinWidth" Value="112"/>
+    </Style>
+    <Style x:Key="LanguageOption" TargetType="RadioButton">
+      <Setter Property="Padding" Value="20,5"/>
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="Background" Value="White"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="RadioButton">
+            <Border x:Name="Segment" Background="{TemplateBinding Background}"
+                    Padding="{TemplateBinding Padding}" BorderThickness="1" BorderBrush="Transparent">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="Segment" Property="Background" Value="{StaticResource Selection}"/>
+                <Setter Property="Foreground" Value="#205F3C"/>
+                <Setter Property="FontWeight" Value="SemiBold"/>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="Segment" Property="BorderBrush" Value="#237748"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+  <Grid>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="214"/>
+      <ColumnDefinition Width="*"/>
+    </Grid.ColumnDefinitions>
+    <Border Background="#EAF6EE">
+      <StackPanel Margin="23,26,19,24">
+        <Image x:Name="BrandIcon" Width="54" Height="54" HorizontalAlignment="Left"
+               RenderOptions.BitmapScalingMode="HighQuality"/>
+        <TextBlock FontSize="28" FontWeight="Bold" LineHeight="35" Margin="0,12,0,5">
+          <Run Text="Claude"/><LineBreak/><Run Text="环境检查器"/>
+        </TextBlock>
+        <TextBlock Text="Claude Environment Checker" FontSize="13" TextWrapping="Wrap"
+                   Foreground="{StaticResource Muted}"/>
+        <StackPanel Margin="-11,31,-9,0">
+          <Border x:Name="AgreementStage" CornerRadius="7" Background="{StaticResource Selection}" Padding="11,6">
+            <StackPanel Orientation="Horizontal">
+              <Border x:Name="AgreementNumber" Width="24" Height="24" CornerRadius="12"
+                      BorderThickness="1" Background="{StaticResource Green}" BorderBrush="{StaticResource Green}">
+                <TextBlock x:Name="AgreementDigit" Text="1" Foreground="White" FontWeight="SemiBold"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
+              <TextBlock Text="许可协议" Margin="11,0,0,0" VerticalAlignment="Center" FontWeight="SemiBold"/>
+            </StackPanel>
+          </Border>
+          <Border x:Name="InstallStage" CornerRadius="7" Padding="11,6" Margin="0,7,0,0">
+            <StackPanel Orientation="Horizontal">
+              <Border x:Name="InstallNumber" Width="24" Height="24" CornerRadius="12"
+                      BorderThickness="1" BorderBrush="#7C9484">
+                <TextBlock x:Name="InstallDigit" Text="2" Foreground="{StaticResource Muted}"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
+              <TextBlock Text="安装" Margin="11,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </StackPanel>
+    </Border>
+    <Grid Grid.Column="1" Margin="27,23,23,18">
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+        <RowDefinition Height="Auto"/>
+      </Grid.RowDefinitions>
+      <StackPanel Margin="0,0,0,17">
+        <TextBlock x:Name="Heading" Text="许可协议" FontSize="28" FontWeight="Bold"/>
+        <TextBlock x:Name="Description" Text="请阅读协议并确认同意后继续。" FontSize="15"
+                   Foreground="{StaticResource Muted}" Margin="0,5,0,0" TextWrapping="Wrap"/>
+      </StackPanel>
+      <Grid Grid.Row="1">
+        <Grid x:Name="AgreementPanel">
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+          <Border BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="6"
+                  HorizontalAlignment="Left" Margin="0,0,0,15">
+            <StackPanel Orientation="Horizontal">
+              <RadioButton x:Name="Chinese" GroupName="LegalLanguage" Style="{StaticResource LanguageOption}"
+                           Content="简体中文" IsChecked="True"/>
+              <Border Width="1" Background="{StaticResource Line}"/>
+              <RadioButton x:Name="English" GroupName="LegalLanguage" Style="{StaticResource LanguageOption}"
+                           Content="English"/>
+            </StackPanel>
+          </Border>
+          <Border Grid.Row="1" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8"
+                  Background="#FCFDFB">
+            <FlowDocumentScrollViewer x:Name="LicenseReader" IsToolBarVisible="False" IsSelectionEnabled="True"
+                                      VerticalScrollBarVisibility="Auto" Padding="0"
+                                      AutomationProperties.Name="许可协议全文"/>
+          </Border>
+          <CheckBox x:Name="Consent" Grid.Row="2" Content="我已阅读、知晓并同意许可协议"
+                    Margin="1,15,0,0" Padding="7,0,0,0" MinHeight="26"
+                    VerticalContentAlignment="Center" AutomationProperties.AutomationId="Consent"/>
+        </Grid>
+        <StackPanel x:Name="LocationPanel" Visibility="Collapsed">
+          <TextBlock Text="安装位置" FontWeight="SemiBold" Margin="0,0,0,8"/>
+          <Border Background="#F7FAF7" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="7">
+            <TextBox x:Name="InstallPath" Background="Transparent" BorderThickness="0" Padding="11,8"
+                     TextWrapping="Wrap" IsReadOnly="True" AutomationProperties.Name="安装位置"/>
+          </Border>
+          <TextBlock x:Name="InstallError" Foreground="#A03230" TextWrapping="Wrap" Margin="0,12,0,0"/>
+          <ProgressBar x:Name="Progress" Visibility="Collapsed" Height="5" Margin="0,22,0,0"
+                       IsIndeterminate="True" Foreground="{StaticResource Green}" BorderThickness="0"/>
+        </StackPanel>
+      </Grid>
+      <Border Grid.Row="2" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0"
+              Margin="0,15,0,0" Padding="0,13,0,0">
+        <DockPanel LastChildFill="False">
+          <Button x:Name="BackButton" Content="上一步" DockPanel.Dock="Left" Visibility="Collapsed"/>
+          <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+            <Button x:Name="CancelButton" Content="取消" Margin="0,0,8,0"/>
+            <Button x:Name="NextButton" Content="下一步" Style="{StaticResource PrimaryButton}"
+                    IsDefault="True" IsEnabled="False" AutomationProperties.AutomationId="Continue"/>
+          </StackPanel>
+        </DockPanel>
+      </Border>
+    </Grid>
+  </Grid>
+</Window>

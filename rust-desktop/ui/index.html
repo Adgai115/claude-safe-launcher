@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Claude 环境检查器</title>
+  <link rel="stylesheet" href="panel.css">
+  <script defer src="panel.js"></script>
+</head>
+<body>
+  <div class="app">
+    <div class="app-content" role="region" aria-label="检查面板" tabindex="0">
+      <header>
+        <h1>Claude 环境检查器</h1>
+        <div class="header-actions">
+          <button class="btn" id="check-updates" aria-haspopup="dialog">检查更新</button>
+          <button class="btn" id="settings" aria-haspopup="dialog">设置</button>
+        </div>
+      </header>
+
+      <section class="hero" aria-label="检查概况">
+        <div class="score-panel">
+          <div class="ring" id="ring">
+            <svg viewBox="0 0 100 100" aria-hidden="true">
+              <circle class="track" cx="50" cy="50" r="44"></circle>
+              <circle class="bar" id="bar" cx="50" cy="50" r="44" pathLength="100"></circle>
+            </svg>
+            <strong class="score" id="score">—</strong>
+          </div>
+          <span class="score-label" id="scoreLabel" title="通过和已修复的组获得其权重，参考项不计入">加权评分</span>
+        </div>
+        <div class="summary">
+          <div class="status-heading">
+            <span id="spinner" class="spinner" aria-hidden="true" hidden></span>
+            <h2 class="state" id="state" role="status">准备检查</h2>
+            <span class="launch-hint" id="launch-hint">检查达到 100 分后可启动</span>
+          </div>
+          <div class="progress-heading">
+            <span id="activity">检查进度</span>
+            <strong id="coverage">0 / 14 组</strong>
+          </div>
+          <div class="progress-track" id="progress" role="progressbar" aria-label="检查进度" aria-valuemin="0" aria-valuemax="14" aria-valuenow="0">
+            <div class="progress-fill" id="progress-fill"></div>
+          </div>
+          <ul class="chips" id="status-counts" aria-label="检查结果统计" hidden></ul>
+        </div>
+      </section>
+
+      <div class="actions" aria-label="检查操作">
+        <button class="btn primary" data-action="repair">检查并修复</button>
+        <button class="btn launch" data-action="launch" aria-describedby="launch-hint" disabled>启动 Claude</button>
+        <button class="btn" id="monitor-history" aria-haspopup="dialog">监控日志</button>
+      </div>
+
+      <main class="results" aria-labelledby="results-title">
+        <div class="results-heading">
+          <h2 id="results-title">检查明细</h2>
+        </div>
+        <div id="groups" class="groups"></div>
+      </main>
+    </div>
+
+    <footer>
+      <span class="monitor-indicator" id="monitor-indicator" aria-hidden="true"></span>
+      <span id="monitor-status">监控未开启</span>
+      <button class="btn btn-sm" id="monitor-toggle" hidden>暂停监控</button>
+      <span class="recovery-status" id="timezone-recovery" role="status" hidden></span>
+      <button class="btn btn-sm" id="retry-timezone" hidden>恢复原时区</button>
+    </footer>
+
+    <dialog class="history-dialog" id="history-dialog" aria-labelledby="history-title">
+      <div class="history-heading">
+        <h2 id="history-title">监控日志</h2>
+        <span class="hint history-live">自动更新</span>
+        <button class="btn btn-sm" id="export-diagnostics">导出脱敏诊断</button>
+        <button class="btn btn-sm" id="close-history" autofocus>关闭</button>
+      </div>
+      <p class="hint" id="history-status" role="status" hidden></p>
+      <p class="hint diagnostics-path" id="diagnostics-path" role="status" hidden></p>
+      <ol class="history-list" id="history-list" aria-label="最近的监控事件"></ol>
+    </dialog>
+
+    <dialog id="settings-dialog">
+      <form id="settings-form">
+        <h2>Rust 版设置</h2>
+        <label>Claude 策略组<input name="claudeGroup" required maxlength="128"></label>
+        <label class="inline"><input type="checkbox" name="pinMainGroup">同时锁定另一个策略组</label>
+        <label>另一个策略组<input name="mainGroup" maxlength="128"></label>
+        <p class="hint">启用后，检查并修复会按同一个预设节点核对两个策略组。</p>
+        <p class="hint" id="settings-lock" hidden>Claude 正在运行。退出 Claude 后可修改策略组或环境基准。</p>
+        <p class="hint" id="data-directory"></p>
+        <p class="hint" id="log-path"></p>
+        <p id="settings-error" class="error" role="alert"></p>
+        <div class="settings-actions">
+          <button class="btn btn-sm" type="button" data-action="learn">记住当前环境</button>
+          <button class="btn btn-sm" type="button" id="copy" disabled>复制检查状态</button>
+        </div>
+        <div class="dialog-actions">
+          <button class="btn" type="button" id="cancel-settings">取消</button>
+          <button class="btn primary" type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="update-dialog" aria-labelledby="update-title">
+      <div class="update-content">
+        <h2 id="update-title">应用更新</h2>
+        <p class="hint" id="update-version" hidden></p>
+        <p id="update-result" role="status"></p>
+        <div class="dialog-actions">
+          <button class="btn" id="close-update" autofocus>关闭</button>
+          <button class="btn primary" id="update-action" hidden>前往 GitHub 下载</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="confirm-dialog">
+      <form method="dialog">
+        <h2 id="confirm-title"></h2>
+        <p id="confirm-message"></p>
+        <div class="dialog-actions">
+          <button class="btn" value="cancel" autofocus>取消</button>
+          <button class="btn primary" value="confirm">继续</button>
+        </div>
+      </form>
+    </dialog>
+  </div>
+</body>
+</html>

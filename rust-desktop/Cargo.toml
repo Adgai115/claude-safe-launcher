@@ -1,0 +1,41 @@
+[package]
+name = "claude-safe-launcher-rust"
+version = "0.1.22"
+edition = "2021"
+publish = false
+license = "CC-BY-NC-4.0"
+
+[features]
+default = ["desktop"]
+desktop = ["dep:arboard", "dep:semver", "dep:tauri", "dep:tauri-build", "dep:tauri-plugin-single-instance", "dep:windows"]
+custom-protocol = ["desktop", "tauri/custom-protocol"]
+signed-updates = ["desktop", "dep:tauri-plugin-updater"]
+
+[dependencies]
+arboard = { version = "3", default-features = false, optional = true }
+chrono = { version = "0.4", features = ["serde"] }
+html-escape = "0.2"
+regex = "1"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+semver = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+sysinfo = "0.33"
+tempfile = "3"
+unicode-normalization = "0.1"
+tauri = { version = "2", features = ["tray-icon"], optional = true }
+tauri-plugin-single-instance = { version = "2", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+tauri-plugin-updater = { version = "2.14.1", optional = true, default-features = false, features = ["native-tls"] }
+windows = { version = "0.62.2", optional = true, features = ["Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock", "Win32_System_Time", "Win32_UI_WindowsAndMessaging"] }
+
+[build-dependencies]
+tauri-build = { version = "2", optional = true , features = [] }
+
+[[bin]]
+name = "claude-safe-launcher-rust"
+path = "src/main.rs"
+required-features = ["desktop"]
