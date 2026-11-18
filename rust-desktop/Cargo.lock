@@ -508,7 +508,7 @@ dependencies = [
 
 [[package]]
 name = "claude-safe-launcher-rust"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "arboard",
  "chrono",
@@ -519,6 +519,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sha2",
  "sysinfo",
  "tauri",
  "tauri-build",

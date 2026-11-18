@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Claude 环境检查器",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "identifier": "io.github.adgai115.claude-safe-launcher-rust",
   "build": { "frontendDist": "ui" },
   "app": {
@@ -27,7 +27,7 @@
     "licenseFile": "../LICENSE",
     "resources": {
       "../LICENSE": "LICENSE",
-      "installer/License.zh-Hans.txt": "LICENSE.zh-Hans.txt"
+      "../LICENSE.zh-Hans.txt": "LICENSE.zh-Hans.txt"
     },
     "icon": ["icons/icon.ico"],
     "windows": { "nsis": { "installMode": "currentUser", "languages": ["SimpChinese", "English"] } }

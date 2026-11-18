@@ -62,8 +62,12 @@ pub fn recent(folder: &Path) -> io::Result<Vec<Entry>> {
     Ok(entries)
 }
 
-pub fn export(folder: &Path, current: &Status, timezone_pending: bool) -> io::Result<PathBuf> {
-    let directory = folder.join("logs");
+pub fn export(
+    folder: &Path,
+    destination: &Path,
+    current: &Status,
+    timezone_pending: bool,
+) -> io::Result<PathBuf> {
     let events: Vec<_> = recent(folder)?
         .into_iter()
         .map(|entry| serde_json::json!({
@@ -88,13 +92,11 @@ pub fn export(folder: &Path, current: &Status, timezone_pending: bool) -> io::Re
         "current": current.sanitized(),
         "events": events,
     });
-    fs::create_dir_all(&directory)?;
-    let file = directory.join("monitor-diagnostics.json");
-    let mut temp = tempfile::NamedTempFile::new_in(directory)?;
+    fs::create_dir_all(destination)?;
+    let mut temp = tempfile::NamedTempFile::new_in(destination)?;
     serde_json::to_writer_pretty(&mut temp, &report).map_err(io::Error::other)?;
     temp.write_all(b"\n")?;
-    temp.persist(&file).map_err(|error| error.error)?;
-    Ok(file)
+    crate::downloads::save(temp, destination, "monitor-diagnostics", "json")
 }
 
 impl Status {
@@ -176,7 +178,11 @@ mod tests {
         )];
         let status = Status::new(&Report::new(&groups), "private monitor label");
         append(folder.path(), "private legacy event", &status).unwrap();
-        let file = export(folder.path(), &status, true).unwrap();
+        let destination = folder.path().join("Downloads");
+        let file = export(folder.path(), &destination, &status, true).unwrap();
+        let repeated = export(folder.path(), &destination, &status, false).unwrap();
+        assert_eq!(file, destination.join("monitor-diagnostics.json"));
+        assert_ne!(repeated, file);
         let contents = fs::read_to_string(file).unwrap();
         assert!(!contents.contains("private"));
         assert!(contents.contains("\"timezonePending\": true"));

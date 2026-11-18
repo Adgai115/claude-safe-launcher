@@ -47,9 +47,9 @@ using System.Reflection;
         "/resource:$(Join-Path $PSScriptRoot 'Setup.xaml'),Setup.View",
         "/resource:$icon,Setup.Icon",
         "/resource:$(Join-Path $desktop '..\LICENSE'),Setup.License.En",
-        "/resource:$(Join-Path $PSScriptRoot 'License.zh-Hans.txt'),Setup.License.Zh",
+        "/resource:$(Join-Path $desktop '..\LICENSE.zh-Hans.txt'),Setup.License.Zh",
         "/resource:$($source.FullName),Setup.Payload",
-        (Join-Path $PSScriptRoot 'Setup.cs'), $metadata
+        (Join-Path $PSScriptRoot 'Setup.cs'), (Join-Path $PSScriptRoot 'FolderPicker.cs'), $metadata
     )
     & $compiler @options
     if ($LASTEXITCODE -ne 0) { throw "The installer build failed with exit code $LASTEXITCODE." }

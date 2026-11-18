@@ -60,7 +60,6 @@ header, .actions, .settings-actions, .results-heading, footer {
 }
 
 header { justify-content: space-between; gap: 14px; }
-.header-actions { display: flex; gap: 8px; flex: none; }
 h1 { font-size: 23px; font-weight: 700; line-height: 1.24; }
 .settings-actions { gap: 8px; flex-wrap: wrap; }
 
@@ -234,11 +233,13 @@ header .btn, .actions .btn { min-height: 34px; padding-block: 4px; }
 
 footer {
   gap: 8px;
+  flex-wrap: wrap;
   padding: 0 var(--page-gutter) var(--bottom-padding);
   font-size: 13px;
   color: var(--muted);
   min-height: 27px;
 }
+.footer-version { display: flex; align-items: center; gap: 8px; margin-inline-start: auto; white-space: nowrap; }
 .monitor-indicator { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
 .monitor-indicator.active { background: var(--success); }
 .recovery-status { padding-inline-start: 8px; border-inline-start: 1px solid var(--border); }

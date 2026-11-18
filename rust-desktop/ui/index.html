@@ -12,10 +12,7 @@
     <div class="app-content" role="region" aria-label="检查面板" tabindex="0">
       <header>
         <h1>Claude 环境检查器</h1>
-        <div class="header-actions">
-          <button class="btn" id="check-updates" aria-haspopup="dialog">检查更新</button>
-          <button class="btn" id="settings" aria-haspopup="dialog">设置</button>
-        </div>
+        <button class="btn" id="settings" aria-haspopup="dialog">设置</button>
       </header>
 
       <section class="hero" aria-label="检查概况">
@@ -66,6 +63,10 @@
       <button class="btn btn-sm" id="monitor-toggle" hidden>暂停监控</button>
       <span class="recovery-status" id="timezone-recovery" role="status" hidden></span>
       <button class="btn btn-sm" id="retry-timezone" hidden>恢复原时区</button>
+      <div class="footer-version">
+        <span id="app-version" aria-label="应用版本"></span>
+        <button class="btn btn-sm launch" id="available-update" hidden>可更新</button>
+      </div>
     </footer>
 
     <dialog class="history-dialog" id="history-dialog" aria-labelledby="history-title">
@@ -94,6 +95,7 @@
         <div class="settings-actions">
           <button class="btn btn-sm" type="button" data-action="learn">记住当前环境</button>
           <button class="btn btn-sm" type="button" id="copy" disabled>复制检查状态</button>
+          <button class="btn btn-sm" type="button" id="check-updates" aria-haspopup="dialog">检查更新</button>
         </div>
         <div class="dialog-actions">
           <button class="btn" type="button" id="cancel-settings">取消</button>
@@ -109,7 +111,7 @@
         <p id="update-result" role="status"></p>
         <div class="dialog-actions">
           <button class="btn" id="close-update" autofocus>关闭</button>
-          <button class="btn primary" id="update-action" hidden>前往 GitHub 下载</button>
+          <button class="btn primary" id="update-action" hidden>下载并更新</button>
         </div>
       </div>
     </dialog>

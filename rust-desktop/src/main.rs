@@ -1,5 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod downloads;
 mod history;
 mod notification;
 mod releases;
@@ -64,6 +65,7 @@ impl Snapshot {
     fn as_json(&self) -> Value {
         let report = Report::new(&self.groups);
         json!({
+            "version": env!("CARGO_PKG_VERSION"),
             "launchReady": self.verified && report.can_launch() && !self.claude_running,
             "claudeRunning": self.claude_running,
             "report": report,
@@ -161,6 +163,7 @@ struct Launcher {
     folder: PathBuf,
     snapshot: Mutex<Snapshot>,
     operation: Mutex<()>,
+    #[cfg(all(windows, feature = "signed-updates"))]
     updates_enabled: bool,
 }
 
@@ -264,11 +267,20 @@ fn read_monitor_history(state: State<'_, Launcher>) -> Result<Vec<history::Entry
 }
 
 #[tauri::command]
-fn export_diagnostics(state: State<'_, Launcher>) -> Result<String, String> {
+fn export_diagnostics(app: AppHandle, state: State<'_, Launcher>) -> Result<String, String> {
+    let destination = app
+        .path()
+        .download_dir()
+        .map_err(|_| "无法定位 Windows 下载文件夹")?;
     let snapshot = lock(&state.snapshot)?;
     let status = history::Status::new(&Report::new(&snapshot.groups), snapshot.monitor.label());
-    let path = history::export(&state.folder, &status, snapshot.timezone_pending)
-        .map_err(|_| "无法写入本地诊断文件".to_owned())?;
+    let path = history::export(
+        &state.folder,
+        &destination,
+        &status,
+        snapshot.timezone_pending,
+    )
+    .map_err(|_| "无法将诊断文件保存到下载文件夹".to_owned())?;
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -608,16 +620,37 @@ fn open_release_page(version: Option<String>) -> Result<(), String> {
 
 #[tauri::command]
 async fn install_update(app: AppHandle, version: String) -> Result<(), String> {
-    if !app.state::<Launcher>().updates_enabled {
-        return Err("此安装包尚未配置更新服务".into());
-    }
     #[cfg(all(windows, feature = "signed-updates"))]
-    return updates::install(app, &version).await;
-    #[cfg(not(all(windows, feature = "signed-updates")))]
-    {
-        let _ = version;
-        Err("此安装包尚未配置更新服务".into())
+    if app.state::<Launcher>().updates_enabled {
+        return updates::install(app, &version).await;
     }
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Launcher>();
+        let _operation = state.begin()?;
+        machine::require_claude_stopped(&Config::load(&state.folder)?)?;
+        let folder = app
+            .path()
+            .download_dir()
+            .map_err(|_| "无法定位 Windows 下载文件夹")?;
+        let installer = releases::download(&app.package_info().version, &version, &folder)?;
+        prepare_update_install(&app, &state)?;
+        releases::launch_installer(&installer)?;
+        app.exit(0);
+        Ok(())
+    })
+    .await
+    .map_err(|_| "更新任务异常退出".to_owned())?
+}
+
+fn prepare_update_install(app: &AppHandle, state: &Launcher) -> Result<(), String> {
+    machine::require_claude_stopped(&Config::load(&state.folder)?)?;
+    if timezone::pending(&state.folder) {
+        finish_timezone_recovery(app, true);
+        if timezone::pending(&state.folder) {
+            return Err("请先完成原时区恢复再安装更新".into());
+        }
+    }
+    Ok(())
 }
 
 fn quit_launcher(app: &AppHandle) {
@@ -700,8 +733,6 @@ fn main() {
             let timezone_pending = timezone::pending(&folder);
             #[cfg(all(windows, feature = "signed-updates"))]
             let updates_enabled = updates::register(app.handle())?;
-            #[cfg(not(all(windows, feature = "signed-updates")))]
-            let updates_enabled = false;
             app.manage(Launcher {
                 folder,
                 snapshot: Mutex::new(Snapshot {
@@ -710,6 +741,7 @@ fn main() {
                     ..Snapshot::default()
                 }),
                 operation: Mutex::default(),
+                #[cfg(all(windows, feature = "signed-updates"))]
                 updates_enabled,
             });
             finish_timezone_recovery(app.handle(), true);

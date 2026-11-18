@@ -49,32 +49,6 @@
       <Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="MinWidth" Value="112"/>
     </Style>
-    <Style x:Key="LanguageOption" TargetType="RadioButton">
-      <Setter Property="Padding" Value="20,5"/>
-      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
-      <Setter Property="Background" Value="White"/>
-      <Setter Property="Cursor" Value="Hand"/>
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="RadioButton">
-            <Border x:Name="Segment" Background="{TemplateBinding Background}"
-                    Padding="{TemplateBinding Padding}" BorderThickness="1" BorderBrush="Transparent">
-              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsChecked" Value="True">
-                <Setter TargetName="Segment" Property="Background" Value="{StaticResource Selection}"/>
-                <Setter Property="Foreground" Value="#205F3C"/>
-                <Setter Property="FontWeight" Value="SemiBold"/>
-              </Trigger>
-              <Trigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="Segment" Property="BorderBrush" Value="#237748"/>
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
   </Window.Resources>
   <Grid>
     <Grid.ColumnDefinitions>
@@ -128,36 +102,29 @@
       <Grid Grid.Row="1">
         <Grid x:Name="AgreementPanel">
           <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
           </Grid.RowDefinitions>
-          <Border BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="6"
-                  HorizontalAlignment="Left" Margin="0,0,0,15">
-            <StackPanel Orientation="Horizontal">
-              <RadioButton x:Name="Chinese" GroupName="LegalLanguage" Style="{StaticResource LanguageOption}"
-                           Content="简体中文" IsChecked="True"/>
-              <Border Width="1" Background="{StaticResource Line}"/>
-              <RadioButton x:Name="English" GroupName="LegalLanguage" Style="{StaticResource LanguageOption}"
-                           Content="English"/>
-            </StackPanel>
-          </Border>
-          <Border Grid.Row="1" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8"
+          <Border BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8"
                   Background="#FCFDFB">
             <FlowDocumentScrollViewer x:Name="LicenseReader" IsToolBarVisible="False" IsSelectionEnabled="True"
                                       VerticalScrollBarVisibility="Auto" Padding="0"
                                       AutomationProperties.Name="许可协议全文"/>
           </Border>
-          <CheckBox x:Name="Consent" Grid.Row="2" Content="我已阅读、知晓并同意许可协议"
+          <CheckBox x:Name="Consent" Grid.Row="1" Content="我已阅读、知晓并同意许可协议"
                     Margin="1,15,0,0" Padding="7,0,0,0" MinHeight="26"
                     VerticalContentAlignment="Center" AutomationProperties.AutomationId="Consent"/>
         </Grid>
         <StackPanel x:Name="LocationPanel" Visibility="Collapsed">
           <TextBlock Text="安装位置" FontWeight="SemiBold" Margin="0,0,0,8"/>
-          <Border Background="#F7FAF7" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="7">
-            <TextBox x:Name="InstallPath" Background="Transparent" BorderThickness="0" Padding="11,8"
-                     TextWrapping="Wrap" IsReadOnly="True" AutomationProperties.Name="安装位置"/>
-          </Border>
+          <DockPanel>
+            <Button x:Name="Browse" DockPanel.Dock="Right" Content="浏览…" Margin="8,0,0,0"
+                    BorderBrush="{StaticResource Line}" AutomationProperties.Name="浏览安装位置"/>
+            <Border Background="#F7FAF7" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="7">
+              <TextBox x:Name="InstallPath" Background="Transparent" BorderThickness="0" Padding="11,8"
+                       TextWrapping="Wrap" AutomationProperties.Name="安装位置"/>
+            </Border>
+          </DockPanel>
           <TextBlock x:Name="InstallError" Foreground="#A03230" TextWrapping="Wrap" Margin="0,12,0,0"/>
           <ProgressBar x:Name="Progress" Visibility="Collapsed" Height="5" Margin="0,22,0,0"
                        IsIndeterminate="True" Foreground="{StaticResource Green}" BorderThickness="0"/>

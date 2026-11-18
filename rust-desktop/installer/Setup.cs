@@ -37,6 +37,7 @@ internal sealed class Setup
     private readonly ProgressBar progress;
     private readonly FlowDocumentScrollViewer reader;
     private readonly TextBox destination;
+    private readonly Button browse;
     private bool onAgreement = true;
     private bool installing;
     private bool installed;
@@ -100,9 +101,26 @@ internal sealed class Setup
         destination = Find<TextBox>("InstallPath");
         destination.Text = installPath;
         destination.IsReadOnly = hasPreviousInstall;
+        browse = Find<Button>("Browse");
+        browse.Visibility = hasPreviousInstall ? Visibility.Collapsed : Visibility.Visible;
+        browse.Click += delegate
+        {
+            try
+            {
+                var owner = new System.Windows.Interop.WindowInteropHelper(window).Handle;
+                var selected = FolderPicker.Select(owner, NormalizeInstallPath(destination.Text));
+                if (selected != null)
+                {
+                    destination.Text = selected;
+                    error.Text = "";
+                }
+            }
+            catch (System.Runtime.InteropServices.COMException)
+            {
+                error.Text = "无法打开文件夹选择窗口。可以直接填写安装路径。";
+            }
+        };
 
-        Find<RadioButton>("Chinese").Checked += delegate { ShowLicense(true); };
-        Find<RadioButton>("English").Checked += delegate { ShowLicense(false); };
         consent.Checked += delegate { next.IsEnabled = true; };
         consent.Unchecked += delegate { next.IsEnabled = false; };
         next.Click += Continue;
@@ -120,7 +138,7 @@ internal sealed class Setup
 
         window.MaxHeight = SystemParameters.WorkArea.Height;
         window.MaxWidth = SystemParameters.WorkArea.Width;
-        ShowLicense(true);
+        ShowLicense();
     }
 
     private T Find<T>(string name) where T : FrameworkElement
@@ -128,48 +146,73 @@ internal sealed class Setup
         return (T)window.FindName(name);
     }
 
-    private void ShowLicense(bool chinese)
+    private void ShowLicense()
     {
-        var title = chinese ? "署名—非商业性使用 4.0 协议国际版" : "Attribution-NonCommercial 4.0 International";
-        var resource = chinese ? "Setup.License.Zh" : "Setup.License.En";
+        var document = new FlowDocument
+        {
+            FontFamily = window.FontFamily,
+            FontSize = 13,
+            LineHeight = 20,
+            PagePadding = new Thickness(0),
+            Foreground = (Brush)window.Resources["Ink"]
+        };
+        const string chineseTitle = "署名—非商业性使用 4.0 协议国际版";
+        const string englishTitle = "Attribution-NonCommercial 4.0 International";
+        var chinese = LicenseSections("Setup.License.Zh", chineseTitle, @"(?m)^(?=第[一二三四五六七八]条)");
+        var english = LicenseSections("Setup.License.En", englishTitle, @"(?m)^(?=Section [1-8] -- )");
+        var comparison = new Table { CellSpacing = 0, Margin = new Thickness(0) };
+        comparison.Columns.Add(new TableColumn { Width = new GridLength(1, GridUnitType.Star) });
+        comparison.Columns.Add(new TableColumn { Width = new GridLength(1, GridUnitType.Star) });
+        var rows = new TableRowGroup();
+        comparison.RowGroups.Add(rows);
+        var heading = new TableRow { Background = (Brush)window.Resources["Selection"] };
+        heading.Cells.Add(LicenseCell("简体中文\n\n" + chineseTitle + "\n\nCC BY-NC 4.0", true, true));
+        heading.Cells.Add(LicenseCell("English\n\n" + englishTitle + "\n\nCC BY-NC 4.0", false, true));
+        rows.Rows.Add(heading);
+        for (int section = 0; section < Math.Max(chinese.Length, english.Length); section++)
+        {
+            var row = new TableRow();
+            row.Cells.Add(LicenseCell(section < chinese.Length ? chinese[section] : "", true, false));
+            row.Cells.Add(LicenseCell(section < english.Length ? english[section] : "", false, false));
+            rows.Rows.Add(row);
+        }
+        document.Blocks.Add(comparison);
+        reader.Document = document;
+    }
+
+    private static string[] LicenseSections(string resource, string title, string headings)
+    {
         string text;
         using (var source = new StreamReader(Resources.GetManifestResourceStream(resource), Encoding.UTF8))
             text = source.ReadToEnd().Replace("\r\n", "\n").Trim();
         if (text.StartsWith(title + "\n", StringComparison.Ordinal))
             text = text.Substring(title.Length).TrimStart();
+        return Regex.Split(text, headings);
+    }
 
-        var document = new FlowDocument
+    private TableCell LicenseCell(string text, bool left, bool header)
+    {
+        var cell = new TableCell
         {
-            FontFamily = window.FontFamily,
-            FontSize = 14,
-            LineHeight = 22,
-            PagePadding = new Thickness(14, 12, 16, 12),
-            Foreground = (Brush)window.Resources["Ink"]
+            Padding = new Thickness(12, 10, 12, 5),
+            BorderBrush = (Brush)window.Resources["Line"],
+            BorderThickness = new Thickness(0, 0, left ? 1 : 0, 1)
         };
-        document.Blocks.Add(new Paragraph(new Run(title))
-        {
-            FontSize = 18, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 3)
-        });
-        document.Blocks.Add(new Paragraph(new Run("CC BY-NC 4.0"))
-        {
-            FontSize = 13, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 13),
-            Foreground = (Brush)window.Resources["Green"]
-        });
-        foreach (var block in Regex.Split(text, "\n[ \\t]*\n"))
+        foreach (var block in Regex.Split(text, @"\n[ \t]*\n|(?=\n[ \t]+[a-z0-9]+\.[ \t])"))
         {
             var body = block.Trim('\n', '\r');
             if (body.Length == 0 || Regex.IsMatch(body, "^=+$")) continue;
-            bool headingLine = body.IndexOf('\n') < 0 && (
+            bool headingLine = header || (body.IndexOf('\n') < 0 && (
                 Regex.IsMatch(body, "^(第[一二三四五六七八]条|Section [1-8] )")
                 || body == "关于许可协议和知识共享组织"
-                || body == "知识共享公共许可协议(CCPL)的使用");
-            document.Blocks.Add(new Paragraph(new Run(body))
+                || body == "知识共享公共许可协议(CCPL)的使用"));
+            cell.Blocks.Add(new Paragraph(new Run(Regex.Replace(body, @"\n[ \t]*", " ")))
             {
-                Margin = new Thickness(0, 0, 0, 10),
+                Margin = new Thickness(0, 0, 0, 7),
                 FontWeight = headingLine ? FontWeights.SemiBold : FontWeights.Normal
             });
         }
-        reader.Document = document;
+        return cell;
     }
 
     private void ShowStep(bool agreement)
@@ -231,6 +274,7 @@ internal sealed class Setup
         installPath = path;
         destination.Text = path;
         destination.IsReadOnly = true;
+        browse.IsEnabled = false;
         installing = true;
         next.IsEnabled = cancel.IsEnabled = back.IsEnabled = false;
         heading.Text = upgrade ? "正在升级" : "正在安装";
@@ -257,6 +301,7 @@ internal sealed class Setup
         {
             installing = false;
             destination.IsReadOnly = installed || hasPreviousInstall;
+            browse.IsEnabled = !installed;
             progress.Visibility = Visibility.Collapsed;
             next.IsEnabled = cancel.IsEnabled = back.IsEnabled = true;
         }

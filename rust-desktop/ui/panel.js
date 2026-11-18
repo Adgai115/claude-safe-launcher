@@ -153,6 +153,7 @@ function updateButtons() {
 }
 
 function displaySnapshot(snapshot) {
+  if (snapshot.version) byId("app-version").textContent = "v" + snapshot.version;
   const revision = snapshot.revision ?? 0;
   if (revision < state.revision) return;
   state.revision = revision;
@@ -421,52 +422,87 @@ const updateDialog = byId("update-dialog");
 const updateVersion = byId("update-version");
 const updateResult = byId("update-result");
 const updateAction = byId("update-action");
-let updateRequest = 0;
+const availableUpdate = byId("available-update");
+const updateInterval = 6 * 60 * 60 * 1000;
 let updateInfo = null;
+let checkingUpdate = null;
+let lastUpdateCheck = 0;
+let applyingUpdate = false;
+
+function refreshUpdate() {
+  if (!checkingUpdate) {
+    lastUpdateCheck = Date.now();
+    checkingUpdate = tauri.core.invoke("check_for_update").then((info) => {
+      updateInfo = info;
+      byId("app-version").textContent = "v" + info.currentVersion;
+      availableUpdate.hidden = !info.availableVersion;
+      availableUpdate.title = info.availableVersion ? "更新至 v" + info.availableVersion : "";
+      return info;
+    }).finally(() => { checkingUpdate = null; });
+  }
+  return checkingUpdate;
+}
+
+function checkUpdateInBackground() {
+  if (Date.now() - lastUpdateCheck >= updateInterval) void refreshUpdate().catch(() => {});
+}
+
+function showUpdate(info, message) {
+  updateVersion.hidden = !info;
+  if (info) updateVersion.textContent = "当前版本 v" + info.currentVersion;
+  updateResult.textContent = message ?? (info.availableVersion ? "发现新版本 v" + info.availableVersion : "已是最新版本。");
+  updateAction.hidden = !info?.availableVersion && !message;
+  updateAction.textContent = info?.availableVersion ? "下载并更新" : "打开发布页";
+}
 
 byId("check-updates").addEventListener("click", async () => {
-  const request = ++updateRequest;
-  updateInfo = null;
-  updateVersion.hidden = true;
+  showUpdate(null, "正在检查更新…");
   updateAction.hidden = true;
-  updateAction.disabled = false;
-  updateResult.textContent = "正在检查更新…";
   updateDialog.showModal();
   try {
-    const info = await tauri.core.invoke("check_for_update");
-    if (request !== updateRequest || !updateDialog.open) return;
-    updateInfo = info;
-    updateVersion.textContent = "当前版本 v" + info.currentVersion;
-    updateVersion.hidden = false;
-    updateResult.textContent = info.availableVersion ? "发现新版本 v" + info.availableVersion : "已是最新版本。";
-    updateAction.hidden = !info.availableVersion;
-    updateAction.textContent = info.signed ? "安装更新" : "前往 GitHub 下载";
+    const info = await refreshUpdate();
+    if (updateDialog.open) showUpdate(info);
   } catch (error) {
-    if (request !== updateRequest || !updateDialog.open) return;
-    updateResult.textContent = String(error);
-    updateAction.textContent = "打开发布页";
-    updateAction.hidden = false;
+    if (updateDialog.open) showUpdate(null, String(error));
   }
 });
 byId("close-update").addEventListener("click", () => updateDialog.close());
-updateDialog.addEventListener("close", () => { updateRequest += 1; });
-updateAction.addEventListener("click", async () => {
-  const request = updateRequest;
+updateDialog.addEventListener("cancel", (event) => { if (applyingUpdate) event.preventDefault(); });
+
+async function applyUpdate() {
   const info = updateInfo;
+  if (!info?.availableVersion || applyingUpdate) return;
+  applyingUpdate = true;
   updateAction.disabled = true;
+  availableUpdate.disabled = true;
   try {
-    if (info?.signed && info.availableVersion) {
-      if (!(await confirmDialog("安装 v" + info.availableVersion, "请先关闭 Claude。环境检查器将在安装时退出。"))) return;
-      updateResult.textContent = "正在验证并安装更新…";
-      await tauri.core.invoke("install_update", { version: info.availableVersion });
-    } else {
-      await tauri.core.invoke("open_release_page", { version: info?.availableVersion ?? null });
-    }
+    const message = info.signed
+      ? "请先关闭 Claude。确认后将下载并验证更新，安装时退出环境检查器。"
+      : "请先关闭 Claude。确认后将下载并校验安装包，并退出环境检查器以打开安装器。";
+    if (!(await confirmDialog("更新至 v" + info.availableVersion, message))) return;
+    showUpdate(info, "正在下载并校验更新…");
+    if (!updateDialog.open) updateDialog.showModal();
+    byId("close-update").disabled = true;
+    await tauri.core.invoke("install_update", { version: info.availableVersion });
   } catch (error) {
-    if (request === updateRequest) updateResult.textContent = String(error);
+    updateResult.textContent = String(error);
+    if (!updateDialog.open) updateDialog.showModal();
   } finally {
-    if (request === updateRequest) updateAction.disabled = false;
+    applyingUpdate = false;
+    byId("close-update").disabled = false;
+    availableUpdate.disabled = false;
+    updateAction.disabled = false;
   }
+}
+
+availableUpdate.addEventListener("click", () => { void applyUpdate(); });
+updateAction.addEventListener("click", async () => {
+  if (updateAction.textContent !== "打开发布页") {
+    await applyUpdate();
+    return;
+  }
+  try { await tauri.core.invoke("open_release_page", { version: null }); }
+  catch (error) { updateResult.textContent = String(error); }
 });
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -492,6 +528,9 @@ async function init() {
     setStatus("请在 Rust 桌面应用中打开");
     return;
   }
+  checkUpdateInBackground();
+  window.setInterval(checkUpdateInBackground, updateInterval);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) checkUpdateInBackground(); });
   try {
     await tauri.event.listen("monitor-snapshot", ({ payload }) => {
       if (!state.busy) displaySnapshot(payload);

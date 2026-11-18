@@ -22,9 +22,9 @@ $payload = Get-ChildItem target\release\bundle\nsis -Filter '*.exe' | Select-Obj
 .\installer\Build-Installer.ps1 -Payload $payload.FullName -OutputPath .\target\Claude-Environment-Checker-Setup.exe
 ```
 
-手动安装器的许可文本采用 [Creative Commons 简体中文法律文本](https://creativecommons.org/licenses/by-nc/4.0/legalcode.zh-hans)和仓库中的英文 `LICENSE`。签名更新继续使用 Tauri CLI 生成的 NSIS 载荷及其签名。手动安装优先沿用已登记的安装位置，应用 ID 继续用于定位当前用户的环境基准和日志。
+手动安装器按条款并排显示 [简体中文许可](../LICENSE.zh-Hans.txt)和[英文许可](../LICENSE)。首次安装可浏览文件夹，也可输入或粘贴路径。升级沿用已登记的安装位置。签名更新继续使用 Tauri CLI 生成的 NSIS 载荷及其签名。
 
-主界面右上角的「检查更新」查询 GitHub 公开发布。它查找含对应 Windows x64 安装包的 `desktop-v<版本号>` 正式发布。发现新版本后打开目标发布页，用户可下载安装包并按界面确认升级。
+主界面右下角显示应用版本。程序启动时自动查询 `desktop-v<版本号>` 的 Windows x64 正式发布，设置中也可手动检查。发现新版本时点击「可更新」，确认后从 GitHub 下载到 Windows 下载文件夹，校验 SHA-256 并通过 Windows 打开安装器。更新安装前会检查 Claude 是否已退出，并处理待恢复的时区。
 
 启用签名更新的安装包可在应用内安装已验证的新版本。构建命令为 `cargo tauri build --features signed-updates --config <发布配置>`。配置需要设置 `bundle.createUpdaterArtifacts`、`plugins.updater.pubkey`、HTTPS `plugins.updater.endpoints` 和 `plugins.updater.requireSignedVersion: true`。使用 Tauri CLI 2.12.5 或更新版本签署带版本号的安装包，并按 [Tauri 更新发布格式](https://v2.tauri.app/plugin/updater/) 发布安装包、签名和版本清单。应用内安装前必须退出 Claude，并完成尚未处理的时区恢复。
 
@@ -57,6 +57,6 @@ Claude Code 接口检查读取当前进程的环境变量和用户配置目录�
 
 主界面的「监控日志」可查看最近 50 条诊断记录，打开期间自动更新。后台约每 30 秒完成连接和客户端告警复查并记录一次，约每 5 分钟复查主要环境，暂停、恢复和异常事件也会写入。「设置」会显示本地诊断日志路径 `logs\diagnostics.jsonl`。每行包含时间、事件、分数、各检查项状态和监控状态。日志达到 1 MiB 后保留一个轮替文件。诊断日志不会保存原始客户端日志、聊天内容、地址或凭据。
 
-「监控日志 → 导出脱敏诊断」在本地日志目录生成 `monitor-diagnostics.json`，包含当前状态和最近 50 条事件。导出仅使用固定事件类别、分数、检查编号与状态、时间和时区恢复标记。
+「监控日志 → 导出脱敏诊断」在 Windows 下载文件夹生成 `monitor-diagnostics.json`，同名文件存在时自动编号。导出包含当前状态和最近 50 条事件，仅使用固定事件类别、分数、检查编号与状态、时间和时区恢复标记。
 
 时区恢复通过 `timezone-restore.json` 记录临时更改。恢复范围只包含启动器自己改动的 Windows 时区。地区、语言、系统位置与网络配置不参与退出恢复。

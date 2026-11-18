@@ -4,9 +4,15 @@
 
 ## Claude 环境检查器 · Windows x64 桌面版
 
-独立的 Rust 桌面应用，包含环境评分、后台监控、时区恢复和脱敏诊断。安装后可从主界面右上角检查新版。
+独立的 Rust 桌面应用，提供加权检查、后台监控、时区恢复和脱敏诊断。当前源码版本为 **v0.1.23**。
 
-**[下载桌面版安装包](https://github.com/Adgai115/claude-safe-launcher/releases/tag/desktop-v0.1.22)** · [桌面版使用和构建说明](rust-desktop/README.md)
+**[下载已发布的 Windows x64 安装包 v0.1.22](https://github.com/Adgai115/claude-safe-launcher/releases/tag/desktop-v0.1.22)** · [构建和使用当前桌面版源码](rust-desktop/README.md)
+
+v0.1.23 提供以下安装和更新操作。
+
+- 安装器按条款并排显示中英文协议。勾选同意后继续。首次安装可浏览文件夹或粘贴路径，升级沿用原安装位置。
+- 主界面右下角显示版本，并在发现新版时显示「可更新」。确认后从 GitHub 下载安装包，校验 SHA-256 并通过 Windows 打开。手动检查位于「设置」。
+- 「监控日志 → 导出脱敏诊断」将文件保存到 Windows 的下载文件夹。同名文件自动编号。
 
 ## Windows 默认脚本版：v3.5.3
 
@@ -79,4 +85,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\issueexport.Tests.ps
 
 ## 许可
 
-[CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/deed.zh-hans)：允许非商业使用、修改和分享，需注明出处。完整条款见 [LICENSE](LICENSE)。
+本仓库采用 **Creative Commons Attribution-NonCommercial 4.0 International（CC BY-NC 4.0）**。在遵守署名、非商业使用及其他许可条款的前提下，可以分享和改编。
+
+[英文许可全文](LICENSE) · [简体中文许可全文](LICENSE.zh-Hans.txt) · [Creative Commons 官方简体中文法律文本](https://creativecommons.org/licenses/by-nc/4.0/legalcode.zh-hans)

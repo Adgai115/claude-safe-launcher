@@ -1,4 +1,4 @@
-use crate::{finish_timezone_recovery, machine, timezone, Config, Launcher};
+use crate::{machine, prepare_update_install, Config, Launcher};
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
@@ -59,13 +59,7 @@ pub async fn install(app: AppHandle, version: &str) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Launcher>();
         let _operation = state.begin()?;
-        machine::require_claude_stopped(&Config::load(&state.folder)?)?;
-        if timezone::pending(&state.folder) {
-            finish_timezone_recovery(&app, true);
-            if timezone::pending(&state.folder) {
-                return Err("请先完成原时区恢复再安装更新".into());
-            }
-        }
+        prepare_update_install(&app, &state)?;
         update
             .install(bytes)
             .map_err(|_| "无法安装已验证的更新".into())
