@@ -4,9 +4,9 @@ Claude 环境检查器是面向 Windows x64 的第三方桌面工具，用于在
 
 ## 下载当前正式版
 
-**[下载 v0.1.23 Windows x64 安装包](https://github.com/Adgai115/claude-safe-launcher/releases/download/desktop-v0.1.23/Claude-Environment-Checker-v0.1.23-win-x64-setup.exe)** · [最新发布与校验值](https://github.com/Adgai115/claude-safe-launcher/releases/latest)
+**[下载 v0.1.24 Windows x64 安装包](https://github.com/Adgai115/claude-safe-launcher/releases/download/desktop-v0.1.24/Claude-Environment-Checker-v0.1.24-win-x64-setup.exe)** · [最新发布与校验值](https://github.com/Adgai115/claude-safe-launcher/releases/latest)
 
-安装器按条款并排显示中英文许可，勾选同意后可继续。首次安装可浏览文件夹或粘贴路径，升级沿用原安装位置。当前安装包为未签名构建，Windows SmartScreen 可能提示发布者未知。
+安装器按条款并排显示中英文许可，勾选同意后可继续。首次安装默认使用 `%LOCALAPPDATA%\Claude Environment Checker`，可浏览文件夹或粘贴路径。升级沿用原安装位置。当前安装包为未签名构建，Windows SmartScreen 可能提示发布者未知。
 
 ## 从源码构建
 
@@ -26,7 +26,7 @@ Windows 桌面版源码位于 [`rust-desktop/`](rust-desktop/)。[构建说明](
 
 ## 历史版本
 
-- 历史桌面版见 [v0.1.22 发布页](https://github.com/Adgai115/claude-safe-launcher/releases/tag/desktop-v0.1.22)。
+- 历史桌面版见 [v0.1.23](https://github.com/Adgai115/claude-safe-launcher/releases/tag/desktop-v0.1.23) 和 [v0.1.22](https://github.com/Adgai115/claude-safe-launcher/releases/tag/desktop-v0.1.22)。
 - Releases 中的 v3.x 属于历史脚本版。Windows PowerShell v3.5.3、macOS 实现和规则预览源码见[历史归档分支](https://github.com/Adgai115/claude-safe-launcher/tree/archive/legacy)。
 
 ## 许可

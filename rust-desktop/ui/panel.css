@@ -192,6 +192,8 @@ header .btn, .actions .btn { min-height: 34px; padding-block: 4px; }
 }
 
 .card {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   padding: 5px 8px;
   border: 1px solid var(--border);
@@ -228,7 +230,7 @@ header .btn, .actions .btn { min-height: 34px; padding-block: 4px; }
 .cst { margin-left: auto; flex: none; }
 
 .card .txt { font-size: 14px; line-height: 1.36; white-space: pre-line; overflow-wrap: anywhere; margin-top: 2px; }
-.card .meta { font-size: 13px; line-height: 1.33; color: var(--muted); margin-top: 1px; overflow-wrap: anywhere; }
+.card .meta { font-size: 13px; line-height: 1.33; color: var(--muted); margin-top: auto; padding-top: 1px; overflow-wrap: anywhere; }
 .txt:empty, .meta:empty { display: none; }
 
 footer {

@@ -17,6 +17,7 @@ using System.Windows.Media.Imaging;
 internal sealed class Setup
 {
     private const string Product = "Claude 环境检查器";
+    private const string InstallFolderName = "Claude Environment Checker";
     private const string PreviousProduct = "Claude 安全启动 (Rust)";
     private const string Binary = "claude-safe-launcher-rust.exe";
     private const string RegistryPrefix = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\";
@@ -76,7 +77,7 @@ internal sealed class Setup
             && File.Exists(Path.Combine(legacy, "uninstall.exe"));
         hasPreviousInstall = existing != null || migrating;
         installPath = existing ?? (migrating ? legacy : Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), Product));
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), InstallFolderName));
         upgrade = hasPreviousInstall && IsOlderInstallation(installPath);
 
         using (var icon = Resources.GetManifestResourceStream("Setup.Icon"))
@@ -111,7 +112,7 @@ internal sealed class Setup
                 var selected = FolderPicker.Select(owner, NormalizeInstallPath(destination.Text));
                 if (selected != null)
                 {
-                    destination.Text = selected;
+                    destination.Text = NormalizeInstallPath(selected, useProductFolderAtRoot: true) ?? selected;
                     error.Text = "";
                 }
             }
@@ -264,7 +265,7 @@ internal sealed class Setup
             return;
         }
 
-        var path = NormalizeInstallPath(destination.Text);
+        var path = NormalizeInstallPath(destination.Text, useProductFolderAtRoot: !hasPreviousInstall);
         if (path == null)
         {
             error.Text = "请填写本地磁盘上的完整文件夹路径。";
@@ -379,7 +380,7 @@ internal sealed class Setup
         }
     }
 
-    private static string NormalizeInstallPath(string value)
+    private static string NormalizeInstallPath(string value, bool useProductFolderAtRoot = false)
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
         var path = value.Trim();
@@ -387,8 +388,10 @@ internal sealed class Setup
             return null;
         try
         {
-            path = Path.GetFullPath(path).TrimEnd('\\');
-            return path.Length > 2 ? path : null;
+            var fullPath = Path.GetFullPath(path);
+            path = fullPath.TrimEnd('\\');
+            if (path.Length > 2) return path;
+            return useProductFolderAtRoot ? Path.Combine(fullPath, InstallFolderName) : null;
         }
         catch (ArgumentException) { return null; }
         catch (NotSupportedException) { return null; }

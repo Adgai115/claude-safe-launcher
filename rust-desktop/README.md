@@ -22,7 +22,7 @@ $payload = Get-ChildItem target\release\bundle\nsis -Filter '*.exe' | Select-Obj
 .\installer\Build-Installer.ps1 -Payload $payload.FullName -OutputPath .\target\Claude-Environment-Checker-Setup.exe
 ```
 
-手动安装器按条款并排显示 [简体中文许可](../LICENSE.zh-Hans.txt)和[英文许可](../LICENSE)。首次安装可浏览文件夹，也可输入或粘贴路径。升级沿用已登记的安装位置。签名更新继续使用 Tauri CLI 生成的 NSIS 载荷及其签名。
+手动安装器按条款并排显示 [简体中文许可](../LICENSE.zh-Hans.txt)和[英文许可](../LICENSE)。首次安装默认使用 `%LOCALAPPDATA%\Claude Environment Checker`。可浏览文件夹，也可输入或粘贴路径。选择盘符根目录时，安装器会在该磁盘下使用 `Claude Environment Checker` 文件夹。升级沿用已登记的安装位置。签名更新继续使用 Tauri CLI 生成的 NSIS 载荷及其签名。
 
 主界面右下角显示应用版本。程序启动时自动查询 `desktop-v<版本号>` 的 Windows x64 正式发布，设置中也可手动检查。发现新版本时点击「可更新」，确认后从 GitHub 下载到 Windows 下载文件夹，校验 SHA-256 并通过 Windows 打开安装器。更新安装前会检查 Claude 是否已退出，并处理待恢复的时区。
 
