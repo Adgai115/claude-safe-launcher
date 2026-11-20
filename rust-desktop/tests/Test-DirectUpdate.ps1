@@ -47,18 +47,28 @@ try {
     $baseInstaller = Build-TestBundle $baseVersion
     git restore --source=$env:GITHUB_SHA -- src ui tauri.conf.json Cargo.toml Cargo.lock
     $config = Get-Content -LiteralPath tauri.conf.json -Raw | ConvertFrom-Json
-    $sourceVersion = $config.version
-    $config.version = $patchVersion.ToString()
-    $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath tauri.conf.json -Encoding utf8NoBOM
-    foreach ($file in 'Cargo.toml', 'Cargo.lock') {
-        $pattern = '(?m)(^name = "claude-safe-launcher-rust"\r?\nversion = ")' + [regex]::Escape($sourceVersion) + '"'
-        $original = Get-Content -LiteralPath $file -Raw
-        $patched = [regex]::Replace($original, $pattern, {
-            param($match)
-            $match.Groups[1].Value + $patchVersion + '"'
-        })
-        if ($patched -ceq $original) { throw "Failed to set fixture version in $file." }
-        Set-Content -LiteralPath $file -Value $patched -NoNewline -Encoding utf8NoBOM
+    $sourceVersion = [version]$config.version
+    $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+    $cargoVersion = [version]($metadata.packages | Where-Object name -eq 'claude-safe-launcher-rust').version
+    if ($cargoVersion -ne $sourceVersion) {
+        throw "Cargo version $cargoVersion does not match Tauri version $sourceVersion."
+    }
+    if ($sourceVersion -ne $patchVersion) {
+        if ($sourceVersion -ne $baseVersion) {
+            throw "Expected candidate source version $baseVersion or $patchVersion, got $sourceVersion."
+        }
+        $config.version = $patchVersion.ToString()
+        $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath tauri.conf.json -Encoding utf8NoBOM
+        foreach ($file in 'Cargo.toml', 'Cargo.lock') {
+            $pattern = '(?m)(^name = "claude-safe-launcher-rust"\r?\nversion = ")' + [regex]::Escape($sourceVersion) + '"'
+            $original = Get-Content -LiteralPath $file -Raw
+            $patched = [regex]::Replace($original, $pattern, {
+                param($match)
+                $match.Groups[1].Value + $patchVersion + '"'
+            })
+            if ($patched -ceq $original) { throw "Failed to set fixture version in $file." }
+            Set-Content -LiteralPath $file -Value $patched -NoNewline -Encoding utf8NoBOM
+        }
     }
     $patchInstaller = Build-TestBundle $patchVersion
     $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $testKey
