@@ -149,6 +149,7 @@ h1 { font-size: 23px; font-weight: 700; line-height: 1.24; }
 .blocker-link { text-underline-offset: 3px; }
 .card:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 #confirm-message { white-space: pre-line; overflow-wrap: anywhere; max-height: 50vh; overflow: auto; }
+.repair-steps { display: grid; gap: 8px; padding-inline-start: 22px; line-height: 1.5; }
 .launch-hint.locked {
   padding: 1px 6px;
   border-radius: 4px;

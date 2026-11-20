@@ -676,6 +676,11 @@ fn open_release_page(version: Option<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_feedback_page() -> Result<(), String> {
+    releases::open_feedback()
+}
+
+#[tauri::command]
 async fn install_update(
     app: AppHandle,
     version: String,
@@ -875,6 +880,7 @@ fn main() {
             check_for_update,
             install_update,
             open_release_page,
+            open_feedback_page,
         ])
         .run(tauri::generate_context!())
         .expect("unable to start Claude 环境检查器");

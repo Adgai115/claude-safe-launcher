@@ -48,6 +48,7 @@
         <button class="btn primary" data-action="repair">检查并修复</button>
         <button class="btn launch" data-action="launch" aria-describedby="launch-hint launch-blocker" disabled>启动 Claude</button>
         <button class="btn" id="monitor-history" aria-haspopup="dialog">监控日志</button>
+        <button class="btn" id="feedback" aria-haspopup="dialog">反馈问题</button>
       </div>
 
       <main class="results" aria-labelledby="results-title">
@@ -127,6 +128,33 @@
         <div class="dialog-actions">
           <button class="btn" type="button" id="keep-claude-running" autofocus>保持运行</button>
           <button class="btn primary" type="button" id="close-risk-claude">关闭 Claude</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="repair-guide-dialog" aria-labelledby="repair-guide-title">
+      <div class="update-content">
+        <h2 id="repair-guide-title">需要手动处理</h2>
+        <p id="repair-guide-summary"></p>
+        <ol class="repair-steps" id="repair-guide-steps"></ol>
+        <p class="hint">检查器不要求特定 VPN 品牌，也不会自动更改第三方 VPN。关键是 Claude 网页和 API 使用同一个受支持地区的出口。</p>
+        <div class="dialog-actions">
+          <button class="btn" type="button" id="repair-guide-feedback">反馈问题</button>
+          <button class="btn primary" type="button" id="close-repair-guide" autofocus>知道了</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="feedback-dialog" aria-labelledby="feedback-title">
+      <div class="update-content">
+        <h2 id="feedback-title">反馈问题</h2>
+        <p>可以先导出脱敏诊断，再到 GitHub 提交反馈并手动附加文件。</p>
+        <p class="hint">诊断文件不会自动上传。导出内容不包含 IP、VPN 节点名、用户名、文件路径或原始检查说明。</p>
+        <p class="hint diagnostics-path" id="feedback-result" role="status" hidden></p>
+        <div class="dialog-actions">
+          <button class="btn" type="button" id="close-feedback">取消</button>
+          <button class="btn" type="button" id="feedback-export">导出脱敏诊断</button>
+          <button class="btn primary" type="button" id="open-feedback">打开 GitHub 反馈</button>
         </div>
       </div>
     </dialog>

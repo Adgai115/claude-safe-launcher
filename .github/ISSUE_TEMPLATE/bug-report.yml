@@ -1,0 +1,64 @@
+name: Claude 环境检查器问题反馈
+description: 反馈检查结果、VPN 识别、启动限制或更新问题
+title: "[反馈] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。诊断文件不会由应用自动上传，请确认内容后再手动附加。
+  - type: input
+    id: version
+    attributes:
+      label: 应用版本
+      description: 可在窗口右下角查看，例如 v0.1.26。
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题类型
+      options:
+        - VPN 或出口识别
+        - 检查与评分
+        - 启动 Claude
+        - 后台监控
+        - 应用更新
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 实际情况
+      description: 请说明你看到的提示、评分以及哪些操作没有达到预期。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 连接或断开 VPN
+        2. 点击“检查并修复”
+        3. 看到……
+    validations:
+      required: true
+  - type: textarea
+    id: vpn
+    attributes:
+      label: VPN 状态（可选）
+      description: 是否开启 TUN、全局或系统代理，以及问题出现时是已连接、断开还是重连。不要填写账号、节点名或 IP。
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 脱敏诊断
+      description: 可将应用导出的 monitor-diagnostics.json 拖到这里。不要上传包含凭据或个人信息的其他日志。
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我已确认附件中不包含密码、令牌、账号、节点名或其他不希望公开的信息。
+          required: true
