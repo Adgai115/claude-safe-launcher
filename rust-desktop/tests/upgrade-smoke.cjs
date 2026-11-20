@@ -83,6 +83,7 @@ async function verifySupportFlow(page) {
   await guide.waitFor();
   assert.match(await guide.innerText(), /没有 TUN 选项也可以/);
   assert.match(await guide.innerText(), /不会自动更改第三方 VPN/);
+  assert.equal(await page.locator('#retry-auto-repair').textContent(), '连接后自动处理');
   await page.locator('#repair-guide-feedback').click();
   const feedback = page.locator('#feedback-dialog');
   await feedback.waitFor();

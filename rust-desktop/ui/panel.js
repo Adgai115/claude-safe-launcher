@@ -468,7 +468,19 @@ byId("repair-guide-feedback").addEventListener("click", () => {
   byId("repair-guide-dialog").close();
   showFeedback();
 });
+byId("open-vpn-settings").addEventListener("click", async () => {
+  try {
+    await tauri.core.invoke("open_vpn_settings");
+    byId("repair-guide-summary").textContent = "已打开 Windows VPN 设置。也可以直接在你的 VPN 客户端中连接并保持节点稳定。";
+  } catch (error) {
+    byId("repair-guide-summary").textContent = String(error);
+  }
+});
 byId("close-repair-guide").addEventListener("click", () => byId("repair-guide-dialog").close());
+byId("retry-auto-repair").addEventListener("click", () => {
+  byId("repair-guide-dialog").close();
+  void runCheck("repair");
+});
 byId("close-feedback").addEventListener("click", () => feedbackDialog.close());
 byId("feedback-export").addEventListener("click", (event) => {
   void exportDiagnostics(event.currentTarget, byId("feedback-result"));
