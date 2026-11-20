@@ -77,6 +77,7 @@ pub fn export(
                 | "check_failed" | "launch_confirmed" | "launch_unconfirmed"
                 | "monitor_attached" | "monitor_sample" | "monitor_risk" | "monitor_error"
                 | "monitor_paused" | "monitor_resumed" | "claude_exited"
+                | "claude_closed_for_risk"
                 | "configuration_locked" | "configuration_unlocked"
                 | "timezone_restored" | "timezone_preserved" | "timezone_restore_error" => entry.event.as_str(),
                 _ => "other",

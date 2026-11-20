@@ -119,6 +119,18 @@
       </div>
     </dialog>
 
+    <dialog id="runtime-risk-dialog" aria-labelledby="runtime-risk-title">
+      <div class="update-content">
+        <h2 id="runtime-risk-title">运行环境风险发生变化</h2>
+        <p id="runtime-risk-message"></p>
+        <p class="error" id="runtime-risk-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button class="btn" type="button" id="keep-claude-running" autofocus>保持运行</button>
+          <button class="btn primary" type="button" id="close-risk-claude">关闭 Claude</button>
+        </div>
+      </div>
+    </dialog>
+
     <dialog id="confirm-dialog">
       <form method="dialog">
         <h2 id="confirm-title"></h2>

@@ -58,7 +58,7 @@ $payload = Get-ChildItem target\release\bundle\nsis -Filter '*.exe' | Select-Obj
 
 没有运行 Clash 内核时，程序核对 Claude 网页和 Anthropic API 探测连接的 Windows 路由。两者都经同一受支持 VPN 接口时，可保存接口和出口基准。支持识别常见 WireGuard、Wintun、OpenVPN、TAP、Tailscale 和 Windows VPN 驱动。仅系统代理、仅应用代理、无法归属的驱动，以及路由分流到不同接口的情况无法获得满分。切换 Clash 和其他 VPN 后，在「设置 → 记住当前环境」核对并保存当前基准。
 
-后台确认新的偏差时记录日志并在 Windows 允许时发出桌面通知。同一个持续偏差只通知一次。底部显示原时区的备份及恢复结果。Claude 退出后，可以手动恢复或重试。
+后台确认新的偏差时记录日志、唤起面板并在 Windows 允许时发出桌面通知。面板列出发生变化的风险项，由用户选择保持运行或请求 Claude 正常退出；工具不会直接强制终止 Claude。同一个持续偏差只提示一次，恢复后再次出现或风险等级升高时重新提示。底部显示原时区的备份及恢复结果。Claude 退出后，可以手动恢复或重试。
 
 配置与支持地区缓存位于 `%LOCALAPPDATA%\io.github.adgai115.claude-safe-launcher-rust`。运行时不读取 PowerShell 版配置，也不写它的安装目录或快捷方式。如需指定非标准安装的 Claude，在 Rust 版 `preflight.json` 里设置 `claudeExe`（绝对路径）或 `claudeAumid`。新版本启动时等待用户操作。
 

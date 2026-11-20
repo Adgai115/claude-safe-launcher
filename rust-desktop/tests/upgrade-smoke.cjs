@@ -97,6 +97,14 @@ async function run() {
   assert.equal(settings.claudeGroup, 'Upgrade smoke baseline');
   console.log('Direct update relaunched at the new version, retaining baseline and tray monitoring.');
 
+  await updated.evaluate(() => showRuntimeRisk({ risks: ['出口一致性'] }));
+  const riskDialog = updated.locator('#runtime-risk-dialog');
+  await riskDialog.waitFor();
+  assert.match(await updated.locator('#runtime-risk-message').textContent(), /出口一致性.*关闭 Claude/);
+  await updated.locator('#keep-claude-running').click();
+  await riskDialog.waitFor({ state: 'hidden' });
+  console.log('Runtime risk changes opened the Claude shutdown confirmation.');
+
   announced = newer;
   await updated.locator('#settings').click();
   await updated.locator('#check-updates').click();

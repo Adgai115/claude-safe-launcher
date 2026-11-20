@@ -319,6 +319,7 @@ const historyEvents = {
   configuration_unlocked: "配置已解锁",
   settings_changed: "策略组已修改",
   claude_exited: "Claude 已退出",
+  claude_closed_for_risk: "确认关闭 Claude",
   timezone_restored: "已恢复 Windows 时区",
   timezone_preserved: "已保留手动调整的时区",
   timezone_restore_error: "时区恢复失败",
@@ -461,6 +462,40 @@ byId("settings").addEventListener("click", async () => {
   } catch (error) { setStatus(String(error)); }
 });
 byId("cancel-settings").addEventListener("click", () => settingsDialog.close());
+const runtimeRiskDialog = byId("runtime-risk-dialog");
+const runtimeRiskTitles = new Set();
+
+function showRuntimeRisk(payload) {
+  for (const title of payload?.risks ?? []) {
+    if (typeof title === "string" && title) runtimeRiskTitles.add(title);
+  }
+  if (!runtimeRiskTitles.size) return;
+  byId("runtime-risk-message").textContent =
+    `${[...runtimeRiskTitles].join("、")}发生偏差。是否现在关闭 Claude，避免继续使用已变化的运行环境？`;
+  byId("runtime-risk-error").textContent = "";
+  if (!runtimeRiskDialog.open) runtimeRiskDialog.showModal();
+}
+
+byId("keep-claude-running").addEventListener("click", () => runtimeRiskDialog.close());
+byId("close-risk-claude").addEventListener("click", async () => {
+  const close = byId("close-risk-claude");
+  close.disabled = true;
+  byId("keep-claude-running").disabled = true;
+  byId("runtime-risk-error").textContent = "正在请求 Claude 正常退出…";
+  try {
+    displaySnapshot(await tauri.core.invoke("close_claude_for_risk"));
+    runtimeRiskDialog.close();
+  } catch (error) {
+    byId("runtime-risk-error").textContent = String(error);
+  } finally {
+    close.disabled = false;
+    byId("keep-claude-running").disabled = false;
+  }
+});
+runtimeRiskDialog.addEventListener("close", () => {
+  runtimeRiskTitles.clear();
+  byId("runtime-risk-error").textContent = "";
+});
 const updateDialog = byId("update-dialog");
 const updateVersion = byId("update-version");
 const updateResult = byId("update-result");
@@ -596,6 +631,7 @@ async function init() {
       if (!state.busy) displaySnapshot(payload);
       void refreshHistory();
     });
+    await tauri.event.listen("runtime-risk", ({ payload }) => showRuntimeRisk(payload));
     state.settings = await tauri.core.invoke("load_settings");
     const snapshot = await tauri.core.invoke("get_snapshot");
     displaySnapshot(snapshot);

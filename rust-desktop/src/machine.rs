@@ -103,6 +103,64 @@ pub fn require_claude_stopped(config: &Config) -> Result<(), String> {
     }
 }
 
+pub fn close_claude(config: &Config) -> Result<(), String> {
+    let processes = claude_processes(config);
+    if processes.is_empty() {
+        return Ok(());
+    }
+    if !request_desktop_close(&processes) {
+        return Err("未找到可正常关闭的 Claude 窗口，请在 Claude 内手动退出。".into());
+    }
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if !is_claude_running(config) {
+            return Ok(());
+        }
+    }
+    Err("Claude 未在 10 秒内退出，请保存工作后在 Claude 内手动退出。".into())
+}
+
+#[cfg(windows)]
+fn request_desktop_close(processes: &[Process]) -> bool {
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextLengthW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW,
+        WM_CLOSE,
+    };
+
+    struct Request<'a> {
+        processes: &'a [Process],
+        sent: bool,
+    }
+    unsafe extern "system" fn close(window: HWND, parameter: LPARAM) -> BOOL {
+        let request = unsafe { &mut *(parameter as *mut Request<'_>) };
+        let mut pid = 0;
+        unsafe {
+            GetWindowThreadProcessId(window, &mut pid);
+            if request.processes.iter().any(|process| process.pid == pid)
+                && IsWindowVisible(window) != 0
+                && GetWindowTextLengthW(window) > 0
+                && PostMessageW(window, WM_CLOSE, 0, 0) != 0
+            {
+                request.sent = true;
+            }
+        }
+        1
+    }
+    let mut request = Request {
+        processes,
+        sent: false,
+    };
+    // EnumWindows calls close synchronously while request and its process slice live.
+    unsafe { EnumWindows(Some(close), (&mut request as *mut Request<'_>) as LPARAM) };
+    request.sent
+}
+
+#[cfg(not(windows))]
+fn request_desktop_close(_processes: &[Process]) -> bool {
+    false
+}
+
 fn is_claude_candidate(name: &OsStr, path: Option<&Path>, config: &Config) -> bool {
     looks_like_claude(Some(name))
         && path

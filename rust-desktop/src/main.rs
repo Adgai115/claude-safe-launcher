@@ -563,7 +563,12 @@ fn monitor(app: AppHandle) {
         let payload = publish(&app, snapshot, event);
         let _ = app.emit_to("main", "monitor-snapshot", payload);
         if !risks.is_empty() {
-            notification::show(format!("{}出现偏差，请打开面板查看。", risks.join("、")));
+            show_main(&app);
+            let _ = app.emit_to("main", "runtime-risk", json!({ "risks": &risks }));
+            notification::show(format!(
+                "{}出现偏差，已打开面板等待确认是否关闭 Claude。",
+                risks.join("、")
+            ));
         }
     }
 }
@@ -618,6 +623,29 @@ async fn retry_timezone_restore(app: AppHandle) -> Result<Value, String> {
     })
     .await
     .map_err(|_| "时区恢复任务异常退出".to_owned())?
+}
+
+#[tauri::command]
+async fn close_claude_for_risk(app: AppHandle) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<Launcher>();
+        let _operation = state
+            .operation
+            .lock()
+            .map_err(|_| "检查进程异常，请重启 Rust 版".to_owned())?;
+        machine::close_claude(&Config::load(&state.folder)?)?;
+        let mut snapshot = lock(&state.snapshot)?;
+        snapshot.track_client(false);
+        if !snapshot.groups.is_empty() {
+            snapshot.merge(vec![checks::routes_before_launch()]);
+        }
+        snapshot.message = "已按确认关闭 Claude，等待下次运行".into();
+        let payload = publish(&app, snapshot, "claude_closed_for_risk");
+        let _ = app.emit_to("main", "monitor-snapshot", payload.clone());
+        Ok(payload)
+    })
+    .await
+    .map_err(|_| "关闭 Claude 的任务异常退出".to_owned())?
 }
 
 #[tauri::command]
@@ -762,6 +790,8 @@ mod tests {
     fn risk_notifications_rearm_after_recovery_and_ignore_inconclusive_samples() {
         let mut snapshot = Snapshot::default();
         let sample = |level| [Group::new(4, "出口一致性", level, "")];
+        assert_eq!(snapshot.new_risks(&sample(Level::Warning)), ["出口一致性"]);
+        assert!(snapshot.new_risks(&sample(Level::Warning)).is_empty());
         assert_eq!(snapshot.new_risks(&sample(Level::Failed)), ["出口一致性"]);
         assert!(snapshot.new_risks(&sample(Level::Unknown)).is_empty());
         assert!(snapshot.new_risks(&sample(Level::Failed)).is_empty());
@@ -841,6 +871,7 @@ fn main() {
             run_check,
             set_monitor,
             retry_timezone_restore,
+            close_claude_for_risk,
             check_for_update,
             install_update,
             open_release_page,
