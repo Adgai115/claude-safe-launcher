@@ -212,7 +212,7 @@ function resumeAssistedRepair() {
   assistedRepairPending = false;
   if (byId("repair-guide-dialog").open) byId("repair-guide-dialog").close();
   setStatus("已返回检查器，正在自动复查并继续修复…");
-  void runCheck("repair");
+  void runCheck("repair", state.settings?.autoRepair === true);
 }
 
 byId("launch-blocker").addEventListener("click", (event) => {
@@ -332,11 +332,16 @@ async function runCheck(action, automatic = false) {
     state.busy = false;
     if (action === "learn" || action === "repair") state.settings = await tauri.core.invoke("load_settings");
     displaySnapshot(snapshot);
-    if (approvedRepairs?.length === 0) {
-      const waitingForVpn = armAssistedRepair(state.report);
+    const automaticNeedsManual = action === "repair" && automatic && (state.report?.groups ?? [])
+      .some((group) => group.blocksLaunch || group.earned < group.weight);
+    const waitingForVpn = automaticNeedsManual ? armAssistedRepair(state.report) : false;
+    if (approvedRepairs?.length === 0 || automaticNeedsManual) {
+      if (!waitingForVpn) armAssistedRepair(state.report);
       setStatus(waitingForVpn
         ? "请连接 VPN；返回检查器后会自动复查并继续修复"
-        : "暂无可自动修复项，请按修复方案手动处理");
+        : automaticNeedsManual
+          ? "已完成可控项目自动修复，仍有项目需要手动处理"
+          : "暂无可自动修复项，请按修复方案手动处理");
       showRepairGuide(state.report);
     }
   } catch (error) {
@@ -350,7 +355,10 @@ async function runCheck(action, automatic = false) {
 }
 
 for (const button of actions) {
-  button.addEventListener("click", () => runCheck(button.dataset.action));
+  button.addEventListener("click", () => runCheck(
+    button.dataset.action,
+    button.dataset.action === "repair" && state.settings?.autoRepair === true,
+  ));
 }
 byId("monitor-toggle").addEventListener("click", async () => {
   try { displaySnapshot(await tauri.core.invoke("set_monitor", { enabled: state.monitorMode === "paused" })); }

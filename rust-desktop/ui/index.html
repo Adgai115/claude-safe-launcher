@@ -90,8 +90,8 @@
         <label class="inline"><input type="checkbox" name="pinMainGroup">同时锁定另一个策略组</label>
         <label>另一个策略组<input name="mainGroup" maxlength="128"></label>
         <p class="hint">启用后，检查并修复会按同一个预设节点核对两个策略组。</p>
-        <label class="inline"><input type="checkbox" name="autoRepair">打开应用时自动修复</label>
-        <p class="hint">启用后，Claude 未运行时可自动调整 TUN、节点和时区。</p>
+        <label class="inline"><input type="checkbox" name="autoRepair">允许自动修复可控项目</label>
+        <p class="hint">启用后，Claude 未运行时，启动检查、手动检查和 VPN 返回复查可静默调整已授权的 TUN、已保存节点、可信基准和时区。第三方 VPN 仍由对应客户端控制。</p>
         <p class="hint" id="settings-lock" hidden>Claude 正在运行。退出 Claude 后可修改策略组或环境基准。</p>
         <p class="hint" id="data-directory"></p>
         <p class="hint" id="log-path"></p>

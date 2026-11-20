@@ -85,6 +85,7 @@ async function verifySupportFlow(page) {
   assert.match(await guide.innerText(), /不会自动更改第三方 VPN/);
   assert.equal(await page.locator('[data-action="repair"]').textContent(), '检查并修复');
   assert.equal(await page.locator('#retry-auto-repair').count(), 0);
+  assert.match(await page.locator('#settings-form').innerText(), /允许自动修复可控项目/);
   assert.equal(await page.evaluate(() => armAssistedRepair(state.report)), true);
   await page.locator('#repair-guide-feedback').click();
   const feedback = page.locator('#feedback-dialog');
