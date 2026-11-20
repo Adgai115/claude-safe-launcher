@@ -103,7 +103,7 @@ async function run() {
   assert.match(await updated.locator('#runtime-risk-message').textContent(), /出口一致性.*关闭 Claude/);
   await updated.locator('#keep-claude-running').click();
   await riskDialog.waitFor({ state: 'hidden' });
-  const closableClaude = spawn(mockClaude, [], { stdio: 'ignore', windowsHide: true });
+  const closableClaude = spawn(mockClaude, [], { stdio: 'ignore', windowsHide: false });
   try {
     await updated.waitForFunction(async () => {
       const snapshot = await window.__TAURI__.core.invoke('get_snapshot');
@@ -112,7 +112,11 @@ async function run() {
     await updated.evaluate(() => showRuntimeRisk({ risks: ['出口一致性'] }));
     await riskDialog.waitFor();
     await updated.locator('#close-risk-claude').click();
-    await riskDialog.waitFor({ state: 'hidden', timeout: 20_000 });
+    await Promise.race([
+      riskDialog.waitFor({ state: 'hidden', timeout: 20_000 }),
+      updated.locator('#runtime-risk-error').filter({ hasNotText: '正在请求' }).waitFor({ timeout: 20_000 })
+        .then(async () => { throw Error(await updated.locator('#runtime-risk-error').textContent()); }),
+    ]);
     await updated.waitForFunction(async () => {
       const snapshot = await window.__TAURI__.core.invoke('get_snapshot');
       return !snapshot.claudeRunning;
