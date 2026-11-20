@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const REPOSITORY: &str = "Adgai115/claude-safe-launcher";
+const FEEDBACK_URL: &str =
+    "https://github.com/Adgai115/claude-safe-launcher/issues/new?template=bug-report.yml";
 const TAG_PREFIX: &str = "desktop-v";
 const PAGE_SIZE: usize = 50;
 const MAX_PAGE_BYTES: u64 = 2 * 1024 * 1024;
@@ -302,6 +304,12 @@ pub fn open(version: Option<&str>) -> Result<(), String> {
         .map_err(|_| "无法打开浏览器，请在 GitHub 仓库的 Releases 页面查看更新".into())
 }
 
+#[cfg(windows)]
+pub fn open_feedback() -> Result<(), String> {
+    shell_open(std::ffi::OsStr::new(FEEDBACK_URL))
+        .map_err(|_| "无法打开浏览器，请前往 GitHub 仓库的 Issues 页面反馈".into())
+}
+
 pub fn launch_installer(path: &Path) -> Result<(), String> {
     #[cfg(windows)]
     return shell_open(path.as_os_str())
@@ -340,6 +348,12 @@ fn shell_open(target: &std::ffi::OsStr) -> Result<(), ()> {
 pub fn open(version: Option<&str>) -> Result<(), String> {
     let _url = release_url(version)?;
     Err("请在 GitHub 仓库的 Releases 页面查看更新".into())
+}
+
+#[cfg(not(windows))]
+pub fn open_feedback() -> Result<(), String> {
+    let _url = FEEDBACK_URL;
+    Err("请前往 GitHub 仓库的 Issues 页面反馈".into())
 }
 
 #[cfg(test)]

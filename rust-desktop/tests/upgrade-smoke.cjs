@@ -61,6 +61,35 @@ async function startUpdate(page) {
   await confirmUpdate(page);
 }
 
+async function verifySupportFlow(page) {
+  await page.evaluate(() => renderReport({
+    score: 22,
+    complete: true,
+    launchBlocked: true,
+    counts: { failed: 2, unknown: 4 },
+    groups: [
+      { id: 1, title: 'Windows VPN 路由', level: 'failed', detail: 'VPN 路由未确认', weight: 12, earned: 0, blocksLaunch: true, elapsedMs: 9 },
+      { id: 2, title: '系统时区', level: 'unknown', detail: '尚无基准', weight: 8, earned: 0, blocksLaunch: true, elapsedMs: 1 },
+      { id: 3, title: 'VPN 接口基准', level: 'unknown', detail: '无法核对接口基准', weight: 12, earned: 0, blocksLaunch: true, elapsedMs: 1 },
+      { id: 4, title: '出口一致性', level: 'unknown', detail: '正在等待建立出口基准', weight: 16, earned: 0, blocksLaunch: true, elapsedMs: 8009 },
+      { id: 8, title: 'Anthropic API 连通性', level: 'unknown', detail: 'HTTP 403', weight: 12, earned: 0, blocksLaunch: true, elapsedMs: 603 },
+      { id: 12, title: '官方支持地区', level: 'failed', detail: '不在支持名单', weight: 14, earned: 0, blocksLaunch: true, elapsedMs: 20 },
+    ],
+  }));
+  const blocker = page.locator('#launch-blocker');
+  assert.match(await blocker.textContent(), /可查看修复方案/);
+  await blocker.click();
+  const guide = page.locator('#repair-guide-dialog');
+  await guide.waitFor();
+  assert.match(await guide.innerText(), /没有 TUN 选项也可以/);
+  assert.match(await guide.innerText(), /不会自动更改第三方 VPN/);
+  await page.locator('#repair-guide-feedback').click();
+  const feedback = page.locator('#feedback-dialog');
+  await feedback.waitFor();
+  assert.match(await feedback.innerText(), /不会自动上传/);
+  await page.locator('#close-feedback').click();
+}
+
 function expectStatus(page, text) {
   return page.locator('#update-result').filter({ hasText: text }).waitFor({ timeout: 60_000 });
 }
@@ -127,6 +156,9 @@ async function run() {
     if (closableClaude.exitCode === null) closableClaude.kill();
   }
   console.log('Runtime risk changes offered both choices and closed a confirmed Claude fixture.');
+
+  await verifySupportFlow(updated);
+  console.log('Repair guidance and privacy-preserving feedback entry are interactive.');
 
   announced = newer;
   await updated.locator('#settings').click();

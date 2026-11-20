@@ -104,6 +104,7 @@ function canLaunch() {
 
 function updateButtons() {
   byId("check-updates").disabled = !tauri;
+  byId("feedback").disabled = !tauri;
   const launchable = canLaunch();
   for (const button of actions) {
     const action = button.dataset.action;
@@ -165,8 +166,45 @@ function updateButtons() {
   updateGroupField();
 }
 
+function repairSteps(report) {
+  const problemIds = new Set((report?.groups ?? [])
+    .filter((group) => group.blocksLaunch || group.earned < group.weight)
+    .map((group) => group.id));
+  const steps = [];
+  if ([1, 3, 4].some((id) => problemIds.has(id))) {
+    steps.push("先连接 VPN。若客户端提供 TUN、增强模式、全局模式或“接管系统流量”，建议开启；没有 TUN 选项也可以，关键是浏览器和 Claude API 走同一个 VPN 出口。");
+  }
+  if (problemIds.has(12)) {
+    steps.push("选择 Anthropic 官方支持地区的节点，并保持节点不变。不要在检查过程中自动切换节点。");
+  }
+  if (problemIds.has(8)) {
+    steps.push("确认 VPN 已连接且 Claude 客户端可以正常登录。单独出现 HTTP 403 只代表探测结果待核实，检查器不会把它当成已通过。");
+  }
+  if ([2, 3, 4].some((id) => problemIds.has(id))) {
+    steps.push("保持 VPN 和节点稳定，再点“检查并修复”。路由确认后，检查器才能建立或核对 VPN 接口、出口和时区基准。");
+  }
+  if (!steps.length) steps.push("查看下方未通过或待核实的检查说明，处理后重新检查。");
+  steps.push("仍无法通过时，点“反馈问题”，导出脱敏诊断并手动附加到反馈中。");
+  return steps;
+}
+
+function showRepairGuide(report = state.report) {
+  const problems = (report?.groups ?? [])
+    .filter((group) => group.blocksLaunch || group.earned < group.weight);
+  byId("repair-guide-summary").textContent = problems.length
+    ? `当前有 ${problems.length} 项需要处理，其中 ${problems.filter((group) => group.blocksLaunch).length} 项会阻止启动。`
+    : "当前没有可自动修复的项目，请按下面的步骤手动核对。";
+  byId("repair-guide-steps").replaceChildren(...repairSteps(report).map((step) => node("li", "", step)));
+  byId("repair-guide-dialog").showModal();
+}
+
 byId("launch-blocker").addEventListener("click", (event) => {
   event.preventDefault();
+  const id = Number(event.currentTarget.hash.replace("#check-", ""));
+  if ([1, 2, 3, 4].includes(id)) {
+    showRepairGuide();
+    return;
+  }
   const card = byId(event.currentTarget.hash.slice(1));
   card?.scrollIntoView({ block: "nearest" });
   card?.focus({ preventScroll: true });
@@ -276,7 +314,10 @@ async function runCheck(action, automatic = false) {
     state.busy = false;
     if (action === "learn" || action === "repair") state.settings = await tauri.core.invoke("load_settings");
     displaySnapshot(snapshot);
-    if (approvedRepairs?.length === 0) setStatus("暂无可自动修复项，已完成只读检查");
+    if (approvedRepairs?.length === 0) {
+      setStatus("暂无可自动修复项，请按修复方案手动处理");
+      showRepairGuide(state.report);
+    }
   } catch (error) {
     state.busy = false;
     renderReport(null);
@@ -401,12 +442,44 @@ historyDialog.addEventListener("close", () => {
   historyLoading = false;
 });
 byId("close-history").addEventListener("click", () => historyDialog.close());
-byId("export-diagnostics").addEventListener("click", async (event) => {
-  const button = event.currentTarget;
-  const result = byId("diagnostics-path");
+async function exportDiagnostics(button, result) {
   button.disabled = true;
   try {
     result.textContent = "已导出到 " + await tauri.core.invoke("export_diagnostics");
+  } catch (error) {
+    result.textContent = String(error);
+  } finally {
+    result.hidden = false;
+    button.disabled = false;
+  }
+}
+
+byId("export-diagnostics").addEventListener("click", (event) => {
+  void exportDiagnostics(event.currentTarget, byId("diagnostics-path"));
+});
+
+const feedbackDialog = byId("feedback-dialog");
+function showFeedback() {
+  byId("feedback-result").hidden = true;
+  feedbackDialog.showModal();
+}
+byId("feedback").addEventListener("click", showFeedback);
+byId("repair-guide-feedback").addEventListener("click", () => {
+  byId("repair-guide-dialog").close();
+  showFeedback();
+});
+byId("close-repair-guide").addEventListener("click", () => byId("repair-guide-dialog").close());
+byId("close-feedback").addEventListener("click", () => feedbackDialog.close());
+byId("feedback-export").addEventListener("click", (event) => {
+  void exportDiagnostics(event.currentTarget, byId("feedback-result"));
+});
+byId("open-feedback").addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  const result = byId("feedback-result");
+  button.disabled = true;
+  try {
+    await tauri.core.invoke("open_feedback_page");
+    result.textContent = "已打开 GitHub 反馈页面。请按需手动附加诊断文件。";
   } catch (error) {
     result.textContent = String(error);
   } finally {
