@@ -310,12 +310,6 @@ pub fn open_feedback() -> Result<(), String> {
         .map_err(|_| "无法打开浏览器，请前往 GitHub 仓库的 Issues 页面反馈".into())
 }
 
-#[cfg(windows)]
-pub fn open_vpn_settings() -> Result<(), String> {
-    shell_open(std::ffi::OsStr::new("ms-settings:network-vpn"))
-        .map_err(|_| "无法打开 Windows VPN 设置，请直接打开你的 VPN 客户端".into())
-}
-
 pub fn launch_installer(path: &Path) -> Result<(), String> {
     #[cfg(windows)]
     return shell_open(path.as_os_str())
@@ -360,11 +354,6 @@ pub fn open(version: Option<&str>) -> Result<(), String> {
 pub fn open_feedback() -> Result<(), String> {
     let _url = FEEDBACK_URL;
     Err("请前往 GitHub 仓库的 Issues 页面反馈".into())
-}
-
-#[cfg(not(windows))]
-pub fn open_vpn_settings() -> Result<(), String> {
-    Err("请直接打开你的 VPN 客户端".into())
 }
 
 #[cfg(test)]

@@ -270,7 +270,6 @@ dialog .error { color: var(--danger); }
 dialog .error:empty { display: none; }
 dialog input:not([type="checkbox"]) { border: 1px solid var(--border); border-radius: 7px; background: var(--subtle); color: var(--text); padding: 8px; width: 100%; }
 .dialog-actions { display: flex; gap: 8px; justify-content: end; }
-.repair-actions { flex-wrap: wrap; }
 
 .history-dialog {
   width: min(660px, calc(100% - 32px));
