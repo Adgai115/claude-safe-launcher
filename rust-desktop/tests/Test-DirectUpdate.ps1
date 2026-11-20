@@ -98,7 +98,11 @@ try {
     $dataPath = Join-Path $env:LOCALAPPDATA 'io.github.adgai115.claude-safe-launcher-rust'
     New-Item -Path $dataPath -ItemType Directory -Force | Out-Null
     $mockClaude = Join-Path $work 'Claude.exe'
-    Copy-Item -LiteralPath "$env:SystemRoot/System32/cmd.exe" -Destination $mockClaude
+    cargo build --locked --no-default-features --example claude-window-fixture | Out-Host
+    $targetDirectory = (cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json).target_directory
+    $fixture = Join-Path $targetDirectory 'debug/examples/claude-window-fixture.exe'
+    if (!(Test-Path -LiteralPath $fixture)) { throw 'Claude window fixture was not built.' }
+    Copy-Item -LiteralPath $fixture -Destination $mockClaude
     $baseline = Join-Path $dataPath 'preflight.json'
     @{
         claudeGroup = 'Upgrade smoke baseline'

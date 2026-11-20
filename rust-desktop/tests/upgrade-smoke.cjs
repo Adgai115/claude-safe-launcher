@@ -103,13 +103,32 @@ async function run() {
   assert.match(await updated.locator('#runtime-risk-message').textContent(), /出口一致性.*关闭 Claude/);
   await updated.locator('#keep-claude-running').click();
   await riskDialog.waitFor({ state: 'hidden' });
-  console.log('Runtime risk changes opened the Claude shutdown confirmation.');
+  const closableClaude = spawn(mockClaude, [], { stdio: 'ignore', windowsHide: true });
+  try {
+    await updated.waitForFunction(async () => {
+      const snapshot = await window.__TAURI__.core.invoke('get_snapshot');
+      return snapshot.claudeRunning && snapshot.monitorMode === 'watching';
+    }, null, { timeout: 30_000 });
+    await updated.evaluate(() => showRuntimeRisk({ risks: ['出口一致性'] }));
+    await riskDialog.waitFor();
+    await updated.locator('#close-risk-claude').click();
+    await riskDialog.waitFor({ state: 'hidden', timeout: 20_000 });
+    await updated.waitForFunction(async () => {
+      const snapshot = await window.__TAURI__.core.invoke('get_snapshot');
+      return !snapshot.claudeRunning;
+    }, null, { timeout: 20_000 });
+    await delay(100);
+    assert.notEqual(closableClaude.exitCode, null, 'confirmed risk prompt must close Claude');
+  } finally {
+    if (closableClaude.exitCode === null) closableClaude.kill();
+  }
+  console.log('Runtime risk changes offered both choices and closed a confirmed Claude fixture.');
 
   announced = newer;
   await updated.locator('#settings').click();
   await updated.locator('#check-updates').click();
   await expectStatus(updated, '发现新版本 v' + newer);
-  const claude = spawn(mockClaude, ['/d', '/q', '/k'], { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true });
+  const claude = spawn(mockClaude, [], { stdio: 'ignore', windowsHide: true });
   try {
     await updated.waitForFunction(async () => {
       const snapshot = await window.__TAURI__.core.invoke('get_snapshot');
