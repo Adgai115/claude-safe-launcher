@@ -14,6 +14,8 @@ const titles = [
 const actions = Array.from(document.querySelectorAll("[data-action]"));
 const state = { busy: false, settings: null, report: null, claudeRunning: false, monitorMode: "waiting", lastMonitorAt: null, historyError: false, timezonePending: false, timezoneStatus: null, revision: 0, lastGroup: null, launchReady: false };
 const tauri = window.__TAURI__;
+let assistedRepairPending = false;
+let assistedRepairArmedAt = 0;
 
 function node(tag, classes, text) {
   const element = document.createElement(tag);
@@ -181,7 +183,7 @@ function repairSteps(report) {
     steps.push("确认 VPN 已连接且 Claude 客户端可以正常登录。单独出现 HTTP 403 只代表探测结果待核实，检查器不会把它当成已通过。");
   }
   if ([2, 3, 4].some((id) => problemIds.has(id))) {
-    steps.push("保持 VPN 和节点稳定，再点“检查并修复”。路由确认后，检查器才能建立或核对 VPN 接口、出口和时区基准。");
+    steps.push("切换到 VPN 客户端完成连接并保持节点稳定；回到检查器后会自动复查并继续“检查并修复”。路由确认后，检查器才能建立或核对 VPN 接口、出口和时区基准。");
   }
   if (!steps.length) steps.push("查看下方未通过或待核实的检查说明，处理后重新检查。");
   steps.push("仍无法通过时，点“反馈问题”，导出脱敏诊断并手动附加到反馈中。");
@@ -196,6 +198,21 @@ function showRepairGuide(report = state.report) {
     : "当前没有可自动修复的项目，请按下面的步骤手动核对。";
   byId("repair-guide-steps").replaceChildren(...repairSteps(report).map((step) => node("li", "", step)));
   byId("repair-guide-dialog").showModal();
+}
+
+function armAssistedRepair(report = state.report) {
+  assistedRepairPending = (report?.groups ?? []).some((group) =>
+    [1, 2, 3, 4].includes(group.id) && (group.blocksLaunch || group.earned < group.weight));
+  assistedRepairArmedAt = assistedRepairPending ? Date.now() : 0;
+  return assistedRepairPending;
+}
+
+function resumeAssistedRepair() {
+  if (!assistedRepairPending || state.busy || Date.now() - assistedRepairArmedAt < 750) return;
+  assistedRepairPending = false;
+  if (byId("repair-guide-dialog").open) byId("repair-guide-dialog").close();
+  setStatus("已返回检查器，正在自动复查并继续修复…");
+  void runCheck("repair");
 }
 
 byId("launch-blocker").addEventListener("click", (event) => {
@@ -279,6 +296,7 @@ async function runCheck(action, automatic = false) {
   if (action === "repair" && state.claudeRunning) action = "check";
   if (settingsDialog.open) settingsDialog.close();
   if (!(await confirmAction(action))) return;
+  if (action === "repair") assistedRepairPending = false;
   state.busy = true;
   updateButtons();
   try {
@@ -315,7 +333,10 @@ async function runCheck(action, automatic = false) {
     if (action === "learn" || action === "repair") state.settings = await tauri.core.invoke("load_settings");
     displaySnapshot(snapshot);
     if (approvedRepairs?.length === 0) {
-      setStatus("暂无可自动修复项，请按修复方案手动处理");
+      const waitingForVpn = armAssistedRepair(state.report);
+      setStatus(waitingForVpn
+        ? "请连接 VPN；返回检查器后会自动复查并继续修复"
+        : "暂无可自动修复项，请按修复方案手动处理");
       showRepairGuide(state.report);
     }
   } catch (error) {
@@ -465,22 +486,11 @@ function showFeedback() {
 }
 byId("feedback").addEventListener("click", showFeedback);
 byId("repair-guide-feedback").addEventListener("click", () => {
+  assistedRepairPending = false;
   byId("repair-guide-dialog").close();
   showFeedback();
 });
-byId("open-vpn-settings").addEventListener("click", async () => {
-  try {
-    await tauri.core.invoke("open_vpn_settings");
-    byId("repair-guide-summary").textContent = "已打开 Windows VPN 设置。也可以直接在你的 VPN 客户端中连接并保持节点稳定。";
-  } catch (error) {
-    byId("repair-guide-summary").textContent = String(error);
-  }
-});
 byId("close-repair-guide").addEventListener("click", () => byId("repair-guide-dialog").close());
-byId("retry-auto-repair").addEventListener("click", () => {
-  byId("repair-guide-dialog").close();
-  void runCheck("repair");
-});
 byId("close-feedback").addEventListener("click", () => feedbackDialog.close());
 byId("feedback-export").addEventListener("click", (event) => {
   void exportDiagnostics(event.currentTarget, byId("feedback-result"));
@@ -710,7 +720,13 @@ async function init() {
   }
   checkUpdateInBackground();
   window.setInterval(checkUpdateInBackground, updateInterval);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) checkUpdateInBackground(); });
+  window.addEventListener("focus", resumeAssistedRepair);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      checkUpdateInBackground();
+      resumeAssistedRepair();
+    }
+  });
   try {
     await tauri.event.listen("monitor-snapshot", ({ payload }) => {
       if (!state.busy) displaySnapshot(payload);

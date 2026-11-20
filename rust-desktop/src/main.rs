@@ -681,11 +681,6 @@ fn open_feedback_page() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_vpn_settings() -> Result<(), String> {
-    releases::open_vpn_settings()
-}
-
-#[tauri::command]
 async fn install_update(
     app: AppHandle,
     version: String,
@@ -886,7 +881,6 @@ fn main() {
             install_update,
             open_release_page,
             open_feedback_page,
-            open_vpn_settings,
         ])
         .run(tauri::generate_context!())
         .expect("unable to start Claude 环境检查器");
