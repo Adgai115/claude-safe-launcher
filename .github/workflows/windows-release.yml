@@ -1,0 +1,107 @@
+name: Windows desktop release
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Verify release tag and source versions
+        shell: pwsh
+        working-directory: rust-desktop
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $tauriVersion = (Get-Content tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargoVersion = (cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json).packages |
+            Where-Object name -eq 'claude-safe-launcher-rust' |
+            Select-Object -ExpandProperty version
+          if ($env:GITHUB_REF_NAME -cne "desktop-v$tauriVersion") {
+            throw "Tag $env:GITHUB_REF_NAME does not match Tauri version $tauriVersion."
+          }
+          if ($cargoVersion -cne $tauriVersion) {
+            throw "Cargo version $cargoVersion does not match Tauri version $tauriVersion."
+          }
+          $notes = Join-Path 'releases' "$env:GITHUB_REF_NAME.md"
+          if (!(Test-Path -LiteralPath $notes -PathType Leaf)) {
+            throw "Missing release notes $notes."
+          }
+          "RELEASE_VERSION=$tauriVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build and verify the Windows x64 installer
+        shell: pwsh
+        working-directory: rust-desktop
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $output = Join-Path $env:RUNNER_TEMP 'release-assets'
+          New-Item -ItemType Directory -Path $output -Force | Out-Null
+          $payload = ./installer/Build-UpdateBundle.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'update-bundle') -UseNpx
+          $setup = ./installer/Build-Installer.ps1 -Payload $payload.FullName -OutputPath (Join-Path $output "Claude-Environment-Checker-v$env:RELEASE_VERSION-win-x64-setup.exe")
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./installer/Test-Installer.ps1 -Installer $setup.FullName -Version $env:RELEASE_VERSION
+          $digest = (Get-FileHash -LiteralPath $setup.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$digest  $($setup.Name)" | Set-Content -LiteralPath (Join-Path $output 'SHA256SUMS.txt') -Encoding utf8
+
+      - name: Attest release assets
+        uses: actions/attest@v4
+        with:
+          subject-path: '${{ runner.temp }}/release-assets/*'
+
+      - name: Create, verify, and publish the GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $tag = $env:GITHUB_REF_NAME
+          $title = "Claude 环境检查器 v$env:RELEASE_VERSION · Windows x64"
+          $notes = Join-Path $PWD "rust-desktop/releases/$tag.md"
+          $folder = Join-Path $env:RUNNER_TEMP 'release-assets'
+          $assets = @(Get-ChildItem -LiteralPath $folder -File | Sort-Object Name)
+          $PSNativeCommandUseErrorActionPreference = $false
+          $existingJson = gh release view $tag --json isDraft 2>$null
+          $viewExit = $LASTEXITCODE
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($viewExit -eq 0) {
+            $existing = $existingJson | ConvertFrom-Json
+            if (!$existing.isDraft) { throw "Release $tag already exists and is public." }
+            gh release edit $tag --title $title --notes-file $notes
+            gh release upload $tag @($assets.FullName) --clobber
+          } else {
+            gh release create $tag @($assets.FullName) --verify-tag --draft --title $title --notes-file $notes
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Unable to prepare draft release $tag." }
+
+          $release = gh release view $tag --json isDraft,assets | ConvertFrom-Json
+          if (!$release.isDraft) { throw 'Release must remain a draft until asset verification finishes.' }
+          $expectedNames = @("Claude-Environment-Checker-v$env:RELEASE_VERSION-win-x64-setup.exe", 'SHA256SUMS.txt') | Sort-Object
+          $actualNames = @($release.assets.name) | Sort-Object
+          if (Compare-Object $expectedNames $actualNames) {
+            throw "Draft assets differ from the expected release set: $($actualNames -join ', ')."
+          }
+          foreach ($asset in $release.assets) {
+            $local = Join-Path $folder $asset.name
+            $digest = 'sha256:' + (Get-FileHash -LiteralPath $local -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($asset.digest -cne $digest) {
+              throw "Uploaded digest for $($asset.name) does not match the local release asset."
+            }
+          }
+          gh release edit $tag --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw "Unable to publish release $tag." }
+
