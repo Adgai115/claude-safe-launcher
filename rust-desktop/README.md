@@ -47,6 +47,8 @@ $payload = Get-ChildItem target\release\bundle\nsis -Filter '*.exe' | Select-Obj
 
 [Windows 构建检查](../.github/workflows/windows-desktop.yml)会运行核心及桌面测试、构建安装器并检查包版本、双语资源和路径处理。正式发布前另行验证旧版升级、签名补丁重启、原配置保留和实际 VPN 环境。
 
+版本标签 `desktop-v<版本>` 会触发 [Windows 发布工作流](../.github/workflows/windows-release.yml)。工作流核对 Cargo、Tauri 与标签版本，使用公开更新密钥构建完整安装器，生成 `SHA256SUMS.txt` 和 GitHub 构建来源证明；资产先进入 Release 草稿，文件名和 GitHub SHA-256 与本地构建一致后才公开。该流程不需要 AWS，也不会发布缺少 Tauri 私钥签名的直接更新补丁。旧版应用会通过 GitHub Release 安装器通道升级。
+
 ## 使用
 
 1. 打开 Clash Verge Rev，启用外部控制和 TUN。Rust 版从 Clash Verge 运行配置读取本机控制器地址及认证信息。默认策略组为 `Claude`，可在应用设置里更改。
