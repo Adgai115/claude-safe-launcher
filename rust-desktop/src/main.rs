@@ -188,7 +188,6 @@ struct Settings {
     claude_group: String,
     main_group: String,
     pin_main_group: bool,
-    auto_repair: bool,
     has_baseline: bool,
     directory: String,
     log_path: String,
@@ -203,7 +202,6 @@ fn read_settings(state: &Launcher) -> Result<Settings, String> {
         claude_group: config.claude_group,
         main_group: config.main_group,
         pin_main_group: config.pin_main_group,
-        auto_repair: config.auto_repair,
         directory: state.folder.to_string_lossy().into_owned(),
         log_path: history::path(&state.folder).to_string_lossy().into_owned(),
         claude_running,
@@ -222,7 +220,6 @@ fn save_groups(
     claude_group: String,
     main_group: String,
     pin_main_group: bool,
-    auto_repair: bool,
 ) -> Result<Settings, String> {
     let primary = claude_group.trim();
     let secondary = main_group.trim();
@@ -241,15 +238,12 @@ fn save_groups(
     let changed_groups = config.claude_group != primary
         || config.main_group != secondary
         || config.pin_main_group != pin_main_group;
-    if changed_groups || config.auto_repair != auto_repair {
+    if changed_groups {
         machine::require_claude_stopped(&config)?;
-        if changed_groups {
-            config.claude_group = primary.into();
-            config.main_group = secondary.into();
-            config.pin_main_group = pin_main_group;
-            config.expected_node.clear();
-        }
-        config.auto_repair = auto_repair;
+        config.claude_group = primary.into();
+        config.main_group = secondary.into();
+        config.pin_main_group = pin_main_group;
+        config.expected_node.clear();
         config.save(&state.folder)?;
     }
     if changed_groups {
@@ -320,8 +314,6 @@ async fn run_check(
     browser_zone: String,
     browser_webrtc: Option<Vec<String>>,
     progress: Channel<Value>,
-    approved_repairs: Option<Vec<checks::RepairChange>>,
-    automatic: Option<bool>,
 ) -> Result<Value, String> {
     if browser_zone.len() > 128 || browser_zone.chars().any(char::is_control) {
         return Err("面板时区格式无效".into());
@@ -338,6 +330,7 @@ async fn run_check(
         let _operation = state.begin()?;
         let running = machine::is_claude_running(&Config::load(&state.folder)?);
         let action = action.when_running(running)?;
+        let automatic = action == Action::Repair;
         {
             let mut snapshot = lock(&state.snapshot)?;
             snapshot.claude_running = running;
@@ -346,8 +339,8 @@ async fn run_check(
         let result = checks::run(
             &state.folder,
             action,
-            approved_repairs.as_deref(),
-            automatic.unwrap_or(false),
+            None,
+            automatic,
             &browser_zone,
             browser_webrtc.as_deref(),
             |groups| {
