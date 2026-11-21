@@ -11,13 +11,13 @@ use std::fs::File;
 use std::io::{ErrorKind, Read};
 use std::net::{IpAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub use crate::observations::{routes_after_launch, routes_before_launch};
 
 const FRONT_TRACE: &str = "https://claude.ai/cdn-cgi/trace";
 const API_TRACE: &str = "https://api.anthropic.com/cdn-cgi/trace";
-const TUN: &str = "Clash Verge 与 TUN";
+const TUN: &str = "代理客户端与 TUN";
 const ZONE: &str = "系统时区";
 const NODE: &str = "策略组与预设节点";
 const EXIT: &str = "出口一致性";
@@ -97,10 +97,21 @@ fn probe_exits(network: &Network) -> Exits {
 }
 
 fn probe_nodes(config: &Config, network: &Network) -> Vec<(String, Option<String>)> {
-    config
+    let mut nodes: Vec<_> = config
         .groups()
-        .map(|name| (name.to_owned(), network.group(name).map(|group| group.now)))
-        .collect()
+        .filter_map(|name| {
+            network
+                .group(name)
+                .map(|group| (name.to_owned(), Some(group.now)))
+        })
+        .collect();
+    if nodes.is_empty() && network.is_clash_mi() {
+        nodes.push((
+            "GLOBAL".into(),
+            network.group("GLOBAL").map(|group| group.now),
+        ));
+    }
+    nodes
 }
 
 fn tun_group(machine: &Machine, enabled: Option<bool>) -> Group {
@@ -341,6 +352,71 @@ fn ip_risk_group(risk: Option<u64>) -> Group {
         level,
         format!("第三方风险分 {score}/100，{detail}"),
     )
+}
+
+fn repair_clash_mi_exit(folder: &Path, config: &mut Config, network: &Network) -> bool {
+    if !network.is_clash_mi() {
+        return false;
+    }
+    let Some((group_name, selected)) = probe_nodes(config, network).into_iter().next() else {
+        return false;
+    };
+    let Some(group) = network.group(&group_name) else {
+        return false;
+    };
+    let original = selected.unwrap_or(group.now);
+    let mut candidates = vec![original.clone()];
+    for node in group.all {
+        if is_proxy_node(&node) && !candidates.contains(&node) {
+            candidates.push(node);
+        }
+        if candidates.len() >= 6 {
+            break;
+        }
+    }
+    for node in candidates {
+        if node != original {
+            if !network.select(config, &group_name, &node) {
+                continue;
+            }
+            let _ = network.reset_connections(config);
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        let exits = probe_exits(network);
+        let Some(trace) = exits.confirmed() else {
+            continue;
+        };
+        let (api, _) = api_reachable(network);
+        let region = observations::supported_region(network, folder, Some(&trace.country));
+        let risk = ip_risk(network, Some(trace));
+        let dns = dns(true);
+        if api.level != Level::Pass
+            || region.level != Level::Pass
+            || risk.level != Level::Pass
+            || !matches!(dns.level, Level::Pass | Level::Reference)
+        {
+            continue;
+        }
+        let changed = config.expected_node != node
+            || config.expected_ip != Some(trace.ip)
+            || config.expected_loc != trace.country
+            || config.vpn_interface.is_some();
+        config.expected_node = node;
+        config.expected_ip = Some(trace.ip);
+        config.expected_loc.clone_from(&trace.country);
+        config.vpn_interface = None;
+        if let Some((iana, windows)) = exit_timezone(network, trace) {
+            config.expected_tz_iana = iana;
+            config.timezone = windows.into();
+        }
+        return changed;
+    }
+    if network.group(&group_name).is_some_and(|group| group.now != original)
+        && network.select(config, &group_name, &original)
+    {
+        let _ = network.reset_connections(config);
+    }
+    false
 }
 
 fn ip_protocol(front: Option<&Trace>, ipv6_probe: Ipv6Probe) -> Group {
@@ -588,16 +664,66 @@ fn endpoint_results(process_value: Option<&str>, folder: Option<&Path>) -> Group
 }
 
 fn endpoint() -> Group {
-    let folder = std::env::var_os("CLAUDE_CONFIG_DIR")
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".claude"))
-        });
+    let folder = claude_config_folder();
     endpoint_results(
         std::env::var("ANTHROPIC_BASE_URL").ok().as_deref(),
         folder.as_deref(),
     )
+}
+
+fn claude_config_folder() -> Option<PathBuf> {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".claude")))
+}
+
+fn repair_custom_endpoints() -> bool {
+    const OFFICIAL: &str = "https://api.anthropic.com";
+    let mut changed = false;
+    if std::env::var("ANTHROPIC_BASE_URL")
+        .ok()
+        .as_deref()
+        .is_some_and(is_custom_endpoint)
+    {
+        std::env::set_var("ANTHROPIC_BASE_URL", OFFICIAL);
+        changed = true;
+    }
+    let Some(folder) = claude_config_folder() else {
+        return changed;
+    };
+    for name in ["settings.json", "settings.local.json", "config.json"] {
+        let path = folder.join(name);
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        if bytes.len() > 1024 * 1024 {
+            continue;
+        }
+        let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes);
+        let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+            continue;
+        };
+        let mut file_changed = false;
+        if value["ANTHROPIC_BASE_URL"]
+            .as_str()
+            .is_some_and(is_custom_endpoint)
+        {
+            value["ANTHROPIC_BASE_URL"] = OFFICIAL.into();
+            file_changed = true;
+        }
+        if value["env"]["ANTHROPIC_BASE_URL"]
+            .as_str()
+            .is_some_and(is_custom_endpoint)
+        {
+            value["env"]["ANTHROPIC_BASE_URL"] = OFFICIAL.into();
+            file_changed = true;
+        }
+        if file_changed && crate::config::write_json(&folder, name, &value).is_ok() {
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn browser_info(
@@ -646,6 +772,19 @@ struct Repairs {
     timezone_error: Option<String>,
     nodes: bool,
     tun: bool,
+    endpoint: bool,
+}
+
+impl Repairs {
+    fn merge(&mut self, next: Self) {
+        self.timezone |= next.timezone;
+        self.nodes |= next.nodes;
+        self.tun |= next.tun;
+        self.endpoint |= next.endpoint;
+        if next.timezone_error.is_some() {
+            self.timezone_error = next.timezone_error;
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -701,33 +840,46 @@ fn prepare_repair(config: &Config, network: &Network, machine: &Machine) -> Repa
         baseline: false,
     };
     let clash = machine.proxy_running;
-    if (clash && config.vpn_interface.is_some())
+    let migrate_clash_mi = clash && network.is_clash_mi() && config.vpn_interface.is_some();
+    if (clash && config.vpn_interface.is_some() && !migrate_clash_mi)
         || (clash && !config.expected_node.is_empty() && !is_proxy_node(&config.expected_node))
     {
         return plan;
     }
     let mut candidate = config.clone();
+    if migrate_clash_mi {
+        candidate.vpn_interface = None;
+    }
     let tun = clash.then(|| network.tun()).flatten();
     if clash && tun.is_none() {
         return plan;
     }
-    if tun == Some(false) {
+    if tun == Some(false) || network.clash_mi_needs_safe_mode() {
         plan.tun = true;
-        plan.change(1, "Clash TUN", "关闭", "开启");
+        if network.is_clash_mi() {
+            plan.change(
+                1,
+                "Clash Mi 安全路由",
+                "未完整启用",
+                "全局 + TUN + 关闭 IPv6",
+            );
+        } else {
+            plan.change(1, "Clash TUN", "关闭", "开启");
+        }
     }
     if clash && !candidate.expected_node.is_empty() {
-        for name in config.groups() {
-            if let Some(group) = network.group(name) {
+        for (name, selected) in probe_nodes(config, network) {
+            if let Some(group) = network.group(&name) {
                 if group.now != candidate.expected_node
                     && group.all.contains(&candidate.expected_node)
                 {
                     plan.change(
                         3,
                         format!("策略组 {name}"),
-                        &group.now,
+                        selected.as_deref().unwrap_or(&group.now),
                         &candidate.expected_node,
                     );
-                    plan.nodes.push((name.to_owned(), group.now));
+                    plan.nodes.push((name, group.now));
                 }
             }
         }
@@ -737,7 +889,7 @@ fn prepare_repair(config: &Config, network: &Network, machine: &Machine) -> Repa
     if !config.has_baseline() && (plan.tun || !plan.nodes.is_empty()) {
         return plan;
     }
-    if !config.has_baseline() || !clash {
+    if !config.has_baseline() || !clash || migrate_clash_mi {
         let exits = probe_exits(network);
         if !clash {
             let (_, api_peer) = api_reachable(network);
@@ -755,10 +907,10 @@ fn prepare_repair(config: &Config, network: &Network, machine: &Machine) -> Repa
             candidate.expected_node.clear();
             candidate.vpn_interface = Some(interface);
         } else if candidate.expected_node.is_empty() {
-            let selected = network.group(&config.claude_group);
+            let selected = probe_nodes(config, network).into_iter().next();
             learn_node(
                 &mut candidate,
-                selected.as_ref().map(|group| group.now.as_str()),
+                selected.as_ref().and_then(|(_, node)| node.as_deref()),
                 false,
             );
         }
@@ -816,7 +968,7 @@ pub fn preview_repair(folder: &Path) -> Result<Vec<RepairChange>, String> {
     let config = Config::load(folder)?;
     machine::require_claude_stopped(&config)?;
     let machine = Machine::inspect(&config);
-    let runtime = machine.proxy_running.then(machine::verge_runtime).flatten();
+    let runtime = machine.proxy_running.then(machine::proxy_runtime).flatten();
     let network = Network::new(runtime.as_deref())?;
     Ok(prepare_repair(&config, &network, &machine).changes)
 }
@@ -824,7 +976,12 @@ pub fn preview_repair(folder: &Path) -> Result<Vec<RepairChange>, String> {
 fn apply_repair(folder: &Path, network: &Network, machine: &Machine, plan: &RepairPlan) -> Repairs {
     let config = &plan.config;
     let mut repairs = Repairs {
-        tun: plan.tun && network.tun() == Some(false) && network.enable_tun(config),
+        tun: plan.tun
+            && if network.is_clash_mi() {
+                network.configure_clash_mi(config)
+            } else {
+                network.tun() == Some(false) && network.enable_tun(config)
+            },
         ..Repairs::default()
     };
     if plan.timezone && machine::current_timezone().map(|zone| zone.id) == machine.timezone {
@@ -899,6 +1056,9 @@ pub fn run(
 ) -> Result<Outcome, String> {
     let mut config = Config::load(folder)?;
     let action = action.when_running(machine::is_claude_running(&config))?;
+    if action == Action::Repair && automatic {
+        let _ = machine::start_clash_mi(&config);
+    }
     if config.claude_group.trim().is_empty()
         || (config.pin_main_group && config.main_group.trim().is_empty())
     {
@@ -914,21 +1074,41 @@ pub fn run(
     if action == Action::Launch && !(config.has_baseline() && baseline_matches) {
         return Err("请先为当前网络建立环境基准".into());
     }
-    let runtime = clash.then(machine::verge_runtime).flatten();
+    let runtime = clash.then(machine::proxy_runtime).flatten();
     let network = Network::new(runtime.as_deref())?;
+    let endpoint_changed = action == Action::Repair && automatic && repair_custom_endpoints();
     let mut baseline_changed = false;
-    let repairs = if action == Action::Repair {
+    let mut repairs = if action == Action::Repair {
         let plan = prepare_repair(&config, &network, &machine);
         require_repair_approval(&plan.changes, approved_repairs, automatic)?;
         machine::require_claude_stopped(&config)?;
-        let changes = apply_repair(folder, &network, &machine, &plan);
+        let mut changes = apply_repair(folder, &network, &machine, &plan);
         baseline_changed = plan.baseline;
         config = plan.config;
         machine = Machine::inspect(&config);
+        if automatic && (changes.tun || changes.nodes) {
+            let follow_up = prepare_repair(&config, &network, &machine);
+            let follow_up_changes = apply_repair(folder, &network, &machine, &follow_up);
+            baseline_changed |= follow_up.baseline;
+            config = follow_up.config;
+            changes.merge(follow_up_changes);
+            machine = Machine::inspect(&config);
+        }
         changes
     } else {
         Repairs::default()
     };
+    repairs.endpoint |= endpoint_changed;
+    if action == Action::Repair && automatic && repair_clash_mi_exit(folder, &mut config, &network)
+    {
+        baseline_changed = true;
+        machine = Machine::inspect(&config);
+        let follow_up = prepare_repair(&config, &network, &machine);
+        let follow_up_changes = apply_repair(folder, &network, &machine, &follow_up);
+        config = follow_up.config;
+        repairs.merge(follow_up_changes);
+        machine = Machine::inspect(&config);
+    }
     let ((tun_enabled, tun_ms), (nodes, nodes_ms), (exits, exit_ms), api_peer, mut groups) =
         std::thread::scope(|scope| {
             let tun = scope.spawn(|| timed(|| clash.then(|| network.tun()).flatten()));
@@ -1050,6 +1230,11 @@ pub fn run(
             &mut progress,
         )
     });
+    if repairs.endpoint {
+        if let Some(group) = groups.iter_mut().find(|group| group.id == 10) {
+            group.mark_fixed();
+        }
+    }
     let report = Report::new(&groups);
     let baseline_confirmed = report.complete && !report.launch_blocked && config.has_baseline();
     let mut launched = false;
@@ -1327,7 +1512,7 @@ pub fn observe(folder: &Path, include_environment: bool) -> Result<Option<Vec<Gr
     }
     let clash = machine.proxy_running
         || (config.vpn_interface.is_none() && !config.expected_node.is_empty());
-    let runtime = clash.then(machine::verge_runtime).flatten();
+    let runtime = clash.then(machine::proxy_runtime).flatten();
     let network = Network::new(runtime.as_deref())?;
     let mut groups = vec![
         measure(|| client_routes(clash, &network, &machine, &config)),

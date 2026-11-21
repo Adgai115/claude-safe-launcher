@@ -14,6 +14,7 @@ pub struct Network {
     control: Client,
     address: Url,
     secret: String,
+    clash_mi: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -39,9 +40,13 @@ pub struct Trace {
 
 impl Network {
     pub fn new(runtime: Option<&Path>) -> Result<Self, String> {
+        let clash_mi = runtime.is_some_and(|path| {
+            path.file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("service_core_setting.json"))
+        });
         let verge = match runtime.and_then(|path| std::fs::read_to_string(path).ok()) {
             Some(yaml) => serde_yaml_ng::from_str::<Verge>(&yaml)
-                .map_err(|_| "Clash Verge 运行配置无法解析")?,
+                .map_err(|_| "代理客户端运行配置无法解析")?,
             None => Verge::default(),
         };
         let web = Client::builder()
@@ -61,9 +66,14 @@ impl Network {
             web,
             control,
             address: controller_address(&verge.controller)
-                .ok_or("Rust 版只连接本机回环地址上的 Clash 控制器")?,
+                .ok_or("检查器只连接本机回环地址上的代理控制器")?,
             secret: verge.secret,
+            clash_mi,
         })
+    }
+
+    pub fn is_clash_mi(&self) -> bool {
+        self.clash_mi
     }
 
     fn endpoint(&self, segments: &[&str]) -> Url {
@@ -127,6 +137,48 @@ impl Network {
                 )
                 .is_some()
             && self.tun() == Some(true)
+    }
+
+    pub fn configure_clash_mi(&self, config: &Config) -> bool {
+        if !self.clash_mi || crate::machine::require_claude_stopped(config).is_err() {
+            return false;
+        }
+        let changed = self
+            .send(
+                reqwest::Method::PATCH,
+                &["configs"],
+                Some(serde_json::json!({
+                    "mode": "global",
+                    "ipv6": false,
+                    "tun": {"enable": true}
+                })),
+            )
+            .is_some();
+        let verified = self.get::<Value>(&["configs"]).is_some_and(|configs| {
+            configs["mode"].as_str() == Some("global")
+                && configs["ipv6"].as_bool() == Some(false)
+                && configs["tun"]["enable"].as_bool() == Some(true)
+        });
+        if changed && verified {
+            let _ = self.send(reqwest::Method::DELETE, &["connections"], None);
+        }
+        changed && verified
+    }
+
+    pub fn clash_mi_needs_safe_mode(&self) -> bool {
+        self.clash_mi
+            && self.get::<Value>(&["configs"]).is_some_and(|configs| {
+                configs["mode"].as_str() != Some("global")
+                    || configs["ipv6"].as_bool() != Some(false)
+                    || configs["tun"]["enable"].as_bool() != Some(true)
+            })
+    }
+
+    pub fn reset_connections(&self, config: &Config) -> bool {
+        crate::machine::require_claude_stopped(config).is_ok()
+            && self
+                .send(reqwest::Method::DELETE, &["connections"], None)
+                .is_some()
     }
 
     pub fn trace(&self, url: &str) -> Option<Trace> {
@@ -243,5 +295,19 @@ mod tests {
         assert!(parse_trace("ip=203.0.113.20\nloc=US\n").is_some());
         assert!(parse_trace("ip=203.0.113.20\nloc=???\n").is_none());
         assert!(parse_trace("ip=invalid\nloc=US\n").is_none());
+    }
+
+    #[test]
+    fn clash_mi_controller_settings_use_the_standard_mihomo_fields() {
+        let config: Verge = serde_yaml_ng::from_str(
+            r#"{
+                "external-controller": "127.0.0.1:9090",
+                "secret": "fixture-secret"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(config.controller, "127.0.0.1:9090");
+        assert_eq!(config.secret, "fixture-secret");
+        assert!(controller_address(&config.controller).is_some());
     }
 }
