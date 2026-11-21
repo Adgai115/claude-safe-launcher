@@ -45,8 +45,9 @@ impl Network {
                 .is_some_and(|name| name.eq_ignore_ascii_case("service_core_setting.json"))
         });
         let verge = match runtime.and_then(|path| std::fs::read_to_string(path).ok()) {
-            Some(yaml) => serde_yaml_ng::from_str::<Verge>(&yaml)
-                .map_err(|_| "代理客户端运行配置无法解析")?,
+            Some(yaml) => {
+                serde_yaml_ng::from_str::<Verge>(&yaml).map_err(|_| "代理客户端运行配置无法解析")?
+            }
             None => Verge::default(),
         };
         let web = Client::builder()

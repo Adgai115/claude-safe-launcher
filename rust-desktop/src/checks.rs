@@ -411,7 +411,9 @@ fn repair_clash_mi_exit(folder: &Path, config: &mut Config, network: &Network) -
         }
         return changed;
     }
-    if network.group(&group_name).is_some_and(|group| group.now != original)
+    if network
+        .group(&group_name)
+        .is_some_and(|group| group.now != original)
         && network.select(config, &group_name, &original)
     {
         let _ = network.reset_connections(config);
