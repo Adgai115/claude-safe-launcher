@@ -31,6 +31,8 @@ pub struct Group {
     pub blocks_launch: bool,
     pub elapsed_ms: u64,
     pub observed_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<&'static str>,
 }
 
 impl Group {
@@ -55,7 +57,13 @@ impl Group {
             blocks_launch: level == Level::Failed,
             elapsed_ms: 0,
             observed_at: Utc::now(),
+            reason_code: None,
         }
+    }
+
+    pub fn reason(mut self, code: &'static str) -> Self {
+        self.reason_code = Some(code);
+        self
     }
 
     pub fn gate(mut self) -> Self {
