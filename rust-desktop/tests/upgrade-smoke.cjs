@@ -116,7 +116,8 @@ async function run() {
   await previous.waitForFunction(() => !document.querySelector('#monitor-toggle').disabled, null, { timeout: 90_000 });
 
   await startUpdate(previous);
-  await expectStatus(previous, '下载失败或更新签名校验未通过');
+  await previous.locator('#update-action').filter({ hasText: '重试更新' }).waitFor({ timeout: 60_000 });
+  assert.match(await previous.locator('#update-result').textContent(), /下载.*失败|下载.*中断|网络.*重试/);
   assert.equal(downloads, 1);
   assert.equal(launcher.exitCode, null, 'interrupted download must leave the installed app running');
   console.log('Baseline app survived an interrupted download.');
@@ -158,8 +159,9 @@ async function run() {
       const snapshot = await window.__TAURI__.core.invoke('get_snapshot');
       return !snapshot.claudeRunning;
     }, null, { timeout: 20_000 });
-    await delay(100);
     assert.notEqual(closableClaude.exitCode, null, 'confirmed risk prompt must close Claude');
+    await updated.waitForFunction(() => state.busy, null, { timeout: 10_000 });
+    await updated.waitForFunction(() => !state.busy, null, { timeout: 120_000 });
   } finally {
     if (closableClaude.exitCode === null) closableClaude.kill();
   }

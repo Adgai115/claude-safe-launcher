@@ -4,7 +4,7 @@ Claude 环境检查器是面向 Windows x64 的第三方桌面工具，用于在
 
 ## 下载当前正式版
 
-**[下载 v0.1.25 Windows x64 安装包](https://github.com/Adgai115/claude-safe-launcher/releases/download/desktop-v0.1.25/Claude-Environment-Checker-v0.1.25-win-x64-setup.exe)** · [最新发布与校验值](https://github.com/Adgai115/claude-safe-launcher/releases/latest)
+**[下载 v0.1.27 Windows x64 安装包](https://github.com/Adgai115/claude-safe-launcher/releases/download/desktop-v0.1.27/Claude-Environment-Checker-v0.1.27-win-x64-setup.exe)** · [最新发布与校验值](https://github.com/Adgai115/claude-safe-launcher/releases/latest)
 
 安装器按条款并排显示中英文许可，勾选同意后可继续。首次安装默认使用 `%LOCALAPPDATA%\Claude Environment Checker`，可浏览文件夹或粘贴路径。升级沿用原安装位置。应用内更新包使用 Tauri 签名。Windows SmartScreen 可能提示安装器发布者未知，因为安装器未做 Windows 代码签名。
 
@@ -20,7 +20,7 @@ Windows 桌面版源码位于 [`rust-desktop/`](rust-desktop/)。[构建说明](
 
 主界面右下角显示版本，发现新版时显示「可更新」。v0.1.24 及更早版本通过安装向导升级一次。v0.1.25 起，后续兼容的签名补丁可在应用内直接安装，其他更新仍通过安装向导。手动检查入口位于「设置」。
 
-「检查并修复」发现 VPN 尚未就绪时会说明连接要求。用户切换到 VPN 客户端完成连接并返回检查器后，原流程会自动复查，并静默修复应用有权限控制的 TUN、已保存节点、可信基准和时区；第三方 VPN 的连接与节点仍由对应客户端控制。「监控日志 → 导出脱敏诊断」将诊断文件保存到 Windows 的下载文件夹，同名文件自动编号。「反馈问题」会先说明隐私范围，再按用户选择打开 GitHub 反馈页；诊断文件不会自动上传。
+「检查并修复」发现 VPN 尚未就绪时会说明连接要求。Clash Mi 用户授权自动修复后，应用会尝试启动或重连客户端，启用全局模式与 TUN、关闭代理内核 IPv6、清理旧连接并选择通过出口、地区和风险检查的节点。其他第三方 VPN 仍由用户在对应客户端中完成连接和模式切换，返回检查器后会自动复查并继续原修复流程。「监控日志 → 导出脱敏诊断」将诊断文件保存到 Windows 的下载文件夹，同名文件自动编号。「反馈问题」会先说明隐私范围，再按用户选择打开 GitHub 反馈页；诊断文件不会自动上传。
 
 [完整使用说明](rust-desktop/README.md#使用)
 

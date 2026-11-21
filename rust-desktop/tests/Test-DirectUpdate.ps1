@@ -14,11 +14,29 @@ New-Item -Path $work -ItemType Directory | Out-Null
 $testKey = Join-Path $work 'fixture.key'
 $overlay = Join-Path $work 'updater.json'
 $cli = @('--yes', '--package', '@tauri-apps/cli@2.12.5', 'tauri')
-$baseTag = 'desktop-v0.1.25'
-$baseVersion = [version]'0.1.25'
-$patchVersion = [version]::new($baseVersion.Major, $baseVersion.Minor, $baseVersion.Build + 1)
 $env:RUSTUP_TOOLCHAIN = 'stable'
 Push-Location -LiteralPath $workspace
+
+$candidateConfig = Get-Content -LiteralPath tauri.conf.json -Raw | ConvertFrom-Json
+$candidateVersion = [version]$candidateConfig.version
+$candidateTag = "desktop-v$candidateVersion"
+$candidateIsReleased = (git tag --list $candidateTag) -eq $candidateTag
+if ($candidateIsReleased) {
+    $baseTag = $candidateTag
+    $baseVersion = $candidateVersion
+    $patchVersion = [version]::new($candidateVersion.Major, $candidateVersion.Minor, $candidateVersion.Build + 1)
+} else {
+    if ($candidateVersion.Build -lt 1) {
+        throw "Cannot derive the previous patch release for candidate $candidateVersion."
+    }
+    $baseVersion = [version]::new($candidateVersion.Major, $candidateVersion.Minor, $candidateVersion.Build - 1)
+    $baseTag = "desktop-v$baseVersion"
+    $patchVersion = $candidateVersion
+    if ((git tag --list $baseTag) -ne $baseTag) {
+        throw "Previous patch release tag $baseTag was not found."
+    }
+}
+Write-Host "Testing direct upgrade $baseVersion -> $patchVersion from $baseTag."
 
 function Build-TestBundle([version] $Version) {
     npx.cmd @cli build --ci --no-sign --bundles nsis --features signed-updates --config $overlay -- --locked | Out-Host
