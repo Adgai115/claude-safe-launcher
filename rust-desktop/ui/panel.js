@@ -212,7 +212,7 @@ function resumeAssistedRepair() {
   assistedRepairPending = false;
   if (byId("repair-guide-dialog").open) byId("repair-guide-dialog").close();
   setStatus("已返回检查器，正在自动复查并继续修复…");
-  void runCheck("repair", state.settings?.autoRepair === true);
+  void runCheck("repair");
 }
 
 byId("launch-blocker").addEventListener("click", (event) => {
@@ -291,30 +291,16 @@ async function collectWebRtcCandidates() {
   }
 }
 
-async function runCheck(action, automatic = false) {
+async function runCheck(action) {
   if (state.busy || (action === "launch" && !canLaunch()) || (action === "learn" && state.claudeRunning)) return;
   if (action === "repair" && state.claudeRunning) action = "check";
+  const automatic = action === "repair";
   if (settingsDialog.open) settingsDialog.close();
   if (!(await confirmAction(action))) return;
   if (action === "repair") assistedRepairPending = false;
   state.busy = true;
   updateButtons();
   try {
-    let approvedRepairs = null;
-    if (action === "repair" && !automatic) {
-      setStatus("正在核对可修复项…");
-      approvedRepairs = await tauri.core.invoke("preview_repair");
-      if (approvedRepairs.length) {
-        const message = approvedRepairs.map(({ label, before, after }) =>
-          `${label}\n${before || "未保存"} → ${after || "清除"}`).join("\n\n");
-        if (!(await confirmDialog("确认修复", message))) {
-          setStatus("已取消修复");
-          return;
-        }
-      } else {
-        action = "check";
-      }
-    }
     state.launchReady = false;
     state.lastGroup = null;
     renderReport(null);
@@ -323,8 +309,6 @@ async function runCheck(action, automatic = false) {
     progress.onmessage = (report) => { if (state.busy) renderReport(report); };
     const snapshot = await tauri.core.invoke("run_check", {
       action,
-      approvedRepairs,
-      automatic,
       browserZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
       browserWebrtc: await collectWebRtcCandidates(),
       progress,
@@ -335,7 +319,7 @@ async function runCheck(action, automatic = false) {
     const automaticNeedsManual = action === "repair" && automatic && (state.report?.groups ?? [])
       .some((group) => group.blocksLaunch || group.earned < group.weight);
     const waitingForVpn = automaticNeedsManual ? armAssistedRepair(state.report) : false;
-    if (approvedRepairs?.length === 0 || automaticNeedsManual) {
+    if (automaticNeedsManual) {
       if (!waitingForVpn) armAssistedRepair(state.report);
       setStatus(waitingForVpn
         ? "请连接 VPN；返回检查器后会自动复查并继续修复"
@@ -355,10 +339,7 @@ async function runCheck(action, automatic = false) {
 }
 
 for (const button of actions) {
-  button.addEventListener("click", () => runCheck(
-    button.dataset.action,
-    button.dataset.action === "repair" && state.settings?.autoRepair === true,
-  ));
+  button.addEventListener("click", () => runCheck(button.dataset.action));
 }
 byId("monitor-toggle").addEventListener("click", async () => {
   try { displaySnapshot(await tauri.core.invoke("set_monitor", { enabled: state.monitorMode === "paused" })); }
@@ -536,12 +517,10 @@ const form = byId("settings-form");
 const primaryGroup = form.elements.namedItem("claudeGroup");
 const mainGroup = form.elements.namedItem("mainGroup");
 const pinGroup = form.elements.namedItem("pinMainGroup");
-const autoRepair = form.elements.namedItem("autoRepair");
 function updateGroupField() {
   const locked = state.claudeRunning;
   primaryGroup.disabled = locked;
   pinGroup.disabled = locked;
-  autoRepair.disabled = locked;
   mainGroup.disabled = locked || !pinGroup.checked;
   mainGroup.required = !locked && pinGroup.checked;
   form.querySelector("[type=submit]").disabled = locked;
@@ -556,7 +535,6 @@ byId("settings").addEventListener("click", async () => {
     primaryGroup.value = state.settings.claudeGroup;
     mainGroup.value = state.settings.mainGroup;
     pinGroup.checked = state.settings.pinMainGroup;
-    autoRepair.checked = state.settings.autoRepair === true;
     updateGroupField();
     byId("data-directory").textContent = state.settings.directory;
     byId("log-path").textContent = state.settings.logPath ? `本地诊断日志 · ${state.settings.logPath}` : "";
@@ -709,7 +687,7 @@ form.addEventListener("submit", async (event) => {
   submit.disabled = true;
   try {
     state.settings = await tauri.core.invoke("save_groups", {
-      claudeGroup: primaryGroup.value, mainGroup: mainGroup.value, pinMainGroup: pinGroup.checked, autoRepair: autoRepair.checked,
+      claudeGroup: primaryGroup.value, mainGroup: mainGroup.value, pinMainGroup: pinGroup.checked,
     });
     settingsDialog.close();
     displaySnapshot(await tauri.core.invoke("get_snapshot"));
@@ -745,8 +723,7 @@ async function init() {
     const snapshot = await tauri.core.invoke("get_snapshot");
     displaySnapshot(snapshot);
     if (!snapshot.report?.complete) {
-      const automatic = state.settings.autoRepair === true;
-      void runCheck(automatic ? "repair" : "check", automatic);
+      void runCheck("repair");
     }
   } catch (error) { setStatus(String(error)); }
 }

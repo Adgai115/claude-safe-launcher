@@ -644,9 +644,8 @@ fn require_repair_approval(
     changes: &[RepairChange],
     approved: Option<&[RepairChange]>,
     automatic: bool,
-    auto_repair_enabled: bool,
 ) -> Result<(), String> {
-    if (automatic && auto_repair_enabled) || approved == Some(changes) {
+    if automatic || approved == Some(changes) {
         Ok(())
     } else {
         Err("修复方案已变化，请重新预览并确认".into())
@@ -881,12 +880,7 @@ pub fn run(
     let mut baseline_changed = false;
     let repairs = if action == Action::Repair {
         let plan = prepare_repair(&config, &network, &machine);
-        require_repair_approval(
-            &plan.changes,
-            approved_repairs,
-            automatic,
-            config.auto_repair,
-        )?;
+        require_repair_approval(&plan.changes, approved_repairs, automatic)?;
         machine::require_claude_stopped(&config)?;
         let changes = apply_repair(folder, &network, &machine, &plan);
         baseline_changed = plan.baseline;
@@ -1076,7 +1070,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn repair_requires_the_exact_current_plan_or_explicit_automatic_setting() {
+    fn repair_requires_the_exact_current_plan_or_automatic_action() {
         let change = |before: &str| RepairChange {
             check_id: 2,
             label: "Windows 时区".into(),
@@ -1085,10 +1079,9 @@ mod tests {
         };
         let current = [change("UTC")];
         let previous = [change("Pacific Standard Time")];
-        assert!(require_repair_approval(&current, Some(&current), false, false).is_ok());
-        assert!(require_repair_approval(&current, Some(&previous), false, true).is_err());
-        assert!(require_repair_approval(&current, None, true, false).is_err());
-        assert!(require_repair_approval(&current, None, true, true).is_ok());
+        assert!(require_repair_approval(&current, Some(&current), false).is_ok());
+        assert!(require_repair_approval(&current, Some(&previous), false).is_err());
+        assert!(require_repair_approval(&current, None, true).is_ok());
     }
 
     #[test]

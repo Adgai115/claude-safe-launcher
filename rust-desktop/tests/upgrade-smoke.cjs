@@ -85,7 +85,7 @@ async function verifySupportFlow(page) {
   assert.match(await guide.innerText(), /不会自动更改第三方 VPN/);
   assert.equal(await page.locator('[data-action="repair"]').textContent(), '检查并修复');
   assert.equal(await page.locator('#retry-auto-repair').count(), 0);
-  assert.match(await page.locator('#settings-form').innerText(), /允许自动修复可控项目/);
+  assert.doesNotMatch(await page.locator('#settings-form').innerText(), /允许自动修复可控项目/);
   assert.equal(await page.evaluate(() => armAssistedRepair(state.report)), true);
   await page.locator('#repair-guide-feedback').click();
   const feedback = page.locator('#feedback-dialog');
@@ -128,6 +128,7 @@ async function run() {
   const settings = await updated.evaluate(() => window.__TAURI__.core.invoke('load_settings'));
   assert.equal(settings.hasBaseline, true);
   assert.equal(settings.claudeGroup, 'Upgrade smoke baseline');
+  assert.equal(Object.hasOwn(settings, 'autoRepair'), false);
   console.log('Direct update relaunched at the new version, retaining baseline and tray monitoring.');
 
   await updated.evaluate(() => showRuntimeRisk({ risks: ['出口一致性'] }));
