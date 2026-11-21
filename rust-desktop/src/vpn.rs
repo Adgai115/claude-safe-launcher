@@ -42,10 +42,7 @@ pub fn interface(front: Option<IpAddr>, api: Option<IpAddr>) -> (Group, Option<S
 
 fn interface_from_routes(front: Route, api: Route) -> (Group, Option<String>) {
     let (level, detail, reason, id) = match (front, api) {
-        (
-            Route::Vpn(front, front_detection),
-            Route::Vpn(api, api_detection),
-        ) if front == api => {
+        (Route::Vpn(front, front_detection), Route::Vpn(api, api_detection)) if front == api => {
             let structural = matches!(front_detection, VpnDetection::InterfaceType)
                 || matches!(api_detection, VpnDetection::InterfaceType);
             (
@@ -105,9 +102,11 @@ fn interface_from_routes(front: Route, api: Route) -> (Group, Option<String>) {
 
 pub fn baseline(config: &Config, current: Option<&str>) -> Group {
     let (level, detail, reason) = match (config.vpn_interface.as_deref(), current) {
-        (Some(expected), Some(actual)) if expected == actual => {
-            (Level::Pass, "当前 VPN 接口与已保存的基准一致", "vpn_baseline_match")
-        }
+        (Some(expected), Some(actual)) if expected == actual => (
+            Level::Pass,
+            "当前 VPN 接口与已保存的基准一致",
+            "vpn_baseline_match",
+        ),
         (Some(_), Some(_)) => (
             Level::Failed,
             "VPN 接口已变化，请核对后重新记住当前环境",
@@ -409,8 +408,8 @@ mod tests {
                 primary(),
                 Route::Vpn("other".into(), VpnDetection::InterfaceType)
             )
-                .0
-                .level,
+            .0
+            .level,
             Level::Failed
         );
         assert_eq!(

@@ -1130,8 +1130,8 @@ mod tests {
 
     #[test]
     fn fake_ip_dns_passes_only_after_the_tun_route_is_confirmed() {
-        let mut group = Group::new(6, "系统 DNS", Level::Unknown, "fixture")
-            .reason("dns_fake_ip_unverified");
+        let mut group =
+            Group::new(6, "系统 DNS", Level::Unknown, "fixture").reason("dns_fake_ip_unverified");
         confirm_tun_dns(&mut group, false);
         assert_eq!(group.level, Level::Unknown);
         confirm_tun_dns(&mut group, true);
