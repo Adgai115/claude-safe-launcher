@@ -566,6 +566,7 @@ byId("close-risk-claude").addEventListener("click", async () => {
   try {
     displaySnapshot(await tauri.core.invoke("close_claude_for_risk"));
     runtimeRiskDialog.close();
+    await runCheck("repair");
   } catch (error) {
     byId("runtime-risk-error").textContent = String(error);
   } finally {

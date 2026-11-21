@@ -25,12 +25,10 @@ pub struct Machine {
 impl Machine {
     pub fn inspect(config: &Config) -> Self {
         let system = process_snapshot();
-        let proxy_running = system.processes().values().any(|process| {
-            let name = process.name().to_string_lossy().to_ascii_lowercase();
-            ["mihomo", "verge-mihomo", "clash-meta"]
-                .iter()
-                .any(|prefix| name.starts_with(prefix))
-        });
+        let proxy_running = system
+            .processes()
+            .values()
+            .any(|process| looks_like_proxy(process.name()));
         Self {
             claude: find_claude(&system, config),
             claude_running: has_claude(&system, config),
@@ -43,13 +41,29 @@ impl Machine {
     }
 }
 
+fn looks_like_proxy(name: &OsStr) -> bool {
+    let name = name.to_string_lossy().to_ascii_lowercase();
+    ["mihomo", "verge-mihomo", "clash-meta", "clashmiservice"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
+fn looks_like_clash_mi(name: &OsStr) -> bool {
+    matches!(
+        name.to_string_lossy().to_ascii_lowercase().as_str(),
+        "clashmi" | "clashmi.exe"
+    )
+}
+
 fn process_snapshot() -> System {
     let mut system = System::new();
     system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
     let clients: Vec<_> = system
         .processes()
         .iter()
-        .filter(|(_, process)| looks_like_claude(Some(process.name())))
+        .filter(|(_, process)| {
+            looks_like_claude(Some(process.name())) || looks_like_clash_mi(process.name())
+        })
         .map(|(&pid, _)| pid)
         .collect();
     if !clients.is_empty() {
@@ -407,12 +421,110 @@ pub(crate) fn set_timezone(config: &Config, zone: &str) -> bool {
     require_claude_stopped(config).is_ok() && output("tzutil.exe", &["/s", zone]).is_some()
 }
 
-pub fn verge_runtime() -> Option<PathBuf> {
-    Some(
-        PathBuf::from(std::env::var_os("APPDATA")?)
-            .join("io.github.clash-verge-rev.clash-verge-rev")
-            .join("clash-verge.yaml"),
-    )
+pub fn proxy_runtime() -> Option<PathBuf> {
+    let appdata = PathBuf::from(std::env::var_os("APPDATA")?);
+    let clash_mi = appdata.join("ClashMi").join("service_core_setting.json");
+    let verge = appdata
+        .join("io.github.clash-verge-rev.clash-verge-rev")
+        .join("clash-verge.yaml");
+    let clash_mi_running = process_snapshot().processes().values().any(|process| {
+        process
+            .name()
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .starts_with("clashmiservice")
+    });
+    if clash_mi_running && clash_mi.is_file() {
+        Some(clash_mi)
+    } else {
+        Some(verge)
+    }
+}
+
+pub fn start_clash_mi(config: &Config) -> bool {
+    if require_claude_stopped(config).is_err() || clash_mi_core_running() {
+        return clash_mi_core_running();
+    }
+    let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) else {
+        return false;
+    };
+    let data = appdata.join("ClashMi");
+    let setting_path = data.join("setting.json");
+    let core_path = data.join("service_core_setting.json");
+    if !core_path.is_file() {
+        return false;
+    }
+    let _ = update_clash_mi_json(&setting_path, |value| {
+        value["auto_connect_after_launch"] = true.into();
+        value["auto_set_system_proxy"] = true.into();
+    });
+    let _ = update_clash_mi_json(&core_path, |value| {
+        value["mode"] = "global".into();
+        value["ipv6"] = false.into();
+        value["tun"]["overwrite"] = true.into();
+        value["tun"]["enable"] = true.into();
+    });
+    let system = process_snapshot();
+    let running = system
+        .processes()
+        .values()
+        .find(|process| looks_like_clash_mi(process.name()))
+        .and_then(|process| process.exe())
+        .map(Path::to_owned);
+    let installed = ["ProgramW6432", "ProgramFiles", "LOCALAPPDATA"]
+        .into_iter()
+        .filter_map(|name| std::env::var_os(name).map(PathBuf::from))
+        .flat_map(|root| {
+            [
+                root.join("Clash Mi").join("clashmi.exe"),
+                root.join("Programs").join("Clash Mi").join("clashmi.exe"),
+            ]
+        })
+        .find(|path| path.is_file());
+    let Some(executable) = running.or(installed) else {
+        return false;
+    };
+    if Command::new(executable)
+        .arg("--launch_startup")
+        .spawn()
+        .is_err()
+    {
+        return false;
+    }
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if clash_mi_core_running() {
+            return true;
+        }
+    }
+    false
+}
+
+fn clash_mi_core_running() -> bool {
+    process_snapshot().processes().values().any(|process| {
+        process
+            .name()
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .starts_with("clashmiservice")
+    })
+}
+
+fn update_clash_mi_json(path: &Path, update: impl FnOnce(&mut serde_json::Value)) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let Ok(mut value) = serde_json::from_slice(&bytes) else {
+        return false;
+    };
+    update(&mut value);
+    let Some(folder) = path.parent() else {
+        return false;
+    };
+    let Some(name) = path.file_name().and_then(OsStr::to_str) else {
+        return false;
+    };
+    crate::config::write_json(folder, name, &value).is_ok()
 }
 
 fn installed_claude_paths() -> Vec<PathBuf> {
@@ -575,6 +687,14 @@ fn packaged_app_retries_when_only_a_background_process_is_present() {
     assert_eq!(activations.get(), 2);
     let error = wait_for_packaged_window(|| Ok(()), || (true, false), || {}).unwrap_err();
     assert!(error.contains("尚未检测到桌面窗口"));
+}
+
+#[test]
+fn recognizes_clash_mi_service_as_a_proxy_core() {
+    assert!(looks_like_proxy(OsStr::new("clashmiService.exe")));
+    assert!(looks_like_proxy(OsStr::new("mihomo.exe")));
+    assert!(!looks_like_proxy(OsStr::new("clashmi.exe")));
+    assert!(looks_like_clash_mi(OsStr::new("clashmi.exe")));
 }
 
 #[cfg(all(test, windows))]
