@@ -469,8 +469,11 @@ pub fn start_clash_mi(config: &Config) -> bool {
         .processes()
         .values()
         .find(|process| looks_like_clash_mi(process.name()))
-        .and_then(|process| process.exe())
-        .map(Path::to_owned);
+        .and_then(|process| {
+            process
+                .exe()
+                .map(|path| (process.pid().as_u32(), path.to_owned()))
+        });
     let installed = ["ProgramW6432", "ProgramFiles", "LOCALAPPDATA"]
         .into_iter()
         .filter_map(|name| std::env::var_os(name).map(PathBuf::from))
@@ -481,9 +484,34 @@ pub fn start_clash_mi(config: &Config) -> bool {
             ]
         })
         .find(|path| path.is_file());
-    let Some(executable) = running.or(installed) else {
+    let Some(executable) = running
+        .as_ref()
+        .map(|(_, path)| path.to_owned())
+        .or(installed)
+    else {
         return false;
     };
+    if let Some((pid, _)) = running {
+        let pid = pid.to_string();
+        let _ = system_command("taskkill.exe")
+            .args(["/PID", &pid, "/T"])
+            .status();
+        for _ in 0..10 {
+            if !clash_mi_gui_running() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        if clash_mi_gui_running() {
+            let _ = system_command("taskkill.exe")
+                .args(["/PID", &pid, "/T", "/F"])
+                .status();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        if clash_mi_gui_running() {
+            return false;
+        }
+    }
     if Command::new(executable)
         .arg("--launch_startup")
         .spawn()
@@ -508,6 +536,13 @@ fn clash_mi_core_running() -> bool {
             .to_ascii_lowercase()
             .starts_with("clashmiservice")
     })
+}
+
+fn clash_mi_gui_running() -> bool {
+    process_snapshot()
+        .processes()
+        .values()
+        .any(|process| looks_like_clash_mi(process.name()))
 }
 
 fn update_clash_mi_json(path: &Path, update: impl FnOnce(&mut serde_json::Value)) -> bool {
