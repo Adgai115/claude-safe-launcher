@@ -36,6 +36,7 @@ if ($candidateIsReleased) {
         throw "Previous patch release tag $baseTag was not found."
     }
 }
+Write-Host "Testing direct upgrade $baseVersion -> $patchVersion from $baseTag."
 
 function Build-TestBundle([version] $Version) {
     npx.cmd @cli build --ci --no-sign --bundles nsis --features signed-updates --config $overlay -- --locked | Out-Host
