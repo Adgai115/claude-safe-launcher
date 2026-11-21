@@ -62,6 +62,10 @@ async function startUpdate(page) {
 }
 
 async function verifySupportFlow(page) {
+  const guide = page.locator('#repair-guide-dialog');
+  if (await guide.evaluate(dialog => dialog.open)) {
+    await page.locator('#close-repair-guide').click();
+  }
   await page.evaluate(() => renderReport({
     score: 22,
     complete: true,
@@ -79,7 +83,6 @@ async function verifySupportFlow(page) {
   const blocker = page.locator('#launch-blocker');
   assert.match(await blocker.textContent(), /可查看修复方案/);
   await blocker.click();
-  const guide = page.locator('#repair-guide-dialog');
   await guide.waitFor();
   assert.match(await guide.innerText(), /没有 TUN 选项也可以/);
   assert.match(await guide.innerText(), /不会自动更改第三方 VPN/);
