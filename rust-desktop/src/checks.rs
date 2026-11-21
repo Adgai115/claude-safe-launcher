@@ -121,10 +121,13 @@ fn tun_group(machine: &Machine, enabled: Option<bool>) -> Group {
 fn zone_group(config: &Config, timezone: Option<&str>) -> Group {
     match timezone {
         Some(zone) if config.timezone.is_empty() => {
-            Group::new(2, ZONE, Level::Unknown, format!("当前为 {zone}，尚无基准")).gate()
+            Group::new(2, ZONE, Level::Unknown, format!("当前为 {zone}，尚无基准"))
+                .reason("timezone_baseline_missing")
+                .gate()
         }
         Some(zone) if config.timezone == zone => {
             Group::new(2, ZONE, Level::Pass, format!("与预设一致：{zone}"))
+                .reason("timezone_baseline_match")
         }
         Some(zone) => Group::new(
             2,
@@ -132,8 +135,11 @@ fn zone_group(config: &Config, timezone: Option<&str>) -> Group {
             Level::Warning,
             format!("当前 {zone}，预设 {}", config.timezone),
         )
+        .reason("timezone_baseline_mismatch")
         .gate(),
-        None => Group::new(2, ZONE, Level::Unknown, "无法读取 Windows 时区").gate(),
+        None => Group::new(2, ZONE, Level::Unknown, "无法读取 Windows 时区")
+            .reason("timezone_unreadable")
+            .gate(),
     }
 }
 
@@ -186,7 +192,9 @@ fn is_proxy_node(node: &str) -> bool {
 
 fn trace_group(config: &Config, exits: &Exits) -> Group {
     let Some(front) = exits.front.as_ref() else {
-        return Group::new(4, EXIT, Level::Unknown, "Claude 网页出口无法确认").gate();
+        return Group::new(4, EXIT, Level::Unknown, "Claude 网页出口无法确认")
+            .reason("exit_front_unavailable")
+            .gate();
     };
     if exits.confirmed().is_none() {
         return Group::new(
@@ -194,7 +202,8 @@ fn trace_group(config: &Config, exits: &Exits) -> Group {
             EXIT,
             Level::Failed,
             "Claude 网页与 API 探测出口或地区不一致",
-        );
+        )
+        .reason("exit_probe_mismatch");
     }
     let mut detail = format!("已读到 Claude 网页出口（{}）", front.country);
     if exits.api.is_none() {
@@ -209,13 +218,16 @@ fn trace_group(config: &Config, exits: &Exits) -> Group {
     }
     if config.expected_ip.is_none() || config.expected_loc.is_empty() {
         detail.push_str("\n正在等待建立出口基准");
-        return Group::new(4, EXIT, Level::Unknown, detail).gate();
+        return Group::new(4, EXIT, Level::Unknown, detail)
+            .reason("exit_baseline_missing")
+            .gate();
     }
     if config.expected_ip != Some(front.ip) || config.expected_loc != front.country {
-        return Group::new(4, EXIT, Level::Failed, "探测出口或地区与已记录的预设不一致");
+        return Group::new(4, EXIT, Level::Failed, "探测出口或地区与已记录的预设不一致")
+            .reason("exit_baseline_mismatch");
     }
     detail.push_str("\nClaude 出口与基准一致");
-    Group::new(4, EXIT, Level::Pass, detail)
+    Group::new(4, EXIT, Level::Pass, detail).reason("exit_baseline_match")
 }
 
 fn learn_exit(config: &mut Config, exits: &Exits, replace: bool) -> bool {
@@ -383,12 +395,26 @@ fn dns(clash: bool) -> Group {
             let fake = ips.iter().any(|ip| matches!(ip, IpAddr::V4(v4) if v4.octets()[0] == 198 && (18..=19).contains(&v4.octets()[1])));
             if !clash {
                 let public = !fake && ips.iter().any(|&address| is_public_ip(address));
-                let (level, detail) = if public {
-                    (Level::Pass, "系统 DNS 已返回 claude.ai 的公网地址")
+                let (level, detail, reason) = if fake {
+                    (
+                        Level::Unknown,
+                        "系统 DNS 返回 TUN 常用 Fake IP，正在等待核对 VPN 路由",
+                        "dns_fake_ip_unverified",
+                    )
+                } else if public {
+                    (
+                        Level::Pass,
+                        "系统 DNS 已返回 claude.ai 的公网地址",
+                        "dns_public_resolution",
+                    )
                 } else {
-                    (Level::Unknown, "当前 VPN 模式下未确认 claude.ai 的公网解析")
+                    (
+                        Level::Unknown,
+                        "当前 VPN 模式下未确认 claude.ai 的公网解析",
+                        "dns_resolution_unverified",
+                    )
                 };
-                Group::new(6, title, level, detail)
+                Group::new(6, title, level, detail).reason(reason)
             } else if fake {
                 Group::new(
                     6,
@@ -396,6 +422,7 @@ fn dns(clash: bool) -> Group {
                     Level::Pass,
                     "系统解析返回 Clash 常用 Fake IP 网段",
                 )
+                .reason("dns_clash_fake_ip")
             } else {
                 Group::new(
                     6,
@@ -403,9 +430,21 @@ fn dns(clash: bool) -> Group {
                     Level::Reference,
                     "未观测到常用 Fake IP 网段，需结合 Clash DNS 模式",
                 )
+                .reason("dns_clash_mode_reference")
             }
         }
-        Err(_) => Group::new(6, title, Level::Unknown, "系统无法解析 claude.ai"),
+        Err(_) => Group::new(6, title, Level::Unknown, "系统无法解析 claude.ai")
+            .reason("dns_resolution_failed"),
+    }
+}
+
+fn confirm_tun_dns(group: &mut Group, interface_confirmed: bool) {
+    if interface_confirmed && group.reason_code == Some("dns_fake_ip_unverified") {
+        group.level = Level::Pass;
+        group.earned = group.weight;
+        group.blocks_launch = false;
+        group.detail = "系统 DNS 返回 Fake IP，且 Claude 网页与 API 已核对为同一 TUN 接口".into();
+        group.reason_code = Some("dns_fake_ip_verified_tun");
     }
 }
 
@@ -663,8 +702,7 @@ fn prepare_repair(config: &Config, network: &Network, machine: &Machine) -> Repa
     };
     let clash = machine.proxy_running;
     if (clash && config.vpn_interface.is_some())
-        || (!clash && config.vpn_interface.is_none() && !config.expected_node.is_empty())
-        || (!config.expected_node.is_empty() && !is_proxy_node(&config.expected_node))
+        || (clash && !config.expected_node.is_empty() && !is_proxy_node(&config.expected_node))
     {
         return plan;
     }
@@ -714,6 +752,7 @@ fn prepare_repair(config: &Config, network: &Network, machine: &Machine) -> Repa
             {
                 return plan;
             }
+            candidate.expected_node.clear();
             candidate.vpn_interface = Some(interface);
         } else if candidate.expected_node.is_empty() {
             let selected = network.group(&config.claude_group);
@@ -926,6 +965,11 @@ pub fn run(
     } else {
         vpn::interface(exits.front_peer, api_peer)
     };
+    if !clash {
+        if let Some(dns) = groups.iter_mut().find(|group| group.id == 6) {
+            confirm_tun_dns(dns, interface.is_some());
+        }
+    }
     if action == Action::Learn {
         if let Some(zone) = &machine.timezone {
             config.timezone.clone_from(zone);
@@ -1082,6 +1126,18 @@ mod tests {
         assert!(require_repair_approval(&current, Some(&current), false).is_ok());
         assert!(require_repair_approval(&current, Some(&previous), false).is_err());
         assert!(require_repair_approval(&current, None, true).is_ok());
+    }
+
+    #[test]
+    fn fake_ip_dns_passes_only_after_the_tun_route_is_confirmed() {
+        let mut group =
+            Group::new(6, "系统 DNS", Level::Unknown, "fixture").reason("dns_fake_ip_unverified");
+        confirm_tun_dns(&mut group, false);
+        assert_eq!(group.level, Level::Unknown);
+        confirm_tun_dns(&mut group, true);
+        assert_eq!(group.level, Level::Pass);
+        assert_eq!(group.earned, group.weight);
+        assert_eq!(group.reason_code, Some("dns_fake_ip_verified_tun"));
     }
 
     #[test]

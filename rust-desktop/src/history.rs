@@ -30,6 +30,8 @@ struct Check {
     elapsed_ms: u64,
     #[serde(default)]
     observed_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason_code: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -55,6 +57,7 @@ impl Status {
                     earned: group.earned,
                     elapsed_ms: group.elapsed_ms,
                     observed_at: Some(group.observed_at),
+                    reason_code: group.reason_code.map(str::to_owned),
                 })
                 .collect(),
         }
@@ -83,7 +86,7 @@ pub fn export(
 ) -> io::Result<PathBuf> {
     let events = collapsed_events(recent(folder)?);
     let report = serde_json::json!({
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "appVersion": env!("CARGO_PKG_VERSION"),
         "exportedAt": Utc::now(),
         "environment": {
@@ -120,6 +123,7 @@ impl Status {
                     "earned": check.earned.min(weight),
                     "elapsedMs": check.elapsed_ms.min(120_000),
                     "observedAt": check.observed_at,
+                    "reasonCode": check.reason_code.as_deref(),
                 })
             })
             .collect();
@@ -330,7 +334,8 @@ mod tests {
     #[test]
     fn export_excludes_raw_check_details_and_unknown_log_fields() {
         let folder = tempfile::tempdir().unwrap();
-        let mut group = Group::new(3, "private node label", Level::Failed, "private address");
+        let mut group = Group::new(3, "private node label", Level::Failed, "private address")
+            .reason("vpn_baseline_interface_changed");
         group.elapsed_ms = 847;
         let groups = [group];
         let status = Status::new(&Report::new(&groups), "private monitor label");
@@ -343,11 +348,12 @@ mod tests {
         assert_ne!(repeated, file);
         let contents = fs::read_to_string(file).unwrap();
         assert!(!contents.contains("private"));
-        assert!(contents.contains("\"schemaVersion\": 2"));
+        assert!(contents.contains("\"schemaVersion\": 3"));
         assert!(contents.contains("\"timezonePending\": true"));
         assert!(contents.contains("\"level\": \"failed\""));
         assert!(contents.contains("\"name\": \"VPN 接口基准\""));
         assert!(contents.contains("\"resultCode\": \"vpn_interface_baseline_failed\""));
+        assert!(contents.contains("\"reasonCode\": \"vpn_baseline_interface_changed\""));
         assert!(contents.contains("\"elapsedMs\": 847"));
         assert!(contents.contains("\"repeatCount\": 2"));
         assert!(contents.contains("\"event\": \"other\""));

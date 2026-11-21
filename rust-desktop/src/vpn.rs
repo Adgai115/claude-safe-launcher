@@ -4,10 +4,32 @@ use crate::net::is_public_ip;
 use crate::report::{Group, Level};
 use std::net::{IpAddr, ToSocketAddrs};
 
+const IF_TYPE_ETHERNET_CSMACD: u32 = 6;
+const IF_TYPE_PPP: u32 = 23;
+const IF_TYPE_SOFTWARE_LOOPBACK: u32 = 24;
+const IF_TYPE_PROP_VIRTUAL: u32 = 53;
+const IF_TYPE_IEEE80211: u32 = 71;
+const IF_TYPE_TUNNEL: u32 = 131;
+const FLAG_HARDWARE_INTERFACE: u8 = 1;
+const FLAG_CONNECTOR_PRESENT: u8 = 1 << 2;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VpnDetection {
+    Description,
+    InterfaceType,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OtherRoute {
+    Physical,
+    UnrecognizedVirtual,
+    Other,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Route {
-    Vpn(String),
-    Other,
+    Vpn(String, VpnDetection),
+    Other(OtherRoute),
     Unknown,
 }
 
@@ -19,24 +41,55 @@ pub fn interface(front: Option<IpAddr>, api: Option<IpAddr>) -> (Group, Option<S
 }
 
 fn interface_from_routes(front: Route, api: Route) -> (Group, Option<String>) {
-    let (level, detail, id) = match (front, api) {
-        (Route::Vpn(front), Route::Vpn(api)) if front == api => (
-            Level::Pass,
-            "Claude 网页和 Anthropic API 的探测连接均匹配同一个 VPN 路由接口",
-            Some(front),
-        ),
-        (Route::Other, _) | (_, Route::Other) | (Route::Vpn(_), Route::Vpn(_)) => (
+    let (level, detail, reason, id) = match (front, api) {
+        (Route::Vpn(front, front_detection), Route::Vpn(api, api_detection)) if front == api => {
+            let structural = matches!(front_detection, VpnDetection::InterfaceType)
+                || matches!(api_detection, VpnDetection::InterfaceType);
+            (
+                Level::Pass,
+                if structural {
+                    "Claude 网页和 Anthropic API 均匹配同一个 Windows 虚拟或隧道路由接口"
+                } else {
+                    "Claude 网页和 Anthropic API 均匹配同一个 VPN 路由接口"
+                },
+                if structural {
+                    "vpn_route_same_structural_interface"
+                } else {
+                    "vpn_route_same_named_interface"
+                },
+                Some(front),
+            )
+        }
+        (Route::Vpn(_, _), Route::Vpn(_, _)) => (
             Level::Failed,
-            "网页和 API 探测未同时匹配同一个可识别的 VPN 路由接口",
+            "Claude 网页和 Anthropic API 命中了不同的 VPN 路由接口",
+            "vpn_route_interface_mismatch",
+            None,
+        ),
+        (Route::Other(kind), _) | (_, Route::Other(kind)) => (
+            Level::Failed,
+            match kind {
+                OtherRoute::Physical => "至少一条 Claude 探测连接仍使用物理或普通网络接口",
+                OtherRoute::UnrecognizedVirtual => {
+                    "探测连接使用未识别的虚拟接口，暂不能确认其为 VPN"
+                }
+                OtherRoute::Other => "至少一条 Claude 探测连接未匹配可识别的 VPN 接口",
+            },
+            match kind {
+                OtherRoute::Physical => "vpn_route_physical_interface",
+                OtherRoute::UnrecognizedVirtual => "vpn_route_unrecognized_virtual_interface",
+                OtherRoute::Other => "vpn_route_non_vpn_interface",
+            },
             None,
         ),
         _ => (
             Level::Unknown,
             "尚未取得两条 HTTPS 探测连接的有效路由证据",
+            "vpn_route_evidence_missing",
             None,
         ),
     };
-    let group = Group::new(1, "Windows VPN 路由", level, detail);
+    let group = Group::new(1, "Windows VPN 路由", level, detail).reason(reason);
     (
         if level == Level::Pass {
             group
@@ -48,15 +101,29 @@ fn interface_from_routes(front: Route, api: Route) -> (Group, Option<String>) {
 }
 
 pub fn baseline(config: &Config, current: Option<&str>) -> Group {
-    let (level, detail) = match (config.vpn_interface.as_deref(), current) {
-        (Some(expected), Some(actual)) if expected == actual => {
-            (Level::Pass, "当前 VPN 接口与已保存的基准一致")
-        }
-        (Some(_), Some(_)) => (Level::Failed, "VPN 接口已变化，请核对后重新记住当前环境"),
-        (None, Some(_)) => (Level::Unknown, "已确认 VPN 路由，请先记住当前环境"),
-        _ => (Level::Unknown, "VPN 路由未确认，无法核对接口基准"),
+    let (level, detail, reason) = match (config.vpn_interface.as_deref(), current) {
+        (Some(expected), Some(actual)) if expected == actual => (
+            Level::Pass,
+            "当前 VPN 接口与已保存的基准一致",
+            "vpn_baseline_match",
+        ),
+        (Some(_), Some(_)) => (
+            Level::Failed,
+            "VPN 接口已变化，请核对后重新记住当前环境",
+            "vpn_baseline_interface_changed",
+        ),
+        (None, Some(_)) => (
+            Level::Unknown,
+            "已确认 VPN 路由，正在建立接口基准",
+            "vpn_baseline_missing",
+        ),
+        _ => (
+            Level::Unknown,
+            "VPN 路由未确认，无法核对接口基准",
+            "vpn_baseline_route_unconfirmed",
+        ),
     };
-    let group = Group::new(3, "VPN 接口基准", level, detail);
+    let group = Group::new(3, "VPN 接口基准", level, detail).reason(reason);
     if level == Level::Pass {
         group
     } else {
@@ -86,7 +153,7 @@ pub fn verify_ipv6(group: Group, expected: Option<&str>) -> Group {
         {
             saw_ipv6 = true;
             match route(peer) {
-                Route::Vpn(id) if id == expected => {}
+                Route::Vpn(id, _) if id == expected => {}
                 Route::Unknown => unknown = true,
                 _ => {
                     return Group::new(
@@ -160,7 +227,7 @@ pub fn client_routes(machine: &Machine, config: &Config) -> Group {
     let mut unknown = false;
     for peer in peers {
         match route(peer) {
-            Route::Vpn(actual) if actual == expected => {}
+            Route::Vpn(actual, _) if actual == expected => {}
             Route::Unknown => unknown = true,
             _ => {
                 return Group::new(
@@ -230,29 +297,81 @@ fn route(ip: IpAddr) -> Route {
         return Route::Unknown;
     }
     let description = crate::machine::utf16_field(&row.Description);
-    if !known_vpn_adapter(&description) {
-        return Route::Other;
-    }
+    let class = classify_adapter(
+        &description,
+        row.Type,
+        row.InterfaceAndOperStatusFlags._bitfield,
+    );
+    let detection = match class {
+        AdapterClass::Vpn(detection) => detection,
+        AdapterClass::Other(other) => return Route::Other(other),
+    };
     let guid = row.InterfaceGuid;
     if guid.data1 == 0 && guid.data2 == 0 && guid.data3 == 0 && guid.data4 == [0; 8] {
         return Route::Unknown;
     }
     let tail = u64::from_be_bytes(guid.data4);
-    Route::Vpn(format!(
-        "{:08x}{:04x}{:04x}{tail:016x}",
-        guid.data1, guid.data2, guid.data3
-    ))
+    Route::Vpn(
+        format!(
+            "{:08x}{:04x}{:04x}{tail:016x}",
+            guid.data1, guid.data2, guid.data3
+        ),
+        detection,
+    )
 }
 
-#[cfg(windows)]
-fn known_vpn_adapter(description: &str) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AdapterClass {
+    Vpn(VpnDetection),
+    Other(OtherRoute),
+}
+
+fn classify_adapter(description: &str, interface_type: u32, flags: u8) -> AdapterClass {
+    if vpn_name_hint(description) {
+        return AdapterClass::Vpn(VpnDetection::Description);
+    }
+    if matches!(
+        interface_type,
+        IF_TYPE_PPP | IF_TYPE_PROP_VIRTUAL | IF_TYPE_TUNNEL
+    ) {
+        return AdapterClass::Vpn(VpnDetection::InterfaceType);
+    }
+    let hardware = flags & FLAG_HARDWARE_INTERFACE != 0;
+    let connector = flags & FLAG_CONNECTOR_PRESENT != 0;
+    if hardware
+        || connector
+        || matches!(interface_type, IF_TYPE_ETHERNET_CSMACD | IF_TYPE_IEEE80211)
+    {
+        AdapterClass::Other(OtherRoute::Physical)
+    } else if interface_type == IF_TYPE_SOFTWARE_LOOPBACK {
+        AdapterClass::Other(OtherRoute::Other)
+    } else {
+        AdapterClass::Other(OtherRoute::UnrecognizedVirtual)
+    }
+}
+
+fn vpn_name_hint(description: &str) -> bool {
     let description = description.to_ascii_lowercase();
     [
+        " vpn",
+        "vpn ",
+        "vpn-",
+        "vpn_",
+        " tun",
+        "tun ",
+        "tun-",
+        "tun_",
         "wireguard",
         "wintun",
         "openvpn",
         "tap-windows",
         "tailscale tunnel",
+        "sing-box",
+        "singbox",
+        "mihomo",
+        "clash",
+        "cloudflare warp",
+        "zerotier",
         "wan miniport (ikev2)",
         "wan miniport (sstp)",
         "wan miniport (l2tp)",
@@ -273,19 +392,24 @@ mod tests {
 
     #[test]
     fn both_service_routes_must_match_the_same_vpn() {
-        let primary = || Route::Vpn("primary".into());
+        let primary = || Route::Vpn("primary".into(), VpnDetection::Description);
         assert_eq!(
             interface_from_routes(primary(), primary()).1.as_deref(),
             Some("primary")
         );
         assert_eq!(
-            interface_from_routes(primary(), Route::Other).0.level,
+            interface_from_routes(primary(), Route::Other(OtherRoute::Physical))
+                .0
+                .level,
             Level::Failed
         );
         assert_eq!(
-            interface_from_routes(primary(), Route::Vpn("other".into()))
-                .0
-                .level,
+            interface_from_routes(
+                primary(),
+                Route::Vpn("other".into(), VpnDetection::InterfaceType)
+            )
+            .0
+            .level,
             Level::Failed
         );
         assert_eq!(
@@ -294,9 +418,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn recognizes_structural_vpn_types_without_vendor_names() {
+        for interface_type in [IF_TYPE_PPP, IF_TYPE_PROP_VIRTUAL, IF_TYPE_TUNNEL] {
+            assert_eq!(
+                classify_adapter("vendor-neutral adapter", interface_type, 0),
+                AdapterClass::Vpn(VpnDetection::InterfaceType)
+            );
+        }
+        assert_eq!(
+            classify_adapter("Vendor VPN Adapter", IF_TYPE_ETHERNET_CSMACD, 0),
+            AdapterClass::Vpn(VpnDetection::Description)
+        );
+    }
+
+    #[test]
+    fn physical_and_ambiguous_virtual_interfaces_do_not_pass_as_vpns() {
+        assert_eq!(
+            classify_adapter(
+                "Ethernet",
+                IF_TYPE_ETHERNET_CSMACD,
+                FLAG_HARDWARE_INTERFACE | FLAG_CONNECTOR_PRESENT
+            ),
+            AdapterClass::Other(OtherRoute::Physical)
+        );
+        assert_eq!(
+            classify_adapter("vEthernet", 1, 0),
+            AdapterClass::Other(OtherRoute::UnrecognizedVirtual)
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_routes_do_not_classify_loopback_as_a_vpn() {
-        assert_eq!(route("127.0.0.1".parse().unwrap()), Route::Other);
+        assert!(matches!(
+            route("127.0.0.1".parse().unwrap()),
+            Route::Other(_)
+        ));
     }
 }
