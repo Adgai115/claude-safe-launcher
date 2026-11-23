@@ -291,6 +291,19 @@ async function collectWebRtcCandidates() {
   }
 }
 
+function currentPanelTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+}
+
+async function waitForPanelTimezone(expected) {
+  if (!expected) return false;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (currentPanelTimezone() === expected) return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return false;
+}
+
 async function runCheck(action) {
   if (state.busy || (action === "launch" && !canLaunch()) || (action === "learn" && state.claudeRunning)) return;
   if (action === "repair" && state.claudeRunning) action = "check";
@@ -309,13 +322,27 @@ async function runCheck(action) {
     progress.onmessage = (report) => { if (state.busy) renderReport(report); };
     const snapshot = await tauri.core.invoke("run_check", {
       action,
-      browserZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+      browserZone: currentPanelTimezone(),
       browserWebrtc: await collectWebRtcCandidates(),
       progress,
     });
     state.busy = false;
     if (action === "learn" || action === "repair") state.settings = await tauri.core.invoke("load_settings");
     displaySnapshot(snapshot);
+    const timezoneChanged = action === "repair"
+      && snapshot.report?.groups?.some((group) => group.id === 2 && group.level === "fixed")
+      && snapshot.report?.groups?.some((group) => group.id === 11
+        && group.reasonCode === "panel_timezone_runtime_stale");
+    if (timezoneChanged) {
+      setStatus("Windows 时区已修复，正在同步面板时区并自动复查…");
+      if (await waitForPanelTimezone(state.settings?.expectedTzIana)) {
+        await runCheck("check");
+        return;
+      }
+      sessionStorage.setItem("panel-timezone-recheck", "1");
+      window.location.reload();
+      return;
+    }
     const automaticNeedsManual = action === "repair" && automatic && (state.report?.groups ?? [])
       .some((group) => group.blocksLaunch || group.earned < group.weight);
     const waitingForVpn = automaticNeedsManual ? armAssistedRepair(state.report) : false;
@@ -723,7 +750,11 @@ async function init() {
     state.settings = await tauri.core.invoke("load_settings");
     const snapshot = await tauri.core.invoke("get_snapshot");
     displaySnapshot(snapshot);
-    if (!snapshot.report?.complete) {
+    const timezoneRecheck = sessionStorage.getItem("panel-timezone-recheck") === "1";
+    sessionStorage.removeItem("panel-timezone-recheck");
+    if (timezoneRecheck) {
+      void runCheck("check");
+    } else if (!snapshot.report?.complete) {
       void runCheck("repair");
     }
   } catch (error) { setStatus(String(error)); }

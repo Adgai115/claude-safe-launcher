@@ -779,10 +779,18 @@ fn browser_info(
     let title = "面板时区与 WebRTC";
     let mut group = if zone.is_empty() || config.expected_tz_iana.is_empty() {
         Group::new(11, title, Level::NoData, "缺少面板时区或已记住的时区参考")
+            .reason("panel_timezone_missing")
     } else if config.expected_tz_iana == zone {
         Group::new(11, title, Level::Pass, "面板时区与基准一致")
+            .reason("panel_timezone_match")
     } else {
-        Group::new(11, title, Level::Reference, "面板时区与基准不同，仅供参考")
+        Group::new(
+            11,
+            title,
+            Level::Reference,
+            "Windows 时区已由系统检查处理，正在等待 WebView2 同步后自动复查",
+        )
+        .reason("panel_timezone_runtime_stale")
     };
     group.detail.push_str("\n");
     let result = match webrtc {
@@ -1466,6 +1474,18 @@ mod tests {
         assert_eq!((report.level, report.earned), (Level::Pass, 2));
         assert!(report.detail.contains("不同的公网候选"));
         assert!(!report.detail.contains("1.1.1.1"));
+    }
+
+    #[test]
+    fn stale_panel_timezone_is_identified_for_an_automatic_recheck() {
+        let config = Config {
+            expected_tz_iana: "America/New_York".into(),
+            ..Config::default()
+        };
+        let report = browser_info(&config, "Asia/Shanghai", None, None);
+        assert_eq!(report.level, Level::Reference);
+        assert_eq!(report.reason_code, Some("panel_timezone_runtime_stale"));
+        assert!(report.detail.contains("自动复查"));
     }
 
     #[test]
