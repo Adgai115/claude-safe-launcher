@@ -4,7 +4,7 @@ Claude 环境检查器是面向 Windows x64 的第三方桌面工具，用于在
 
 ## 下载当前正式版
 
-**[下载 v0.1.28 Windows x64 安装包](https://github.com/Adgai115/claude-safe-launcher/releases/download/desktop-v0.1.28/Claude-Environment-Checker-v0.1.28-win-x64-setup.exe)** · [最新发布与校验值](https://github.com/Adgai115/claude-safe-launcher/releases/latest)
+**[下载 v0.1.29 Windows x64 安装包](https://github.com/Adgai115/claude-safe-launcher/releases/download/desktop-v0.1.29/Claude-Environment-Checker-v0.1.29-win-x64-setup.exe)** · [最新发布与校验值](https://github.com/Adgai115/claude-safe-launcher/releases/latest)
 
 安装器按条款并排显示中英文许可，勾选同意后可继续。首次安装默认使用 `%LOCALAPPDATA%\Claude Environment Checker`，可浏览文件夹或粘贴路径。升级沿用原安装位置。应用内更新包使用 Tauri 签名。Windows SmartScreen 可能提示安装器发布者未知，因为安装器未做 Windows 代码签名。
 
