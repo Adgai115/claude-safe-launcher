@@ -442,8 +442,8 @@ pub fn proxy_runtime() -> Option<PathBuf> {
 }
 
 pub fn start_clash_mi(config: &Config) -> bool {
-    if require_claude_stopped(config).is_err() || clash_mi_core_running() {
-        return clash_mi_core_running();
+    if require_claude_stopped(config).is_err() {
+        return false;
     }
     let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) else {
         return false;
@@ -464,6 +464,11 @@ pub fn start_clash_mi(config: &Config) -> bool {
         value["tun"]["overwrite"] = true.into();
         value["tun"]["enable"] = true.into();
     });
+    // Keep the persisted safe mode in sync even when the service is already
+    // running. The live controller update is applied by the repair pipeline.
+    if clash_mi_core_running() {
+        return true;
+    }
     let system = process_snapshot();
     let running = system
         .processes()

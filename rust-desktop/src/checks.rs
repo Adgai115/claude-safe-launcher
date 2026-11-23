@@ -118,14 +118,20 @@ fn tun_group(machine: &Machine, enabled: Option<bool>) -> Group {
     match (machine.proxy_running, machine.tun_up, enabled) {
         (true, Some(true), Some(true)) => {
             Group::new(1, TUN, Level::Pass, "代理内核、TUN 适配器和控制器均就绪")
+                .reason("proxy_tun_ready")
         }
-        (false, _, _) | (_, Some(false), _) | (_, _, Some(false)) => Group::new(
-            1,
-            TUN,
-            Level::Failed,
-            "代理内核或 TUN 未就绪，请先打开 Clash Verge",
-        ),
-        _ => Group::new(1, TUN, Level::Unknown, "无法完整确认控制器与系统 TUN 状态").gate(),
+        (false, _, _) => Group::new(1, TUN, Level::Failed, "代理内核未运行")
+            .reason("proxy_core_not_running")
+            .gate(),
+        (_, Some(false), _) => Group::new(1, TUN, Level::Failed, "系统 TUN 适配器未就绪")
+            .reason("tun_adapter_down")
+            .gate(),
+        (_, _, Some(false)) => Group::new(1, TUN, Level::Failed, "代理控制器中的 TUN 尚未启用")
+            .reason("tun_controller_disabled")
+            .gate(),
+        _ => Group::new(1, TUN, Level::Unknown, "无法完整确认控制器与系统 TUN 状态")
+            .reason("tun_state_unverified")
+            .gate(),
     }
 }
 
@@ -185,7 +191,21 @@ fn nodes_group(config: &Config, nodes: &[(String, Option<String>)]) -> Group {
     } else {
         Level::Pass
     };
-    let item = Group::new(3, NODE, level, details.join("\n"));
+    if details.is_empty() {
+        details.push("代理控制器未返回可用策略组".into());
+    }
+    let reason = if failed {
+        "proxy_node_unsafe"
+    } else if nodes.is_empty() {
+        "proxy_groups_unavailable"
+    } else if nodes.iter().any(|(_, selected)| selected.is_none()) {
+        "proxy_node_unreadable"
+    } else if config.expected_node.is_empty() {
+        "proxy_node_baseline_missing"
+    } else {
+        "proxy_node_baseline_match"
+    };
+    let item = Group::new(3, NODE, level, details.join("\n")).reason(reason);
     if unknown {
         item.gate()
     } else {
@@ -501,14 +521,22 @@ fn dns(clash: bool) -> Group {
                     "系统解析返回 Clash 常用 Fake IP 网段",
                 )
                 .reason("dns_clash_fake_ip")
+            } else if ips.iter().any(|&address| is_public_ip(address)) {
+                Group::new(
+                    6,
+                    title,
+                    Level::Unknown,
+                    "系统 DNS 返回公网地址，正在核对 Clash TUN 状态",
+                )
+                .reason("dns_clash_public_unverified")
             } else {
                 Group::new(
                     6,
                     title,
-                    Level::Reference,
-                    "未观测到常用 Fake IP 网段，需结合 Clash DNS 模式",
+                    Level::Unknown,
+                    "Clash 模式下未确认 claude.ai 的有效解析",
                 )
-                .reason("dns_clash_mode_reference")
+                .reason("dns_clash_resolution_unverified")
             }
         }
         Err(_) => Group::new(6, title, Level::Unknown, "系统无法解析 claude.ai")
@@ -517,12 +545,26 @@ fn dns(clash: bool) -> Group {
 }
 
 fn confirm_tun_dns(group: &mut Group, interface_confirmed: bool) {
-    if interface_confirmed && group.reason_code == Some("dns_fake_ip_unverified") {
+    if !interface_confirmed {
+        return;
+    }
+    let (detail, reason) = match group.reason_code {
+        Some("dns_fake_ip_unverified") => (
+            "系统 DNS 返回 Fake IP，且 Claude 网页与 API 已核对为同一 TUN 接口",
+            "dns_fake_ip_verified_tun",
+        ),
+        Some("dns_clash_public_unverified") => (
+            "系统 DNS 返回公网地址，且 Clash 控制器与 Windows TUN 均已确认",
+            "dns_clash_public_verified_tun",
+        ),
+        _ => return,
+    };
+    {
         group.level = Level::Pass;
         group.earned = group.weight;
         group.blocks_launch = false;
-        group.detail = "系统 DNS 返回 Fake IP，且 Claude 网页与 API 已核对为同一 TUN 接口".into();
-        group.reason_code = Some("dns_fake_ip_verified_tun");
+        group.detail = detail.into();
+        group.reason_code = Some(reason);
     }
 }
 
@@ -1147,10 +1189,13 @@ pub fn run(
     } else {
         vpn::interface(exits.front_peer, api_peer)
     };
-    if !clash {
-        if let Some(dns) = groups.iter_mut().find(|group| group.id == 6) {
-            confirm_tun_dns(dns, interface.is_some());
-        }
+    if let Some(dns) = groups.iter_mut().find(|group| group.id == 6) {
+        let confirmed = if clash {
+            machine.proxy_running && machine.tun_up == Some(true) && tun_enabled == Some(true)
+        } else {
+            interface.is_some()
+        };
+        confirm_tun_dns(dns, confirmed);
     }
     if action == Action::Learn {
         if let Some(zone) = &machine.timezone {
@@ -1325,6 +1370,18 @@ mod tests {
         assert_eq!(group.level, Level::Pass);
         assert_eq!(group.earned, group.weight);
         assert_eq!(group.reason_code, Some("dns_fake_ip_verified_tun"));
+    }
+
+    #[test]
+    fn clash_public_dns_passes_after_controller_and_adapter_are_confirmed() {
+        let mut group = Group::new(6, "系统 DNS", Level::Unknown, "fixture")
+            .reason("dns_clash_public_unverified");
+        confirm_tun_dns(&mut group, false);
+        assert_eq!(group.level, Level::Unknown);
+        confirm_tun_dns(&mut group, true);
+        assert_eq!(group.level, Level::Pass);
+        assert_eq!(group.earned, group.weight);
+        assert_eq!(group.reason_code, Some("dns_clash_public_verified_tun"));
     }
 
     #[test]
@@ -1531,8 +1588,9 @@ pub fn observe(folder: &Path, include_environment: bool) -> Result<Option<Vec<Gr
             let ((mut api, api_peer), api_ms) = api.join().expect("background API check");
             api.elapsed_ms = api_ms;
             if clash {
+                let tun_enabled = network.tun();
                 groups.extend([
-                    measure(|| tun_group(&machine, network.tun())),
+                    measure(|| tun_group(&machine, tun_enabled)),
                     measure(|| nodes_group(&config, &probe_nodes(&config, &network))),
                 ]);
             } else {
@@ -1545,7 +1603,16 @@ pub fn observe(folder: &Path, include_environment: bool) -> Result<Option<Vec<Gr
             let (protocol, elapsed) = ipv6.join().expect("background IPv6 probe");
             let mut protocol = network_protocol(clash, &config, exits.front.as_ref(), protocol);
             protocol.elapsed_ms = elapsed;
-            groups.extend([protocol, api, dns.join().expect("background DNS check")]);
+            let mut dns = dns.join().expect("background DNS check");
+            if clash {
+                confirm_tun_dns(
+                    &mut dns,
+                    machine.proxy_running
+                        && machine.tun_up == Some(true)
+                        && network.tun() == Some(true),
+                );
+            }
+            groups.extend([protocol, api, dns]);
             groups.push(measure(|| {
                 observations::supported_region(
                     &network,
