@@ -66,7 +66,7 @@ impl Network {
         Ok(Self {
             web,
             control,
-            address: controller_address(&verge.controller)
+            address: controller_address(&verge.controller, if clash_mi { 9090 } else { 9097 })
                 .ok_or("检查器只连接本机回环地址上的代理控制器")?,
             secret: verge.secret,
             clash_mi,
@@ -201,10 +201,10 @@ impl Network {
     }
 }
 
-fn controller_address(raw: &str) -> Option<Url> {
+fn controller_address(raw: &str, default_port: u16) -> Option<Url> {
     let raw = raw.trim();
     let address = if raw.is_empty() {
-        "127.0.0.1:9097".into()
+        format!("127.0.0.1:{default_port}")
     } else if raw.starts_with(':') {
         format!("127.0.0.1{raw}")
     } else if let Some(port) = raw.strip_prefix("localhost:") {
@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn controller_stays_on_loopback() {
         for raw in ["", ":9097", "0.0.0.0:9097", "localhost:9097", "[::]:9097"] {
-            assert!(controller_address(raw).is_some());
+            assert!(controller_address(raw, 9097).is_some());
         }
         for raw in [
             "192.0.2.1:9097",
@@ -287,8 +287,14 @@ mod tests {
             "localhost:9097@remote.test",
             "localhost:9097/path",
         ] {
-            assert!(controller_address(raw).is_none());
+            assert!(controller_address(raw, 9097).is_none());
         }
+    }
+
+    #[test]
+    fn proxy_clients_use_their_own_default_controller_ports() {
+        assert_eq!(controller_address("", 9090).unwrap().port(), Some(9090));
+        assert_eq!(controller_address("", 9097).unwrap().port(), Some(9097));
     }
 
     #[test]
@@ -309,6 +315,11 @@ mod tests {
         .unwrap();
         assert_eq!(config.controller, "127.0.0.1:9090");
         assert_eq!(config.secret, "fixture-secret");
-        assert!(controller_address(&config.controller).is_some());
+        assert_eq!(
+            controller_address(&config.controller, 9090)
+                .unwrap()
+                .port(),
+            Some(9090)
+        );
     }
 }
