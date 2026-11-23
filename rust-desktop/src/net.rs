@@ -316,9 +316,7 @@ mod tests {
         assert_eq!(config.controller, "127.0.0.1:9090");
         assert_eq!(config.secret, "fixture-secret");
         assert_eq!(
-            controller_address(&config.controller, 9090)
-                .unwrap()
-                .port(),
+            controller_address(&config.controller, 9090).unwrap().port(),
             Some(9090)
         );
     }

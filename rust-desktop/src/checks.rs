@@ -116,13 +116,10 @@ fn probe_nodes(config: &Config, network: &Network) -> Vec<(String, Option<String
 
 fn tun_group(machine: &Machine, enabled: Option<bool>) -> Group {
     match (machine.proxy_running, machine.tun_up, enabled) {
-        (true, Some(true), Some(true)) => Group::new(
-            1,
-            TUN,
-            Level::Pass,
-            "代理内核、TUN 适配器和控制器均就绪",
-        )
-        .reason("proxy_tun_ready"),
+        (true, Some(true), Some(true)) => {
+            Group::new(1, TUN, Level::Pass, "代理内核、TUN 适配器和控制器均就绪")
+                .reason("proxy_tun_ready")
+        }
         (false, _, _) => Group::new(1, TUN, Level::Failed, "代理内核未运行")
             .reason("proxy_core_not_running")
             .gate(),
@@ -1384,10 +1381,7 @@ mod tests {
         confirm_tun_dns(&mut group, true);
         assert_eq!(group.level, Level::Pass);
         assert_eq!(group.earned, group.weight);
-        assert_eq!(
-            group.reason_code,
-            Some("dns_clash_public_verified_tun")
-        );
+        assert_eq!(group.reason_code, Some("dns_clash_public_verified_tun"));
     }
 
     #[test]
