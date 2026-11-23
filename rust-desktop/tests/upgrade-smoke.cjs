@@ -56,16 +56,32 @@ async function confirmUpdate(page) {
   await page.locator('#confirm-dialog button[value="confirm"]').click();
 }
 
+async function closeRepairGuide(page) {
+  const guide = page.locator('#repair-guide-dialog');
+  if (await guide.evaluate(dialog => dialog.open)) {
+    await page.locator('#close-repair-guide').click();
+    await guide.waitFor({ state: 'hidden' });
+  }
+}
+
 async function startUpdate(page) {
-  await page.locator('#available-update').click();
+  const update = page.locator('#available-update');
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await closeRepairGuide(page);
+    try {
+      await update.click({ timeout: 5000 });
+      break;
+    } catch (error) {
+      const guideOpen = await page.locator('#repair-guide-dialog').evaluate(dialog => dialog.open);
+      if (!guideOpen || attempt === 2) throw error;
+    }
+  }
   await confirmUpdate(page);
 }
 
 async function verifySupportFlow(page) {
+  await closeRepairGuide(page);
   const guide = page.locator('#repair-guide-dialog');
-  if (await guide.evaluate(dialog => dialog.open)) {
-    await page.locator('#close-repair-guide').click();
-  }
   await page.evaluate(() => renderReport({
     score: 22,
     complete: true,
@@ -160,8 +176,11 @@ async function run() {
       return !snapshot.claudeRunning;
     }, null, { timeout: 20_000 });
     assert.notEqual(closableClaude.exitCode, null, 'confirmed risk prompt must close Claude');
-    await updated.waitForFunction(() => state.busy, null, { timeout: 10_000 });
-    await updated.waitForFunction(() => !state.busy, null, { timeout: 120_000 });
+    await updated.waitForFunction(
+      () => !state.busy && !document.querySelector('#close-risk-claude').disabled,
+      null,
+      { timeout: 120_000 },
+    );
   } finally {
     if (closableClaude.exitCode === null) closableClaude.kill();
   }
