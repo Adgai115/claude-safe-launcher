@@ -176,8 +176,11 @@ async function run() {
       return !snapshot.claudeRunning;
     }, null, { timeout: 20_000 });
     assert.notEqual(closableClaude.exitCode, null, 'confirmed risk prompt must close Claude');
-    await updated.waitForFunction(() => state.busy, null, { timeout: 10_000 });
-    await updated.waitForFunction(() => !state.busy, null, { timeout: 120_000 });
+    await updated.waitForFunction(
+      () => !state.busy && !document.querySelector('#close-risk-claude').disabled,
+      null,
+      { timeout: 120_000 },
+    );
   } finally {
     if (closableClaude.exitCode === null) closableClaude.kill();
   }
