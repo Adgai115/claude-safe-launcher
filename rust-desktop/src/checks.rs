@@ -781,8 +781,7 @@ fn browser_info(
         Group::new(11, title, Level::NoData, "缺少面板时区或已记住的时区参考")
             .reason("panel_timezone_missing")
     } else if config.expected_tz_iana == zone {
-        Group::new(11, title, Level::Pass, "面板时区与基准一致")
-            .reason("panel_timezone_match")
+        Group::new(11, title, Level::Pass, "面板时区与基准一致").reason("panel_timezone_match")
     } else {
         Group::new(
             11,
