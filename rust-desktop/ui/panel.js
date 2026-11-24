@@ -190,14 +190,21 @@ function repairSteps(report) {
   return steps;
 }
 
-function showRepairGuide(report = state.report) {
+function hasOtherOpenDialog(exceptId) {
+  return Array.from(document.querySelectorAll("dialog[open]"))
+    .some((dialog) => dialog.id !== exceptId);
+}
+
+function showRepairGuide(report = state.report, { automatic = false } = {}) {
+  const dialog = byId("repair-guide-dialog");
+  if (automatic && hasOtherOpenDialog(dialog.id)) return;
   const problems = (report?.groups ?? [])
     .filter((group) => group.blocksLaunch || group.earned < group.weight);
   byId("repair-guide-summary").textContent = problems.length
     ? `当前有 ${problems.length} 项需要处理，其中 ${problems.filter((group) => group.blocksLaunch).length} 项会阻止启动。`
     : "当前没有可自动修复的项目，请按下面的步骤手动核对。";
   byId("repair-guide-steps").replaceChildren(...repairSteps(report).map((step) => node("li", "", step)));
-  byId("repair-guide-dialog").showModal();
+  if (!dialog.open) dialog.showModal();
 }
 
 function armAssistedRepair(report = state.report) {
@@ -209,6 +216,7 @@ function armAssistedRepair(report = state.report) {
 
 function resumeAssistedRepair() {
   if (!assistedRepairPending || state.busy || Date.now() - assistedRepairArmedAt < 750) return;
+  if (hasOtherOpenDialog("repair-guide-dialog")) return;
   assistedRepairPending = false;
   if (byId("repair-guide-dialog").open) byId("repair-guide-dialog").close();
   setStatus("已返回检查器，正在自动复查并继续修复…");
@@ -353,7 +361,7 @@ async function runCheck(action) {
         : automaticNeedsManual
           ? "已完成可控项目自动修复，仍有项目需要手动处理"
           : "暂无可自动修复项，请按修复方案手动处理");
-      showRepairGuide(state.report);
+      showRepairGuide(state.report, { automatic: true });
     }
   } catch (error) {
     state.busy = false;
@@ -581,6 +589,8 @@ function showRuntimeRisk(payload) {
   byId("runtime-risk-message").textContent =
     `${[...runtimeRiskTitles].join("、")}发生偏差。是否现在关闭 Claude，避免继续使用已变化的运行环境？`;
   byId("runtime-risk-error").textContent = "";
+  const repairGuide = byId("repair-guide-dialog");
+  if (repairGuide.open) repairGuide.close();
   if (!runtimeRiskDialog.open) runtimeRiskDialog.showModal();
 }
 
