@@ -1253,9 +1253,8 @@ pub fn run(
                 groups,
             )
         });
-    let controller_unreachable = clash
-        && tun_enabled.is_none()
-        && nodes.iter().all(|(_, selected)| selected.is_none());
+    let controller_unreachable =
+        clash && tun_enabled.is_none() && nodes.iter().all(|(_, selected)| selected.is_none());
     let fallback_route = (controller_unreachable && machine.tun_up == Some(true))
         .then(|| vpn::interface(exits.front_peer, api_peer))
         .filter(|(_, interface)| interface.is_some());

@@ -444,7 +444,10 @@ fn has_clash_mi_core_file(dir: &Path) -> bool {
 }
 
 fn push_unique_dir(candidates: &mut Vec<PathBuf>, dir: PathBuf) {
-    if !candidates.iter().any(|existing| paths_match(existing, &dir)) {
+    if !candidates
+        .iter()
+        .any(|existing| paths_match(existing, &dir))
+    {
         candidates.push(dir);
     }
 }
@@ -943,8 +946,8 @@ fn tun_adapter_up() -> Option<bool> {
                     "sing-box",
                     "singbox",
                 ]
-                    .iter()
-                    .any(|name| description.contains(name))
+                .iter()
+                .any(|name| description.contains(name))
                     || ["mihomo", "meta", "clash", "tun", "utun", "wintun"]
                         .iter()
                         .any(|name| alias.starts_with(name)))

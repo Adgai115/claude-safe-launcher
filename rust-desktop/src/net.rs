@@ -151,10 +151,7 @@ impl Network {
         }
         if let Some(group) = self.group("GLOBAL") {
             if is_non_proxy_selection(&group.now) {
-                if let Some(candidate) = group
-                    .all
-                    .iter()
-                    .find(|node| !is_non_proxy_selection(node))
+                if let Some(candidate) = group.all.iter().find(|node| !is_non_proxy_selection(node))
                 {
                     let _ = self.select(config, "GLOBAL", candidate);
                 }
