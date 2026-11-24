@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::machine::{self, Ipv6Probe, Machine};
-use crate::net::{is_public_ip, Network, Trace};
+use crate::net::{is_fake_ip, is_public_ip, Network, Trace};
 use crate::observations;
 use crate::report::{Group, Level, Report};
 use crate::timezone;
@@ -292,13 +292,18 @@ fn learn_node(config: &mut Config, selected: Option<&str>, replace: bool) -> boo
 fn windows_timezone(iana: &str) -> Option<&'static str> {
     // Match the mapping used by the Windows PowerShell panel.
     Some(match iana {
-        "America/New_York" | "America/Detroit" | "America/Toronto" => "Eastern Standard Time",
-        "America/Chicago" => "Central Standard Time",
-        "America/Denver" => "Mountain Standard Time",
+        "America/New_York"
+        | "America/Detroit"
+        | "America/Toronto"
+        | "America/Montreal"
+        | "America/Indiana/Indianapolis"
+        | "America/Kentucky/Louisville" => "Eastern Standard Time",
+        "America/Chicago" | "America/Winnipeg" => "Central Standard Time",
+        "America/Denver" | "America/Edmonton" | "America/Boise" => "Mountain Standard Time",
         "America/Phoenix" => "US Mountain Standard Time",
-        "America/Los_Angeles" | "America/Vancouver" => "Pacific Standard Time",
-        "America/Anchorage" => "Alaskan Standard Time",
-        "Pacific/Honolulu" => "Hawaiian Standard Time",
+        "America/Los_Angeles" | "America/Vancouver" | "America/Tijuana" => "Pacific Standard Time",
+        "America/Anchorage" | "America/Juneau" => "Alaskan Standard Time",
+        "Pacific/Honolulu" | "America/Adak" => "Hawaiian Standard Time",
         "America/Sao_Paulo" => "E. South America Standard Time",
         "Europe/London" | "Europe/Dublin" | "Europe/Lisbon" => "GMT Standard Time",
         "Europe/Berlin" | "Europe/Amsterdam" | "Europe/Zurich" | "Europe/Stockholm"
@@ -309,7 +314,7 @@ fn windows_timezone(iana: &str) -> Option<&'static str> {
         "Europe/Helsinki" => "FLE Standard Time",
         "Asia/Tokyo" => "Tokyo Standard Time",
         "Asia/Seoul" => "Korea Standard Time",
-        "Asia/Singapore" | "Asia/Kuala_Lumpur" => "Singapore Standard Time",
+        "Asia/Singapore" | "Asia/Kuala_Lumpur" | "Asia/Hong_Kong" => "Singapore Standard Time",
         "Asia/Taipei" => "Taipei Standard Time",
         "Asia/Bangkok" => "SE Asia Standard Time",
         "Asia/Dubai" => "Arabian Standard Time",
@@ -320,6 +325,40 @@ fn windows_timezone(iana: &str) -> Option<&'static str> {
     })
 }
 
+fn country_default_timezone(country: &str) -> Option<(&'static str, &'static str)> {
+    let iana = match country {
+        "US" => "America/Los_Angeles",
+        "CA" => "America/Toronto",
+        "BR" => "America/Sao_Paulo",
+        "GB" | "IE" => "Europe/London",
+        "PT" => "Europe/Lisbon",
+        "DE" => "Europe/Berlin",
+        "NL" => "Europe/Amsterdam",
+        "CH" => "Europe/Zurich",
+        "SE" => "Europe/Stockholm",
+        "AT" => "Europe/Vienna",
+        "IT" => "Europe/Rome",
+        "FR" => "Europe/Paris",
+        "BE" => "Europe/Brussels",
+        "ES" => "Europe/Madrid",
+        "PL" => "Europe/Warsaw",
+        "CZ" => "Europe/Prague",
+        "FI" => "Europe/Helsinki",
+        "JP" => "Asia/Tokyo",
+        "KR" => "Asia/Seoul",
+        "SG" => "Asia/Singapore",
+        "MY" => "Asia/Kuala_Lumpur",
+        "TW" => "Asia/Taipei",
+        "TH" => "Asia/Bangkok",
+        "AE" => "Asia/Dubai",
+        "IN" => "Asia/Kolkata",
+        "AU" => "Australia/Sydney",
+        "NZ" => "Pacific/Auckland",
+        _ => return None,
+    };
+    Some((iana, windows_timezone(iana)?))
+}
+
 fn exit_timezone(network: &Network, trace: &Trace) -> Option<(String, &'static str)> {
     #[derive(Deserialize)]
     struct Location {
@@ -328,12 +367,16 @@ fn exit_timezone(network: &Network, trace: &Trace) -> Option<(String, &'static s
         timezone: String,
     }
     let url = format!("https://ipinfo.io/{}/json", trace.ip);
-    let result: Location = serde_json::from_str(&network.body(&url, 16 * 1024)?).ok()?;
-    if result.ip != trace.ip || result.country != trace.country {
-        return None;
+    if let Some(result) = network
+        .body(&url, 16 * 1024)
+        .and_then(|body| serde_json::from_str::<Location>(&body).ok())
+        .filter(|result| result.ip == trace.ip && result.country == trace.country)
+    {
+        if let Some(windows) = windows_timezone(&result.timezone) {
+            return Some((result.timezone, windows));
+        }
     }
-    let windows = windows_timezone(&result.timezone)?;
-    Some((result.timezone, windows))
+    country_default_timezone(&trace.country).map(|(iana, windows)| (iana.to_owned(), windows))
 }
 
 fn ip_risk(network: &Network, trace: Option<&Trace>) -> Group {
@@ -385,7 +428,10 @@ fn repair_clash_mi_exit(folder: &Path, config: &mut Config, network: &Network) -
         return false;
     };
     let original = selected.unwrap_or(group.now);
-    let mut candidates = vec![original.clone()];
+    let mut candidates = Vec::new();
+    if is_proxy_node(&original) {
+        candidates.push(original.clone());
+    }
     for node in group.all {
         if is_proxy_node(&node) && !candidates.contains(&node) {
             candidates.push(node);
@@ -409,7 +455,8 @@ fn repair_clash_mi_exit(folder: &Path, config: &mut Config, network: &Network) -
         let (api, _) = api_reachable(network);
         let region = observations::supported_region(network, folder, Some(&trace.country));
         let risk = ip_risk(network, Some(trace));
-        let dns = dns(true);
+        let mut dns = dns(true);
+        confirm_tun_dns(&mut dns, network.tun() == Some(true));
         if api.level != Level::Pass
             || region.level != Level::Pass
             || risk.level != Level::Pass
@@ -476,11 +523,24 @@ fn network_protocol(
     clash: bool,
     config: &Config,
     front: Option<&Trace>,
+    front_peer: Option<IpAddr>,
+    route_confirmed: bool,
     result: Ipv6Probe,
 ) -> Group {
     let group = ip_protocol(front, result);
     if !clash && result == Ipv6Probe::Reachable {
         return vpn::verify_ipv6(group, config.vpn_interface.as_deref());
+    }
+    if result == Ipv6Probe::NoPublicRoute
+        && front.is_some_and(|trace| trace.ip.is_ipv6())
+        && (route_confirmed || front_peer.is_some_and(|peer| peer.is_ipv4()))
+    {
+        return Group::new(
+            7,
+            "IPv6 出口探测",
+            Level::Pass,
+            "Claude 探测使用 IPv6\nWindows 路由表未发现公网 IPv6 路由，已确认由本机 IPv4 隧道转发",
+        );
     }
     group
 }
@@ -490,7 +550,7 @@ fn dns(clash: bool) -> Group {
     match ("claude.ai", 443).to_socket_addrs() {
         Ok(addresses) => {
             let ips: Vec<_> = addresses.map(|address| address.ip()).collect();
-            let fake = ips.iter().any(|ip| matches!(ip, IpAddr::V4(v4) if v4.octets()[0] == 198 && (18..=19).contains(&v4.octets()[1])));
+            let fake = ips.iter().copied().any(is_fake_ip);
             if !clash {
                 let public = !fake && ips.iter().any(|&address| is_public_ip(address));
                 let (level, detail, reason) = if fake {
@@ -902,7 +962,8 @@ fn prepare_repair(config: &Config, network: &Network, machine: &Machine) -> Repa
         candidate.vpn_interface = None;
     }
     let tun = clash.then(|| network.tun()).flatten();
-    if clash && tun.is_none() {
+    let fallback_tun_route = clash && tun.is_none() && machine.tun_up == Some(true);
+    if clash && tun.is_none() && !fallback_tun_route {
         return plan;
     }
     if tun == Some(false) || network.clash_mi_needs_safe_mode() {
@@ -940,9 +1001,9 @@ fn prepare_repair(config: &Config, network: &Network, machine: &Machine) -> Repa
     if !config.has_baseline() && (plan.tun || !plan.nodes.is_empty()) {
         return plan;
     }
-    if !config.has_baseline() || !clash || migrate_clash_mi {
+    if !config.has_baseline() || !clash || migrate_clash_mi || fallback_tun_route {
         let exits = probe_exits(network);
-        if !clash {
+        if !clash || fallback_tun_route {
             let (_, api_peer) = api_reachable(network);
             let (_, interface) = vpn::interface(exits.front_peer, api_peer);
             let Some(interface) = interface else {
@@ -1118,7 +1179,8 @@ pub fn run(
     let mut machine = Machine::inspect(&config);
     let clash = machine.proxy_running;
     let baseline_matches = if clash {
-        config.vpn_interface.is_none() && is_proxy_node(&config.expected_node)
+        (config.vpn_interface.is_none() && is_proxy_node(&config.expected_node))
+            || (config.vpn_interface.is_some() && machine.tun_up == Some(true))
     } else {
         config.vpn_interface.is_some()
     };
@@ -1191,24 +1253,32 @@ pub fn run(
                 groups,
             )
         });
-    let (mut tun, interface) = if clash {
+    let controller_unreachable =
+        clash && tun_enabled.is_none() && nodes.iter().all(|(_, selected)| selected.is_none());
+    let fallback_route = (controller_unreachable && machine.tun_up == Some(true))
+        .then(|| vpn::interface(exits.front_peer, api_peer))
+        .filter(|(_, interface)| interface.is_some());
+    let use_clash_controller = clash && fallback_route.is_none();
+    let (mut tun, interface) = if let Some(route) = fallback_route {
+        route
+    } else if clash {
         (measure(|| tun_group(&machine, tun_enabled)), None)
     } else {
         vpn::interface(exits.front_peer, api_peer)
     };
+    let tun_confirmed = if use_clash_controller {
+        machine.proxy_running && machine.tun_up == Some(true) && tun_enabled == Some(true)
+    } else {
+        interface.is_some()
+    };
     if let Some(dns) = groups.iter_mut().find(|group| group.id == 6) {
-        let confirmed = if clash {
-            machine.proxy_running && machine.tun_up == Some(true) && tun_enabled == Some(true)
-        } else {
-            interface.is_some()
-        };
-        confirm_tun_dns(dns, confirmed);
+        confirm_tun_dns(dns, tun_confirmed);
     }
     if action == Action::Learn {
         if let Some(zone) = &machine.timezone {
             config.timezone.clone_from(zone);
         }
-        if clash {
+        if use_clash_controller {
             config.vpn_interface = None;
             learn_node(
                 &mut config,
@@ -1224,7 +1294,7 @@ pub fn run(
     }
 
     let mut zone = measure(|| zone_group(&config, machine.timezone.as_deref()));
-    let mut node = if clash {
+    let mut node = if use_clash_controller {
         measure(|| nodes_group(&config, &nodes))
     } else {
         vpn::baseline(&config, interface.as_deref())
@@ -1262,14 +1332,25 @@ pub fn run(
         let protocol = scope.spawn(|| {
             measure(|| {
                 network_protocol(
-                    clash,
+                    use_clash_controller,
                     &config,
                     exits.front.as_ref(),
+                    exits.front_peer,
+                    tun_confirmed,
                     machine::probe_ipv6_exit(),
                 )
             })
         });
-        let route = scope.spawn(|| measure(|| client_routes(clash, &network, &machine, &config)));
+        let route = scope.spawn(|| {
+            measure(|| {
+                client_routes(
+                    use_clash_controller && config.vpn_interface.is_none(),
+                    &network,
+                    &machine,
+                    &config,
+                )
+            })
+        });
         let mut results = record(
             groups,
             measure(|| observations::logs(&machine::log_folders(), Utc::now())),
@@ -1535,6 +1616,18 @@ mod tests {
             ip_protocol(Some(&trace), Ipv6Probe::NoPublicRoute).level,
             Level::Unknown
         );
+        assert_eq!(
+            network_protocol(
+                true,
+                &Config::default(),
+                Some(&trace),
+                Some("172.19.0.2".parse().unwrap()),
+                true,
+                Ipv6Probe::NoPublicRoute,
+            )
+            .level,
+            Level::Pass
+        );
     }
 
     #[test]
@@ -1592,8 +1685,9 @@ pub fn observe(folder: &Path, include_environment: bool) -> Result<Option<Vec<Gr
         || (config.vpn_interface.is_none() && !config.expected_node.is_empty());
     let runtime = clash.then(machine::proxy_runtime).flatten();
     let network = Network::new(runtime.as_deref())?;
+    let use_clash_routes = clash && config.vpn_interface.is_none();
     let mut groups = vec![
-        measure(|| client_routes(clash, &network, &machine, &config)),
+        measure(|| client_routes(use_clash_routes, &network, &machine, &config)),
         measure(|| observations::logs(&machine::log_folders(), Utc::now())),
     ];
     if include_environment {
@@ -1606,31 +1700,52 @@ pub fn observe(folder: &Path, include_environment: bool) -> Result<Option<Vec<Gr
             let (exits, elapsed) = exits.join().expect("background exit probes");
             let ((mut api, api_peer), api_ms) = api.join().expect("background API check");
             api.elapsed_ms = api_ms;
-            if clash {
-                let tun_enabled = network.tun();
+            let tun_enabled = clash.then(|| network.tun()).flatten();
+            let nodes = if clash {
+                probe_nodes(&config, &network)
+            } else {
+                Vec::new()
+            };
+            let fallback_route = (clash
+                && tun_enabled.is_none()
+                && nodes.iter().all(|(_, selected)| selected.is_none())
+                && machine.tun_up == Some(true))
+            .then(|| vpn::interface(exits.front_peer, api_peer))
+            .filter(|(_, id)| id.is_some());
+            let (use_clash_controller, tun_confirmed) = if let Some((route, id)) = fallback_route {
+                let confirmed = id.is_some();
+                groups.extend([route, vpn::baseline(&config, id.as_deref())]);
+                (false, confirmed)
+            } else if clash {
+                let confirmed = machine.proxy_running
+                    && machine.tun_up == Some(true)
+                    && tun_enabled == Some(true);
                 groups.extend([
                     measure(|| tun_group(&machine, tun_enabled)),
-                    measure(|| nodes_group(&config, &probe_nodes(&config, &network))),
+                    measure(|| nodes_group(&config, &nodes)),
                 ]);
+                (true, confirmed)
             } else {
                 let (route, id) = vpn::interface(exits.front_peer, api_peer);
+                let confirmed = id.is_some();
                 groups.extend([route, vpn::baseline(&config, id.as_deref())]);
-            }
+                (false, confirmed)
+            };
             let mut exit = trace_group(&config, &exits);
             exit.elapsed_ms = elapsed;
             groups.push(exit);
             let (protocol, elapsed) = ipv6.join().expect("background IPv6 probe");
-            let mut protocol = network_protocol(clash, &config, exits.front.as_ref(), protocol);
+            let mut protocol = network_protocol(
+                use_clash_controller,
+                &config,
+                exits.front.as_ref(),
+                exits.front_peer,
+                tun_confirmed,
+                protocol,
+            );
             protocol.elapsed_ms = elapsed;
             let mut dns = dns.join().expect("background DNS check");
-            if clash {
-                confirm_tun_dns(
-                    &mut dns,
-                    machine.proxy_running
-                        && machine.tun_up == Some(true)
-                        && network.tun() == Some(true),
-                );
-            }
+            confirm_tun_dns(&mut dns, tun_confirmed);
             groups.extend([protocol, api, dns]);
             groups.push(measure(|| {
                 observations::supported_region(
