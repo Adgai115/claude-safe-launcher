@@ -25,6 +25,16 @@ struct Verge {
     secret: String,
 }
 
+#[derive(Deserialize, Default)]
+struct ClashMiService {
+    #[serde(default)]
+    control_port: u16,
+    #[serde(default)]
+    secret: String,
+    #[serde(default)]
+    id: String,
+}
+
 #[derive(Deserialize)]
 pub struct ProxyGroup {
     pub now: String,
@@ -44,12 +54,7 @@ impl Network {
             path.file_name()
                 .is_some_and(|name| name.eq_ignore_ascii_case("service_core_setting.json"))
         });
-        let verge = match runtime.and_then(|path| std::fs::read_to_string(path).ok()) {
-            Some(yaml) => {
-                serde_yaml_ng::from_str::<Verge>(&yaml).map_err(|_| "代理客户端运行配置无法解析")?
-            }
-            None => Verge::default(),
-        };
+        let verge = load_runtime_config(runtime, clash_mi)?;
         let web = Client::builder()
             .no_proxy()
             .redirect(Policy::none())
@@ -144,6 +149,17 @@ impl Network {
         if !self.clash_mi || crate::machine::require_claude_stopped(config).is_err() {
             return false;
         }
+        if let Some(group) = self.group("GLOBAL") {
+            if is_non_proxy_selection(&group.now) {
+                if let Some(candidate) = group
+                    .all
+                    .iter()
+                    .find(|node| !is_non_proxy_selection(node))
+                {
+                    let _ = self.select(config, "GLOBAL", candidate);
+                }
+            }
+        }
         let changed = self
             .send(
                 reqwest::Method::PATCH,
@@ -201,6 +217,57 @@ impl Network {
     }
 }
 
+fn is_non_proxy_selection(node: &str) -> bool {
+    matches!(
+        node.trim().to_ascii_uppercase().as_str(),
+        "" | "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
+    )
+}
+
+fn load_runtime_config(runtime: Option<&Path>, clash_mi: bool) -> Result<Verge, String> {
+    let primary = match runtime.and_then(|path| std::fs::read_to_string(path).ok()) {
+        Some(yaml) => {
+            serde_yaml_ng::from_str::<Verge>(&yaml).map_err(|_| "代理客户端运行配置无法解析")?
+        }
+        None => Verge::default(),
+    };
+    if !clash_mi {
+        return Ok(primary);
+    }
+    let folder = runtime.and_then(Path::parent);
+    let patch_final = folder
+        .and_then(|dir| std::fs::read_to_string(dir.join("service_core_patch_final.json")).ok())
+        .and_then(|json| serde_yaml_ng::from_str::<Verge>(&json).ok())
+        .unwrap_or_default();
+    let service = folder
+        .and_then(|dir| std::fs::read_to_string(dir.join("service.json")).ok())
+        .and_then(|json| serde_json::from_str::<ClashMiService>(&json).ok())
+        .unwrap_or_default();
+    let controller = [patch_final.controller.trim(), primary.controller.trim()]
+        .into_iter()
+        .find(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            (service.control_port > 0).then(|| format!("127.0.0.1:{}", service.control_port))
+        })
+        .unwrap_or_default();
+    let secret = [
+        patch_final.secret.trim(),
+        service.secret.trim(),
+        primary.secret.trim(),
+    ]
+    .into_iter()
+    .find(|value| !value.is_empty())
+    .map(str::to_owned)
+    .or_else(|| {
+        let id = service.id.trim();
+        (id.len() >= 24 && id.is_char_boundary(8) && id.is_char_boundary(24))
+            .then(|| id[8..24].to_owned())
+    })
+    .unwrap_or_default();
+    Ok(Verge { controller, secret })
+}
+
 fn controller_address(raw: &str, default_port: u16) -> Option<Url> {
     let raw = raw.trim();
     let address = if raw.is_empty() {
@@ -240,6 +307,19 @@ fn parse_trace(body: &str) -> Option<Trace> {
 
 pub fn is_country_code(code: &str) -> bool {
     code.len() == 2 && code.bytes().all(|byte| byte.is_ascii_uppercase())
+}
+
+pub fn is_fake_ip(address: IpAddr) -> bool {
+    match address.to_canonical() {
+        IpAddr::V4(ip) => {
+            let [a, b, ..] = ip.octets();
+            (a == 198 && (18..=19).contains(&b)) || (a == 172 && b == 19)
+        }
+        IpAddr::V6(ip) => {
+            let [a, b, ..] = ip.segments();
+            (a & 0xffc0) == 0xfc00 || (a == 0xfdfe && b == 0xdcbe)
+        }
+    }
 }
 
 pub fn is_public_ip(address: IpAddr) -> bool {
@@ -319,5 +399,38 @@ mod tests {
             controller_address(&config.controller, 9090).unwrap().port(),
             Some(9090)
         );
+    }
+
+    #[test]
+    fn clash_mi_runtime_loads_secret_and_port_from_companion_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let setting = temp.path().join("service_core_setting.json");
+        std::fs::write(&setting, r#"{"mode":"rule"}"#).unwrap();
+        std::fs::write(
+            temp.path().join("service.json"),
+            r#"{"control_port":9090,"id":"01234567abcdef0123456789abcdef"}"#,
+        )
+        .unwrap();
+        let loaded = load_runtime_config(Some(&setting), true).unwrap();
+        assert_eq!(loaded.controller, "127.0.0.1:9090");
+        assert_eq!(loaded.secret, "abcdef0123456789");
+
+        std::fs::write(
+            temp.path().join("service_core_patch_final.json"),
+            r#"{"external-controller":"127.0.0.1:9090","secret":"patch-secret"}"#,
+        )
+        .unwrap();
+        let loaded = load_runtime_config(Some(&setting), true).unwrap();
+        assert_eq!(loaded.controller, "127.0.0.1:9090");
+        assert_eq!(loaded.secret, "patch-secret");
+    }
+
+    #[test]
+    fn recognizes_clash_and_clash_mi_fake_ip_ranges() {
+        assert!(is_fake_ip("198.18.0.2".parse().unwrap()));
+        assert!(is_fake_ip("172.19.0.2".parse().unwrap()));
+        assert!(is_fake_ip("fdfe:dcbe:9876::2".parse().unwrap()));
+        assert!(!is_fake_ip("172.20.0.2".parse().unwrap()));
+        assert!(!is_fake_ip("203.0.113.10".parse().unwrap()));
     }
 }

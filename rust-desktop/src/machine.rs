@@ -62,7 +62,9 @@ fn process_snapshot() -> System {
         .processes()
         .iter()
         .filter(|(_, process)| {
-            looks_like_claude(Some(process.name())) || looks_like_clash_mi(process.name())
+            looks_like_claude(Some(process.name()))
+                || looks_like_clash_mi(process.name())
+                || looks_like_proxy(process.name())
         })
         .map(|(&pid, _)| pid)
         .collect();
@@ -421,55 +423,189 @@ pub(crate) fn set_timezone(config: &Config, zone: &str) -> bool {
     require_claude_stopped(config).is_ok() && output("tzutil.exe", &["/s", zone]).is_some()
 }
 
+const CLASH_MI_CORE_FILES: &[&str] = &[
+    "service_core_patch_final.json",
+    "service.json",
+    "service_core_setting.json",
+];
+
+fn clash_mi_dir_timestamp(dir: &Path) -> Option<std::time::SystemTime> {
+    CLASH_MI_CORE_FILES
+        .iter()
+        .chain(std::iter::once(&"setting.json"))
+        .filter_map(|name| std::fs::metadata(dir.join(name)).ok()?.modified().ok())
+        .max()
+}
+
+fn has_clash_mi_core_file(dir: &Path) -> bool {
+    CLASH_MI_CORE_FILES
+        .iter()
+        .any(|name| dir.join(name).is_file())
+}
+
+fn push_unique_dir(candidates: &mut Vec<PathBuf>, dir: PathBuf) {
+    if !candidates.iter().any(|existing| paths_match(existing, &dir)) {
+        candidates.push(dir);
+    }
+}
+
+fn clash_mi_data_dir_from(
+    exe_dirs: &[PathBuf],
+    appdata: Option<&Path>,
+    local_appdata: Option<&Path>,
+) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    for dir in exe_dirs {
+        push_unique_dir(&mut candidates, dir.join("portable"));
+    }
+    for root in [appdata, local_appdata].into_iter().flatten() {
+        for relative in [
+            PathBuf::from("clashmi").join("clashmi"),
+            PathBuf::from("ClashMi"),
+            PathBuf::from("Clash Mi"),
+            PathBuf::from("com.nebula.clashmi"),
+            PathBuf::from("com.nebula").join("clashmi"),
+            PathBuf::from("group.com.nebula.clashmi"),
+            PathBuf::from("Supernova Nebula LLC").join("Clash Mi"),
+            PathBuf::from("Supernova Nebula LLC").join("clashmi"),
+        ] {
+            push_unique_dir(&mut candidates, root.join(relative));
+        }
+        if let Ok(entries) = std::fs::read_dir(root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(name) = path.file_name() else {
+                    continue;
+                };
+                let name = name.to_string_lossy().to_ascii_lowercase();
+                if (!name.contains("clash") && !name.contains("nebula")) || !path.is_dir() {
+                    continue;
+                }
+                push_unique_dir(&mut candidates, path.clone());
+                if let Ok(children) = std::fs::read_dir(&path) {
+                    for child in children.flatten() {
+                        let child_path = child.path();
+                        if child_path.is_dir() {
+                            push_unique_dir(&mut candidates, child_path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let best_core = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, dir)| has_clash_mi_core_file(dir))
+        .max_by(|(idx_a, dir_a), (idx_b, dir_b)| {
+            clash_mi_dir_timestamp(dir_a)
+                .cmp(&clash_mi_dir_timestamp(dir_b))
+                .then_with(|| idx_b.cmp(idx_a))
+        })
+        .map(|(_, dir)| dir.clone());
+    best_core.or_else(|| {
+        candidates
+            .into_iter()
+            .find(|dir| dir.join("setting.json").is_file())
+    })
+}
+
+fn installed_clash_mi_exes() -> Vec<PathBuf> {
+    ["ProgramW6432", "ProgramFiles", "LOCALAPPDATA"]
+        .into_iter()
+        .filter_map(|name| std::env::var_os(name).map(PathBuf::from))
+        .flat_map(|root| {
+            [
+                root.join("Clash Mi").join("clashmi.exe"),
+                root.join("Programs").join("Clash Mi").join("clashmi.exe"),
+            ]
+        })
+        .filter(|path| path.is_file())
+        .collect()
+}
+
+fn clash_mi_data_dir(system: &System) -> Option<PathBuf> {
+    let mut exe_dirs: Vec<PathBuf> = system
+        .processes()
+        .values()
+        .filter(|process| {
+            let name = process.name().to_string_lossy().to_ascii_lowercase();
+            looks_like_clash_mi(process.name()) || name.starts_with("clashmiservice")
+        })
+        .filter_map(|process| process.exe().and_then(Path::parent).map(Path::to_owned))
+        .collect();
+    for exe in installed_clash_mi_exes() {
+        if let Some(parent) = exe.parent() {
+            push_unique_dir(&mut exe_dirs, parent.to_owned());
+        }
+    }
+    let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
+    let local_appdata = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    clash_mi_data_dir_from(&exe_dirs, appdata.as_deref(), local_appdata.as_deref())
+}
+
 pub fn proxy_runtime() -> Option<PathBuf> {
-    let appdata = PathBuf::from(std::env::var_os("APPDATA")?);
-    let clash_mi = appdata.join("ClashMi").join("service_core_setting.json");
-    let verge = appdata
+    let system = process_snapshot();
+    let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
+    let clash_mi_running = system.processes().values().any(|process| {
+        let name = process.name().to_string_lossy().to_ascii_lowercase();
+        name.starts_with("clashmiservice") || looks_like_clash_mi(process.name())
+    });
+    let verge_running = system.processes().values().any(|process| {
+        let name = process.name().to_string_lossy().to_ascii_lowercase();
+        name.starts_with("verge-mihomo") || name.starts_with("clash-verge")
+    });
+    let clash_mi_dir = clash_mi_data_dir(&system);
+    if clash_mi_running {
+        let dir = clash_mi_dir.or_else(|| {
+            appdata
+                .as_ref()
+                .map(|root| root.join("clashmi").join("clashmi"))
+        })?;
+        return Some(dir.join("service_core_setting.json"));
+    }
+    if !verge_running {
+        if let Some(dir) = clash_mi_dir.filter(|dir| has_clash_mi_core_file(dir)) {
+            return Some(dir.join("service_core_setting.json"));
+        }
+    }
+    let verge = appdata?
         .join("io.github.clash-verge-rev.clash-verge-rev")
         .join("clash-verge.yaml");
-    let clash_mi_running = process_snapshot().processes().values().any(|process| {
-        process
-            .name()
-            .to_string_lossy()
-            .to_ascii_lowercase()
-            .starts_with("clashmiservice")
-    });
-    if clash_mi_running && clash_mi.is_file() {
-        Some(clash_mi)
-    } else {
-        Some(verge)
-    }
+    Some(verge)
 }
 
 pub fn start_clash_mi(config: &Config) -> bool {
     if require_claude_stopped(config).is_err() {
         return false;
     }
-    let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) else {
+    let system = process_snapshot();
+    let Some(data) = clash_mi_data_dir(&system) else {
         return false;
     };
-    let data = appdata.join("ClashMi");
     let setting_path = data.join("setting.json");
     let core_path = data.join("service_core_setting.json");
-    if !core_path.is_file() {
+    let patch_final_path = data.join("service_core_patch_final.json");
+    if !has_clash_mi_core_file(&data) && !setting_path.is_file() {
         return false;
     }
     let _ = update_clash_mi_json(&setting_path, |value| {
         value["auto_connect_after_launch"] = true.into();
         value["auto_set_system_proxy"] = true.into();
     });
-    let _ = update_clash_mi_json(&core_path, |value| {
-        value["mode"] = "global".into();
-        value["ipv6"] = false.into();
-        value["tun"]["overwrite"] = true.into();
-        value["tun"]["enable"] = true.into();
-    });
+    for path in [&core_path, &patch_final_path] {
+        let _ = update_clash_mi_json(path, |value| {
+            value["mode"] = "global".into();
+            value["ipv6"] = false.into();
+            value["tun"]["overwrite"] = true.into();
+            value["tun"]["enable"] = true.into();
+        });
+    }
     // Keep the persisted safe mode in sync even when the service is already
     // running. The live controller update is applied by the repair pipeline.
     if clash_mi_core_running() {
         return true;
     }
-    let system = process_snapshot();
     let running = system
         .processes()
         .values()
@@ -479,16 +615,7 @@ pub fn start_clash_mi(config: &Config) -> bool {
                 .exe()
                 .map(|path| (process.pid().as_u32(), path.to_owned()))
         });
-    let installed = ["ProgramW6432", "ProgramFiles", "LOCALAPPDATA"]
-        .into_iter()
-        .filter_map(|name| std::env::var_os(name).map(PathBuf::from))
-        .flat_map(|root| {
-            [
-                root.join("Clash Mi").join("clashmi.exe"),
-                root.join("Programs").join("Clash Mi").join("clashmi.exe"),
-            ]
-        })
-        .find(|path| path.is_file());
+    let installed = installed_clash_mi_exes().into_iter().next();
     let Some(executable) = running
         .as_ref()
         .map(|(_, path)| path.to_owned())
@@ -737,6 +864,30 @@ fn recognizes_clash_mi_service_as_a_proxy_core() {
     assert!(looks_like_clash_mi(OsStr::new("clashmi.exe")));
 }
 
+#[test]
+fn finds_clash_mi_profile_in_nested_appdata_and_portable_directories() {
+    let temp = tempfile::tempdir().unwrap();
+    let appdata = temp.path().join("Roaming");
+    let nested = appdata.join("clashmi").join("clashmi");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("service_core_setting.json"), b"{}").unwrap();
+    assert_eq!(
+        clash_mi_data_dir_from(&[], Some(&appdata), None).as_deref(),
+        Some(nested.as_path())
+    );
+
+    let exe_dir = temp.path().join("Clash Mi");
+    let portable = exe_dir.join("portable");
+    std::fs::create_dir_all(&portable).unwrap();
+    std::fs::write(
+        portable.join("service.json"),
+        b"{\"control_port\":9090,\"secret\":\"portable-secret\"}",
+    )
+    .unwrap();
+    let found = clash_mi_data_dir_from(&[exe_dir], Some(&appdata), None).unwrap();
+    assert!(found == portable || found == nested);
+}
+
 #[cfg(all(test, windows))]
 #[test]
 fn packaged_app_uses_windows_explorer_at_the_system_root() {
@@ -783,10 +934,18 @@ fn tun_adapter_up() -> Option<bool> {
             let description = utf16_field(&row.Description).to_ascii_lowercase();
             let alias = utf16_field(&row.Alias).to_ascii_lowercase();
             row.OperStatus == IfOperStatusUp
-                && (["meta tunnel", "mihomo", "clash", "wintun"]
+                && ([
+                    "meta tunnel",
+                    "mihomo",
+                    "clash",
+                    "wintun",
+                    "wireguard",
+                    "sing-box",
+                    "singbox",
+                ]
                     .iter()
                     .any(|name| description.contains(name))
-                    || ["mihomo", "meta", "clash"]
+                    || ["mihomo", "meta", "clash", "tun", "utun", "wintun"]
                         .iter()
                         .any(|name| alias.starts_with(name)))
         });

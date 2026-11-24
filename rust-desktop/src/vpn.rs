@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::machine::Machine;
-use crate::net::is_public_ip;
+use crate::net::{is_fake_ip, is_public_ip};
 use crate::report::{Group, Level};
 use std::net::{IpAddr, ToSocketAddrs};
 
@@ -207,7 +207,9 @@ pub fn client_routes(machine: &Machine, config: &Config) -> Group {
     };
     let peers: std::collections::BTreeSet<_> = sockets
         .into_iter()
-        .filter(|socket| socket.established && is_public_ip(socket.remote_ip))
+        .filter(|socket| {
+            socket.established && (is_public_ip(socket.remote_ip) || is_fake_ip(socket.remote_ip))
+        })
         .filter(|socket| {
             machine
                 .claude
