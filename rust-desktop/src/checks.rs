@@ -464,7 +464,7 @@ fn repair_clash_mi_exit(folder: &Path, config: &mut Config, network: &Network) -
         {
             continue;
         }
-        let changed = config.expected_node != node
+        let mut changed = config.expected_node != node
             || config.expected_ip != Some(trace.ip)
             || config.expected_loc != trace.country
             || config.vpn_interface.is_some();
@@ -473,6 +473,7 @@ fn repair_clash_mi_exit(folder: &Path, config: &mut Config, network: &Network) -
         config.expected_loc.clone_from(&trace.country);
         config.vpn_interface = None;
         if let Some((iana, windows)) = exit_timezone(network, trace) {
+            changed |= config.expected_tz_iana != iana || config.timezone != windows;
             config.expected_tz_iana = iana;
             config.timezone = windows.into();
         }
@@ -830,6 +831,32 @@ fn repair_custom_endpoints() -> bool {
     changed
 }
 
+fn panel_timezone_matches(config: &Config, zone: &str) -> bool {
+    if config.expected_tz_iana == zone {
+        return true;
+    }
+    let Some(actual_windows) = windows_timezone(zone) else {
+        return false;
+    };
+    (!config.timezone.is_empty() && actual_windows == config.timezone)
+        || windows_timezone(&config.expected_tz_iana) == Some(actual_windows)
+}
+
+fn effective_panel_timezone<'a>(
+    config: &'a Config,
+    machine_timezone: Option<&str>,
+    webview_zone: &'a str,
+) -> &'a str {
+    if !config.timezone.is_empty()
+        && !config.expected_tz_iana.is_empty()
+        && machine_timezone == Some(config.timezone.as_str())
+    {
+        config.expected_tz_iana.as_str()
+    } else {
+        webview_zone
+    }
+}
+
 fn browser_info(
     config: &Config,
     zone: &str,
@@ -840,7 +867,7 @@ fn browser_info(
     let mut group = if zone.is_empty() || config.expected_tz_iana.is_empty() {
         Group::new(11, title, Level::NoData, "缺少面板时区或已记住的时区参考")
             .reason("panel_timezone_missing")
-    } else if config.expected_tz_iana == zone {
+    } else if panel_timezone_matches(config, zone) {
         Group::new(11, title, Level::Pass, "面板时区与基准一致").reason("panel_timezone_match")
     } else {
         Group::new(
@@ -1027,7 +1054,7 @@ fn prepare_repair(config: &Config, network: &Network, machine: &Machine) -> Repa
             );
         }
         learn_exit(&mut candidate, &exits, false);
-        if candidate.timezone.is_empty() {
+        if candidate.timezone.is_empty() || candidate.expected_tz_iana.is_empty() {
             let matching_exit = exits.confirmed().filter(|trace| {
                 candidate.expected_ip == Some(trace.ip) && candidate.expected_loc == trace.country
             });
@@ -1309,12 +1336,13 @@ pub fn run(
         zone = Group::new(2, ZONE, Level::Unknown, format!("{}\n{error}", zone.detail)).gate();
     }
     mark_fixed(&mut node, repairs.nodes);
+    let panel_zone = effective_panel_timezone(&config, machine.timezone.as_deref(), webview_zone);
     for group in [
         tun,
         zone,
         node,
         exit,
-        measure(|| browser_info(&config, webview_zone, webview_webrtc, exits.front.as_ref())),
+        measure(|| browser_info(&config, panel_zone, webview_webrtc, exits.front.as_ref())),
     ] {
         groups = record(groups, group, &mut progress);
     }
@@ -1566,6 +1594,22 @@ mod tests {
         assert_eq!(report.level, Level::Reference);
         assert_eq!(report.reason_code, Some("panel_timezone_runtime_stale"));
         assert!(report.detail.contains("自动复查"));
+
+        let synced = Config {
+            timezone: "Eastern Standard Time".into(),
+            expected_tz_iana: "America/Detroit".into(),
+            ..Config::default()
+        };
+        assert_eq!(
+            browser_info(&synced, "America/New_York", None, None).level,
+            Level::Pass
+        );
+        let effective =
+            effective_panel_timezone(&synced, Some("Eastern Standard Time"), "Asia/Shanghai");
+        assert_eq!(
+            browser_info(&synced, effective, None, None).level,
+            Level::Pass
+        );
     }
 
     #[test]

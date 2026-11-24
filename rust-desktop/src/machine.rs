@@ -420,7 +420,17 @@ pub(crate) fn current_timezone() -> Option<Timezone> {
 }
 
 pub(crate) fn set_timezone(config: &Config, zone: &str) -> bool {
-    require_claude_stopped(config).is_ok() && output("tzutil.exe", &["/s", zone]).is_some()
+    let changed =
+        require_claude_stopped(config).is_ok() && output("tzutil.exe", &["/s", zone]).is_some();
+    #[cfg(windows)]
+    if changed {
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_TIMECHANGE};
+        unsafe {
+            PostMessageW(0xffff as HWND, WM_TIMECHANGE, 0, 0);
+        }
+    }
+    changed
 }
 
 const CLASH_MI_CORE_FILES: &[&str] = &[
